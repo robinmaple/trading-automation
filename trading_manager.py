@@ -41,11 +41,52 @@ class TradingManager:
         print("Monitoring started")
     
     def _monitoring_loop(self, interval_seconds: int):
-        """Main monitoring loop"""
-        while self.monitoring:
+        """Main monitoring loop with better error handling"""
+        error_count = 0
+        max_errors = 10
+        
+        while self.monitoring and error_count < max_errors:
             try:
-                # self._check_and_execute_orders()
+                self._check_and_execute_orders()
+                error_count = 0  # Reset error count on success
                 time.sleep(interval_seconds)
+                
             except Exception as e:
-                print(f"Monitoring error: {e}")
-                time.sleep(60)  # Wait longer on error
+                error_count += 1
+                print(f"Monitoring error ({error_count}/{max_errors}): {e}")
+                import traceback
+                traceback.print_exc()
+                
+                # Exponential backoff on errors
+                backoff_time = min(60 * error_count, 300)  # Max 5 minutes
+                time.sleep(backoff_time)
+                
+        if error_count >= max_errors:
+            print("Too many errors, stopping monitoring")
+            self.monitoring = False
+            
+    def _check_and_execute_orders(self):
+        """Check market conditions and execute orders if conditions are met"""
+        if not self.planned_orders:
+            print("No planned orders to monitor")
+            return
+            
+        print(f"Monitoring {len(self.planned_orders)} planned orders...")
+        
+        # For now, just log that we're monitoring
+        # In Phase 2, this will contain the actual market data checking and execution logic
+        for i, order in enumerate(self.planned_orders):
+            print(f"Order {i+1}: {order.action.value} {order.symbol} @ {order.entry_price}")
+            
+        # TODO: Phase 2 - Implement market data subscription and execution logic
+        # This will involve:
+        # 1. Subscribing to market data for each symbol
+        # 2. Calculating fill probability
+        # 3. Executing orders when conditions are met
+        
+    def stop_monitoring(self):
+        """Stop the monitoring loop"""
+        self.monitoring = False
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=5)
+        print("Monitoring stopped")
