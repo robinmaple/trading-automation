@@ -1,6 +1,8 @@
 from ibapi.client import *
 from ibapi.wrapper import *
 from ibapi.ticktype import TickTypeEnum
+from ibapi.order_cancel import OrderCancel
+
 from decimal import Decimal
 import threading
 import time
@@ -142,6 +144,8 @@ class OrderExecutor(EClient, EWrapper):
                     'action': order.action,
                     'price': getattr(order, 'lmtPrice', getattr(order, 'auxPrice', None)),
                     'quantity': order.totalQuantity,
+                    'status': 'PendingSubmit',  # Initial status
+                    'parent_id': getattr(order, 'parentId', None),
                     'timestamp': datetime.datetime.now()
                 })
             
@@ -177,13 +181,139 @@ class OrderExecutor(EClient, EWrapper):
         print(f"Order opened: {orderId} - {order.action} {order.orderType}")
     
     def orderStatus(self, orderId: OrderId, status: str, filled: Decimal, remaining: Decimal, 
-                   avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, 
-                   clientId: int, whyHeld: str, mktCapPrice: float):
-        print(f"Order status: {orderId} - {status}, Filled: {filled}")
+                avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, 
+                clientId: int, whyHeld: str, mktCapPrice: float):
+        # Update order history with current status
+        for order in self.order_history:
+            if order['order_id'] == orderId:
+                order['status'] = status
+                order['filled'] = float(filled)
+                order['remaining'] = float(remaining)
+                order['last_update'] = datetime.datetime.now()
+                
+                if status == 'Filled' and avgFillPrice > 0:
+                    order['avg_fill_price'] = avgFillPrice
     
+        print(f"Order status: {orderId} - {status}, Filled: {filled}, Remaining: {remaining}")    
+
     def disconnect(self):
         """Clean disconnect - FIXED: Use super() to avoid recursion"""
         if self.connected:
             super().disconnect()  # ✅ FIX: Call parent class method
             self.connected = False
             print("Disconnected from IB API")
+
+    def cancel_bracket_order(self, parent_order_id):
+        """
+        Cancel all orders in a bracket (parent + all children)
+        Returns: True if successful, False otherwise
+        """
+        try:
+            if not self.connected:
+                print("Not connected to IB. Cannot cancel orders.")
+                return False
+            
+            # Cancel parent order and its two children (standard bracket structure)
+            orders_to_cancel = [parent_order_id, parent_order_id + 1, parent_order_id + 2]
+            
+            print(f"Cancelling bracket order: Parent ID {parent_order_id}, Children {orders_to_cancel[1:]}")
+            
+            success_count = 0
+            for order_id in orders_to_cancel:
+                try:
+                    # ✅ CORRECT: Create OrderCancel object from the right module
+                    cancel_obj = OrderCancel()
+                    cancel_obj.orderId = order_id
+                    self.cancelOrder(cancel_obj)
+                    print(f"Cancel request sent for order {order_id}")
+                    success_count += 1
+                    
+                    # Update order history status
+                    for order in self.order_history:
+                        if order['order_id'] == order_id:
+                            order['status'] = 'Cancelling'
+                            order['cancel_timestamp'] = datetime.datetime.now()
+                            
+                except Exception as e:
+                    print(f"Failed to send cancel request for order {order_id}: {e}")
+            
+            return success_count > 0
+            
+        except Exception as e:
+            print(f"Error in cancel_bracket_order: {e}")
+            return False
+        
+    def cancel_all_orders(self):
+        """
+        Cancel all active orders from order history
+        Returns: number of orders cancelled
+        """
+        try:
+            if not self.connected:
+                print("Not connected to IB. Cannot cancel orders.")
+                return 0
+            
+            active_orders = [order for order in self.order_history 
+                            if order.get('status') in ['PreSubmitted', 'Submitted', 'PendingSubmit']]
+            
+            if not active_orders:
+                print("No active orders to cancel")
+                return 0
+            
+            print(f"Cancelling {len(active_orders)} active orders...")
+            
+            cancelled_count = 0
+            for order in active_orders:
+                try:
+                    # ✅ CORRECT: Create OrderCancel object from the right module
+                    cancel_obj = OrderCancel()
+                    cancel_obj.orderId = order['order_id']
+                    self.cancelOrder(cancel_obj)
+                    print(f"Cancel request sent for order {order['order_id']} ({order['action']} {order['type']})")
+                    order['status'] = 'Cancelling'
+                    order['cancel_timestamp'] = datetime.datetime.now()
+                    cancelled_count += 1
+                except Exception as e:
+                    print(f"Failed to cancel order {order['order_id']}: {e}")
+            
+            return cancelled_count
+            
+        except Exception as e:
+            print(f"Error in cancel_all_orders: {e}")
+            return 0        
+        
+    def cancel_order_by_id(self, order_id):
+        """
+        Cancel a specific order by ID
+        Returns: True if successful, False otherwise
+        """
+        try:
+            if not self.connected:
+                print("Not connected to IB. Cannot cancel order.")
+                return False
+            
+            # Check if order exists in history
+            order_info = next((order for order in self.order_history 
+                            if order['order_id'] == order_id), None)
+            
+            if not order_info:
+                print(f"Order {order_id} not found in history")
+                return False
+            
+            # ✅ CORRECT: Create OrderCancel object from the right module
+            cancel_obj = OrderCancel()
+            cancel_obj.orderId = order_id
+            self.cancelOrder(cancel_obj)
+            print(f"Cancel request sent for order {order_id} ({order_info['action']} {order_info['type']})")
+            
+            # Update order history
+            for order in self.order_history:
+                if order['order_id'] == order_id:
+                    order['status'] = 'Cancelling'
+                    order['cancel_timestamp'] = datetime.datetime.now()
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error cancelling order {order_id}: {e}")
+            return False
