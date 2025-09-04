@@ -1,14 +1,17 @@
-# trading_manager.py
+import datetime
 from typing import List, Dict, Optional
 import threading
 import time
 import pandas as pd
 from order_executor import OrderExecutor
 from planned_order import PlannedOrder, PlannedOrderManager
+# REMOVED: from market_data_manager import MarketDataManager  (no longer used directly)
+from probability_engine import FillProbabilityEngine
+from abstract_data_feed import AbstractDataFeed
 
 class TradingManager:
-    def __init__(self, order_executor: OrderExecutor, excel_path: str = "plan.xlsx"):
-        self.executor = order_executor
+    def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx"):
+        self.data_feed = data_feed
         self.excel_path = excel_path
         self.planned_orders: List[PlannedOrder] = []
         self.active_orders: Dict[int, Dict] = {}  # order_id -> order info
@@ -16,20 +19,39 @@ class TradingManager:
         self.monitor_thread: Optional[threading.Thread] = None
         self.total_capital = 100000  # Default, should be configurable
         
-    def load_planned_orders(self) -> List[PlannedOrder]:
-        """Load and validate planned orders"""
-        try:
-            self.planned_orders = PlannedOrderManager.from_excel(self.excel_path)
-            print(f"Loaded {len(self.planned_orders)} planned orders")
-            return self.planned_orders
-        except Exception as e:
-            print(f"Error loading planned orders: {e}")
-            return []
-    
+        self.max_open_orders = 5
+        self.execution_threshold = 0.7
+
+        # Track market data subscriptions
+        self.subscribed_symbols = set()
+        self.market_data_updates = {}  # symbol -> update count
+        self._initialized = False  # Track initialization state
+
+    def _initialize(self):
+        """Internal initialization - called automatically when needed"""
+        if self._initialized:
+            return True
+            
+        if not self.data_feed.is_connected():
+            print("Cannot initialize - data feed not connected")
+            return False
+            
+        self.probability_engine = FillProbabilityEngine(self.data_feed)
+        
+        self._initialized = True
+        print("✅ Trading manager initialized")
+        return True
+
     def start_monitoring(self, interval_seconds: int = 30):
+        """Start monitoring with automatic initialization"""
+        if not self._initialize():
+            print("❌ Failed to initialize trading manager")
+            return False
+
         """Start continuous monitoring"""
-        if not self.executor.connected:
-            raise Exception("Not connected to IB")
+        # CHANGED: Check data_feed connection instead of executor connection
+        if not self.data_feed.is_connected():
+            raise Exception("Data feed not connected")
             
         self.monitoring = True
         self.monitor_thread = threading.Thread(
@@ -39,14 +61,19 @@ class TradingManager:
         )
         self.monitor_thread.start()
         print("Monitoring started")
+        return True
     
     def _monitoring_loop(self, interval_seconds: int):
         """Main monitoring loop with better error handling"""
         error_count = 0
         max_errors = 10
         
+        self._subscribe_to_all_symbols()
+
         while self.monitoring and error_count < max_errors:
             try:
+                # CHANGED: Removed call to _track_market_data()
+                # Data tracking is now the responsibility of the data feed
                 self._check_and_execute_orders()
                 error_count = 0  # Reset error count on success
                 time.sleep(interval_seconds)
@@ -64,26 +91,116 @@ class TradingManager:
         if error_count >= max_errors:
             print("Too many errors, stopping monitoring")
             self.monitoring = False
+
+    def _track_market_data(self):
+        """Enhanced market data tracking with data type awareness"""
+        # CHANGED: This method is now largely obsolete.
+        # The data feed implementation should handle its own status reporting.
+        # Keeping the method signature for now to avoid breaking anything unexpectedly.
+        print("Market data tracking is now handled by the data feed implementation.")
+
+    def _subscribe_to_all_symbols(self):
+        """Enhanced subscription with retry logic"""
+        # CHANGED: self.market_data -> self.data_feed
+        if not self.planned_orders:
+            return
             
+        print("\n" + "="*60)
+        print("SUBSCRIBING TO MARKET DATA")
+        print("="*60)
+        
+        for order in self.planned_orders:
+            if order.symbol not in self.subscribed_symbols:
+                try:
+                    contract = order.to_ib_contract()
+                    # CHANGED: Use the data_feed's subscribe method
+                    success = self.data_feed.subscribe(order.symbol, contract)
+                    
+                    if success:
+                        self.subscribed_symbols.add(order.symbol)
+                        self.market_data_updates[order.symbol] = 0
+                        print(f"✅ Subscription successful: {order.symbol}")
+                    else:
+                        print(f"❌ Subscription failed: {order.symbol}")
+                        
+                except Exception as e:
+                    print(f"❌ Failed to subscribe to {order.symbol}: {e}")
+        
+        print(f"Total successful subscriptions: {len(self.subscribed_symbols)}/{len(self.planned_orders)}")
+        print("="*60)
+
     def _check_and_execute_orders(self):
         """Check market conditions and execute orders if conditions are met"""
         if not self.planned_orders:
             print("No planned orders to monitor")
             return
             
-        print(f"Monitoring {len(self.planned_orders)} planned orders...")
+        # Display order summary
+        print(f"\n📊 PLANNED ORDERS SUMMARY ({len(self.planned_orders)} orders)")
+        print("-" * 50)
         
-        # For now, just log that we're monitoring
-        # In Phase 2, this will contain the actual market data checking and execution logic
         for i, order in enumerate(self.planned_orders):
-            print(f"Order {i+1}: {order.action.value} {order.symbol} @ {order.entry_price}")
+            # Get current market price for this symbol
+            # CHANGED: self.market_data -> self.data_feed
+            price_data = self.data_feed.get_current_price(order.symbol)
+            current_price = price_data['price'] if price_data and price_data.get('price') else None
             
-        # TODO: Phase 2 - Implement market data subscription and execution logic
-        # This will involve:
-        # 1. Subscribing to market data for each symbol
-        # 2. Calculating fill probability
-        # 3. Executing orders when conditions are met
+            if current_price:
+                # Calculate basic metrics for display
+                price_diff = current_price - order.entry_price if order.entry_price else 0
+                percent_diff = (price_diff / order.entry_price * 100) if order.entry_price else 0
+                
+                print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
+                      f"Current: ${current_price:8.4f} | Entry: ${order.entry_price:8.4f} | "
+                      f"Diff: {percent_diff:6.2f}%")
+            else:
+                print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
+                      f"No market data yet | Entry: ${order.entry_price:8.4f}")
         
+        # For now, just monitor - execution will come in Phase 2
+        print("💡 Monitoring mode - No orders executed yet")
+        print("-" * 50)
+
+    def load_planned_orders(self) -> List[PlannedOrder]:
+        """Load and validate planned orders"""
+        try:
+            self.planned_orders = PlannedOrderManager.from_excel(self.excel_path)
+            print(f"Loaded {len(self.planned_orders)} planned orders")
+            return self.planned_orders
+        except Exception as e:
+            print(f"Error loading planned orders: {e}")
+            return []
+
+    def _find_executable_orders(self):
+        """Find orders that meet execution criteria"""
+        executable = []
+        
+        for order in self.planned_orders:
+            # Check basic constraints
+            if not self._can_place_order(order):
+                continue
+            
+            # Check intelligent execution criteria
+            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
+            
+            if should_execute:
+                executable.append({
+                    'order': order,
+                    'fill_probability': fill_prob,
+                    'timestamp': datetime.now()
+                })
+        
+        return executable
+
+    def _can_place_order(self, order):
+        """Basic validation for order placement"""
+        # Simple validation for now - will be enhanced in Phase 2
+        if len(self.active_orders) >= self.max_open_orders:
+            return False
+        if order.entry_price is None:
+            return False
+        return True
+
     def stop_monitoring(self):
         """Stop the monitoring loop"""
         self.monitoring = False

@@ -22,7 +22,15 @@ class OrderExecutor(EClient, EWrapper):
         self.current_contract = None
         self.order_history = []
         self.connection_event = threading.Event()
-        
+        self.market_data_manager = None
+
+        # Use account number to determine if it's a live or paper trading account
+        self.account_number = None
+        self.is_paper_account = False
+
+        # Add error tracking to prevent duplicate messages
+        self.displayed_errors = set()  # Track (reqId, errorCode) to avoid duplicates
+
     def connect_to_ib(self, host='127.0.0.1', port=7497, client_id=0):
         """Establish connection to IB Gateway/TWS"""
         try:
@@ -49,7 +57,39 @@ class OrderExecutor(EClient, EWrapper):
         self.connection_event.set()  # Signal that connection is ready
     
     def error(self, reqId, errorCode, errorString, advancedOrderReject=""):
-        """Handle errors and messages"""
+
+        """Handle errors and messages with better market data differentiation"""
+        super().error(reqId, errorCode, errorString, advancedOrderReject)
+        
+        # Create a unique key based on error content (not request ID)
+        error_key = f"{errorCode}:{errorString.split('.')[0]}"  # First part of message
+
+        # Check if this error has already been displayed
+        error_key = (reqId, errorCode)
+        if error_key in self.displayed_errors:
+            return  # Skip duplicate error
+        
+        self.displayed_errors.add(error_key)
+
+        # Market data specific errors
+        if errorCode in [10089, 10167, 322, 10201, 10202]:
+            # Check if this is a snapshot request (different handling)
+            is_snapshot = "snapshot" in errorString.lower() or "not subscribed" in errorString.lower()
+            
+            if is_snapshot:
+                print(f"📊 Snapshot Error {errorCode}: {errorString}")
+                print("💡 Paper account snapshot data may be limited during off-hours")
+            else:
+                print(f"📊 Streaming Error {errorCode}: {errorString}")
+                
+            if errorCode == 10089:  # Subscription required
+                if is_snapshot:
+                    print("💡 Snapshot data requires basic market data subscription")
+                else:
+                    print("💡 Streaming data requires additional subscription")
+            elif errorCode == 10167:  # Data farm connection
+                print("💡 Market data temporarily unavailable - will retry")
+
         if errorCode in [2104, 2106, 2158]:  # Connection status messages
             print(f"Connection: {errorString}")
         elif errorCode == 399:  # Order warnings (not errors)
@@ -172,10 +212,26 @@ class OrderExecutor(EClient, EWrapper):
         return self.data_received
     
     def tickPrice(self, reqId, tickType, price, attrib):
-        """Handle market data price updates"""
-        if tickType in [1, 2, 4]:  # BID, ASK, LAST
-            self.data_received = True
-    
+        """Handle market data and delegate to manager"""
+        super().tickPrice(reqId, tickType, price, attrib)
+        if self.market_data_manager:
+            self.market_data_manager.on_tick_price(reqId, tickType, price, attrib)    
+
+    # Thread-safe market data access
+    def get_current_price(self, symbol):
+        with self.lock:
+            if symbol in self.prices:
+                return self.prices[symbol]['price']
+        return None
+
+    def handle_market_data_error(self, req_id, error_code, error_string):
+        """Handle market data disconnections and errors"""
+        if error_code in [2104, 2106, 2107]:  # Market data farm messages
+            print(f"Market data connection: {error_string}")
+        elif error_code == 10167:  # Data farm connection is broken
+            print("Market data farm disconnected, attempting reconnect...")
+            self._reconnect_market_data()
+
     # Order status callbacks for monitoring
     def openOrder(self, orderId: OrderId, contract: Contract, order: Order, orderState: OrderState):
         print(f"Order opened: {orderId} - {order.action} {order.orderType}")
@@ -317,3 +373,16 @@ class OrderExecutor(EClient, EWrapper):
         except Exception as e:
             print(f"Error cancelling order {order_id}: {e}")
             return False
+        
+    def managedAccounts(self, accountsList: str):
+        """Callback: Received when connection is established"""
+        super().managedAccounts(accountsList)
+        print(f"Managed accounts: {accountsList}")
+        
+        # Extract account number and detect environment
+        if accountsList:
+            self.account_number = accountsList.split(',')[0]
+            self.is_paper_account = self.account_number.startswith('DU')
+            
+            env = "PAPER" if self.is_paper_account else "PRODUCTION"
+            print(f"🎯 Auto-detected environment: {env} (Account: {self.account_number})")
