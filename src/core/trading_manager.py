@@ -3,16 +3,16 @@ from typing import List, Dict, Optional
 import threading
 import time
 import pandas as pd
-from src.core.order_executor import OrderExecutor
+from src.core.ibkr_client import IbkrClient
 from src.core.planned_order import PlannedOrder, PlannedOrderManager
 from src.core.probability_engine import FillProbabilityEngine
 from src.core.abstract_data_feed import AbstractDataFeed
 
 class TradingManager:
-    def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", order_executor: Optional[OrderExecutor] = None):  # CHANGED: Added order_executor parameter
+    def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", ibkr_client: Optional[IbkrClient] = None):
         self.data_feed = data_feed
         self.excel_path = excel_path
-        self.order_executor = order_executor  # CHANGED: Store the executor
+        self.ibkr_client = ibkr_client  # NEW: Store the IbkrClient facade
         self.planned_orders: List[PlannedOrder] = []
         self.active_orders: Dict[int, Dict] = {}  # order_id -> order info
         self.monitoring = False
@@ -42,15 +42,15 @@ class TradingManager:
         print("✅ Trading manager initialized")
         
         # NEW: Check if we have an order executor for real trading
-        if self.order_executor and hasattr(self.order_executor, 'connected') and self.order_executor.connected:
+        if self.ibkr_client and self.ibkr_client.connected:
             print("✅ Real order execution enabled (IBKR connected)")
-        elif self.order_executor:
+        elif self.ibkr_client:
             print("⚠️  Order executor provided but not connected to IBKR - will use simulation")
         else:
             print("ℹ️  No order executor provided - using simulation mode")
             
         return True
-
+    
     def start_monitoring(self, interval_seconds: int = 5):
         """Start monitoring with automatic initialization"""
         if not self._initialize():
@@ -175,9 +175,8 @@ class TradingManager:
         """
         try:
             # NEW: Get actual account value from IBKR
-            if (self.order_executor and hasattr(self.order_executor, 'connected') 
-                and self.order_executor.connected):
-                total_capital = self.order_executor.get_account_value()
+            if self.ibkr_client and self.ibkr_client.connected:
+                total_capital = self.ibkr_client.get_account_value()
             else:
                 total_capital = self.total_capital  # Fallback to default
             
@@ -187,13 +186,12 @@ class TradingManager:
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             
             # Real order execution if executor is available and connected
-            if (self.order_executor and hasattr(self.order_executor, 'connected') 
-                and self.order_executor.connected):
+            if self.ibkr_client and self.ibkr_client.connected:
                 
                 contract = order.to_ib_contract()
                 
                 # Place real order through IBKR with new parameter signature
-                order_ids = self.order_executor.place_bracket_order(
+                order_ids = self.ibkr_client.place_bracket_order(
                     contract,
                     order.action.value,
                     order.order_type.value,
@@ -224,7 +222,7 @@ class TradingManager:
             print(f"❌ Failed to execute order for {order.symbol}: {e}")
             import traceback
             traceback.print_exc()
-
+            
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders"""
         try:
