@@ -252,13 +252,27 @@ class TradingManager:
 
     def _can_place_order(self, order):
         """Basic validation for order placement"""
-        # Simple validation for now - will be enhanced in Phase 2
+        # Check if we already have max open orders
         if len(self.active_orders) >= self.max_open_orders:
             return False
+            
+        # Check for required price data
         if order.entry_price is None:
             return False
+            
+        # NEW: Check if this specific order is already active
+        # Create a unique key based on order parameters to prevent duplicates
+        order_key = f"{order.symbol}_{order.action.value}_{order.entry_price}_{order.stop_loss}"
+        
+        for active_order in self.active_orders.values():
+            active_order_obj = active_order['order']
+            active_key = f"{active_order_obj.symbol}_{active_order_obj.action.value}_{active_order_obj.entry_price}_{active_order_obj.stop_loss}"
+            if order_key == active_key:
+                print(f"⚠️  Order already active: {order.symbol} {order.action.value} @ {order.entry_price}")
+                return False
+                
         return True
-
+    
     def stop_monitoring(self):
         """Stop the monitoring loop"""
         self.monitoring = False
