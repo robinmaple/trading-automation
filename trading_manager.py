@@ -5,14 +5,14 @@ import time
 import pandas as pd
 from order_executor import OrderExecutor
 from planned_order import PlannedOrder, PlannedOrderManager
-# REMOVED: from market_data_manager import MarketDataManager  (no longer used directly)
 from probability_engine import FillProbabilityEngine
 from abstract_data_feed import AbstractDataFeed
 
 class TradingManager:
-    def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx"):
+    def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", order_executor: Optional[OrderExecutor] = None):  # CHANGED: Added order_executor parameter
         self.data_feed = data_feed
         self.excel_path = excel_path
+        self.order_executor = order_executor  # CHANGED: Store the executor
         self.planned_orders: List[PlannedOrder] = []
         self.active_orders: Dict[int, Dict] = {}  # order_id -> order info
         self.monitoring = False
@@ -40,6 +40,15 @@ class TradingManager:
         
         self._initialized = True
         print("✅ Trading manager initialized")
+        
+        # NEW: Check if we have an order executor for real trading
+        if self.order_executor and hasattr(self.order_executor, 'connected') and self.order_executor.connected:
+            print("✅ Real order execution enabled (IBKR connected)")
+        elif self.order_executor:
+            print("⚠️  Order executor provided but not connected to IBKR - will use simulation")
+        else:
+            print("ℹ️  No order executor provided - using simulation mode")
+            
         return True
 
     def start_monitoring(self, interval_seconds: int = 5):
@@ -49,7 +58,6 @@ class TradingManager:
             return False
 
         """Start continuous monitoring"""
-        # CHANGED: Check data_feed connection instead of executor connection
         if not self.data_feed.is_connected():
             raise Exception("Data feed not connected")
             
@@ -72,8 +80,6 @@ class TradingManager:
 
         while self.monitoring and error_count < max_errors:
             try:
-                # CHANGED: Removed call to _track_market_data()
-                # Data tracking is now the responsibility of the data feed
                 self._check_and_execute_orders()
                 error_count = 0  # Reset error count on success
                 time.sleep(interval_seconds)
@@ -94,14 +100,10 @@ class TradingManager:
 
     def _track_market_data(self):
         """Enhanced market data tracking with data type awareness"""
-        # CHANGED: This method is now largely obsolete.
-        # The data feed implementation should handle its own status reporting.
-        # Keeping the method signature for now to avoid breaking anything unexpectedly.
         print("Market data tracking is now handled by the data feed implementation.")
 
     def _subscribe_to_all_symbols(self):
         """Enhanced subscription with retry logic"""
-        # CHANGED: self.market_data -> self.data_feed
         if not self.planned_orders:
             return
             
@@ -113,7 +115,6 @@ class TradingManager:
             if order.symbol not in self.subscribed_symbols:
                 try:
                     contract = order.to_ib_contract()
-                    # CHANGED: Use the data_feed's subscribe method
                     success = self.data_feed.subscribe(order.symbol, contract)
                     
                     if success:
@@ -170,7 +171,7 @@ class TradingManager:
 
     def _execute_order(self, order, fill_probability):
         """
-        Execute a single order (simulation for now)
+        Execute a single order - now supports both simulation and real execution
         """
         try:
             print(f"🎯 EXECUTING: {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
@@ -178,14 +179,42 @@ class TradingManager:
             print(f"   Fill Probability: {fill_probability:.2%}")
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             
-            # In a real implementation, you would call:
-            # self.order_executor.place_bracket_order(contract, entry_price, quantity, ...)
-            
-            # For now, simulate execution
-            print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
+            # NEW: Real order execution if executor is available and connected
+            if (self.order_executor and hasattr(self.order_executor, 'connected') 
+                and self.order_executor.connected):
+                
+                contract = order.to_ib_contract()
+                quantity = order.calculate_quantity(self.total_capital)
+                
+                # Place real order through IBKR
+                order_ids = self.order_executor.place_bracket_order(
+                    contract=contract,
+                    entry_price=order.entry_price,
+                    quantity=quantity,
+                    profit_pct=(order.calculate_profit_target() / order.entry_price - 1),
+                    loss_pct=(1 - order.stop_loss / order.entry_price)
+                )
+                
+                if order_ids:
+                    print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
+                    # Track the active order
+                    self.active_orders[order_ids[0]] = {
+                        'order': order,
+                        'order_ids': order_ids,
+                        'timestamp': datetime.datetime.now(),
+                        'status': 'Submitted'
+                    }
+                else:
+                    print("❌ Failed to place real order through IBKR")
+                    
+            else:
+                # Fall back to simulation
+                print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
             
         except Exception as e:
             print(f"❌ Failed to execute order for {order.symbol}: {e}")
+            import traceback
+            traceback.print_exc()
 
 
     def load_planned_orders(self) -> List[PlannedOrder]:
@@ -210,7 +239,6 @@ class TradingManager:
             # Check intelligent execution criteria
             should_execute, fill_prob = self.probability_engine.should_execute_order(order)
             
-            # NEW: Debug output
             print(f"   Checking {order.action.value} {order.symbol}: should_execute={should_execute}, fill_prob={fill_prob:.3f}")
 
             if should_execute:

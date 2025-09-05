@@ -88,8 +88,21 @@ class PlannedOrder:
         risk_per_share = abs(self.entry_price - self.stop_loss)
         risk_amount = total_capital * self.risk_per_trade
         self._quantity = risk_amount / risk_per_share
+
+        # NEW: Handle Forex (CASH) contracts - round to appropriate lot sizes
+        if self.security_type == SecurityType.CASH:
+            # Forex typically trades in standard lots (100,000) or mini lots (10,000)
+            # Round to the nearest 10,000 units for reasonable position sizing
+            calculated_quantity = round(calculated_quantity / 10000) * 10000
+            calculated_quantity = max(calculated_quantity, 10000)  # Minimum 10,000 units
+        else:
+            # All other security types (STK, OPT, FUT, etc.) trade in whole units
+            calculated_quantity = round(calculated_quantity)
+            calculated_quantity = max(calculated_quantity, 1)  # Minimum 1 unit
+                        
+        self._quantity = calculated_quantity
         return self._quantity
-    
+        
     def calculate_profit_target(self) -> float:
         """Calculate profit target price"""
         if self.entry_price is None or self.stop_loss is None:

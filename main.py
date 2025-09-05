@@ -12,18 +12,18 @@ def main():
     try:
         # Parse command line arguments
         parser = argparse.ArgumentParser(description='Trading System')
-        parser.add_argument('--mode', choices=['live', 'historical', 'mock'], required=True,
-                          help='Select data feed mode: live (IBKR), historical (yfinance), or mock (generated data)')
+        parser.add_argument('--mode', choices=['live', 'historical', 'mock', 'hybrid'], required=True,  # CHANGED: added 'hybrid'
+                          help='Select data feed mode: live (IBKR), historical (yfinance), mock (generated data), or hybrid (mock data + real IBKR orders)')
         
         # Add historical mode specific options
         parser.add_argument('--start-date', help='Start date for historical data (YYYY-MM-DD)')
         parser.add_argument('--end-date', help='End date for historical data (YYYY-MM-DD)')
         parser.add_argument('--interval', choices=['1m', '5m', '15m', '30m', '1h', '1d'],
                           default='1m', help='Data interval for historical mode')
-        # Add mock mode specific options
-        parser.add_argument('--anchor-price', required='--mode mock' in sys.argv,
+        # Add mock/hybrid mode specific options
+        parser.add_argument('--anchor-price', required=any(x in sys.argv for x in ['--mode mock', '--mode hybrid']),  # CHANGED: added hybrid
                           help='Starting price for mock data feed (e.g., "EUR=1.095")')
-        # NEW: Add trend argument for mock mode
+        # Add trend argument for mock/hybrid mode
         parser.add_argument('--mock-trend', choices=['up', 'down', 'random'], default='random',
                           help='Global price trend direction for mock data (default: random)')
         
@@ -55,11 +55,32 @@ def main():
             trading_mgr = TradingManager(data_feed, "plan.xlsx")
             data_feed.connect()  # Load historical data (replaces IB connection)
         
-        else:  # args.mode == 'mock'
-            # Initialize mock data feed with anchor price and trend
-            data_feed = MockFeed(args.anchor_price, args.mock_trend)  # MODIFIED: Added trend argument
+        elif args.mode == 'mock':
+            # Initialize mock data feed with anchor price and trend (simulation only)
+            data_feed = MockFeed(args.anchor_price, args.mock_trend)
             trading_mgr = TradingManager(data_feed, "plan.xlsx")
             data_feed.connect()  # Initialize the mock data generator
+        
+        else:  # args.mode == 'hybrid'  # NEW: Hybrid mode
+            # Initialize both mock data feed AND IBKR order executor
+            executor = OrderExecutor()
+            data_feed = MockFeed(args.anchor_price, args.mock_trend)
+            trading_mgr = TradingManager(data_feed, "plan.xlsx")
+            
+            # Connect to IB for order execution
+            if not executor.connect_to_ib('127.0.0.1', 7497, 0):
+                print("Failed to connect to IB")
+                return
+        
+            if not executor.wait_for_connection(timeout=10):
+                print("Connection timeout")
+                return
+                
+            # Initialize mock data feed
+            data_feed.connect()
+            
+            # Store executor in trading manager for order execution
+            trading_mgr.order_executor = executor  # CHANGED: We'll need to modify TradingManager to use this
         
         # Load planned orders
         try:
@@ -73,7 +94,7 @@ def main():
             print("Continuing without planned orders...")
         
         # Start monitoring
-        trading_mgr.start_monitoring(interval_seconds=5)
+        trading_mgr.start_monitoring(interval_seconds=30)
         
         # Keep running
         try:
@@ -91,7 +112,7 @@ def main():
     finally:
         try:
             trading_mgr.stop_monitoring()
-            if args.mode == 'live':  # Only disconnect if we connected to IB
+            if args.mode in ['live', 'hybrid']:  # CHANGED: Also disconnect in hybrid mode
                 executor.disconnect()
         except:
             pass
