@@ -1,6 +1,7 @@
+import threading
 from src.core.abstract_data_feed import AbstractDataFeed
 from src.core.market_data_manager import MarketDataManager
-from src.core.order_executor import OrderExecutor
+from src.core.ibkr_client import IbkrClient  # CHANGED: Import IbkrClient instead
 from ibapi.contract import Contract
 from typing import Dict, Any, Optional
 import datetime
@@ -12,33 +13,35 @@ class IBKRDataFeed(AbstractDataFeed):
     to the AbstractDataFeed interface.
     """
     
-    def __init__(self, order_executor: OrderExecutor):
+    def __init__(self, ibkr_client: IbkrClient):  # CHANGED: Parameter type
         """
         Initialize the IBKR data feed.
         
         Args:
-            order_executor: The existing OrderExecutor instance
+            ibkr_client: The IbkrClient instance
         """
-        self.executor = order_executor
-        self.market_data = MarketDataManager(order_executor)
+        self.ibkr_client = ibkr_client  # CHANGED: Store the client
+        # MarketDataManager still needs the low-level OrderExecutor
+        self.market_data = MarketDataManager(ibkr_client.order_executor)
         self._connected = False
         
-    def connect(self) -> bool:
-        """
-        Establish connection to IBKR. 
-        Note: For IBKR, connection is handled by OrderExecutor in main.py.
-        This method primarily checks and confirms connection status.
-        """
-        # For IBKR, the connection is established by the OrderExecutor
-        # We just confirm that it's connected and ready
-        self._connected = self.executor.connected and self.executor.connection_event.is_set()
-        return self._connected
-    
+    def connect(self, host='127.0.0.1', port=7497, client_id=0) -> bool:
+        """Establish connection to IB Gateway/TWS. Returns success status."""
+        try:
+            # FIXED: Use the ibkr_client's connect method instead of recursive call
+            success = self.ibkr_client.connect(host, port, client_id)
+            if success:
+                self._connected = True
+            return success
+        except Exception as e:
+            print(f"Connection failed: {e}")
+            return False
+                    
     def is_connected(self) -> bool:
         """
         Check if connected to IBKR and market data is available.
         """
-        return self._connected and self.executor.connected
+        return self._connected and self.ibkr_client.connected  # CHANGED: Use client's connection state
     
     def subscribe(self, symbol: str, contract: Contract) -> bool:
         """
