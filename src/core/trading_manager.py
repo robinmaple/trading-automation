@@ -174,27 +174,34 @@ class TradingManager:
         Execute a single order - now supports both simulation and real execution
         """
         try:
+            # NEW: Get actual account value from IBKR
+            if (self.order_executor and hasattr(self.order_executor, 'connected') 
+                and self.order_executor.connected):
+                total_capital = self.order_executor.get_account_value()
+            else:
+                total_capital = self.total_capital  # Fallback to default
+            
             print(f"🎯 EXECUTING: {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
-            # Quantity will be calculated by OrderExecutor based on risk management
+            print(f"   Account Value: ${total_capital:,.2f}")
             print(f"   Fill Probability: {fill_probability:.2%}")
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             
-            # NEW: Real order execution if executor is available and connected
+            # Real order execution if executor is available and connected
             if (self.order_executor and hasattr(self.order_executor, 'connected') 
                 and self.order_executor.connected):
                 
                 contract = order.to_ib_contract()
                 
-                # Place real order through IBKR
+                # Place real order through IBKR with new parameter signature
                 order_ids = self.order_executor.place_bracket_order(
-                    contract=contract,
-                    action=order.action.value,
-                    order_type=order.order_type.value,
-                    security_type=order.security_type.value,
-                    entry_price=order.entry_price,
-                    stop_loss=order.stop_loss,
-                    risk_per_trade=order.risk_per_trade,
-                    risk_reward_ratio=order.risk_reward_ratio
+                    contract,
+                    order.action.value,
+                    order.order_type.value,
+                    order.security_type.value,  # NEW: security_type
+                    order.entry_price,
+                    order.stop_loss,
+                    order.risk_per_trade,       # NEW: risk_per_trade
+                    order.risk_reward_ratio     # NEW: risk_reward_ratio
                 )
                 
                 if order_ids:

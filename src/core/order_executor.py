@@ -31,6 +31,9 @@ class OrderExecutor(EClient, EWrapper):
         # Add error tracking to prevent duplicate messages
         self.displayed_errors = set()  # Track (reqId, errorCode) to avoid duplicates
 
+        self.account_values = {}  # Store account values by key
+        self.account_value_received = threading.Event()
+        
     def connect_to_ib(self, host='127.0.0.1', port=7497, client_id=0):
         """Establish connection to IB Gateway/TWS"""
         try:
@@ -119,7 +122,7 @@ class OrderExecutor(EClient, EWrapper):
         
         # Get total capital from account - this needs to be implemented separately
         # For now, we'll use a placeholder - you'll need to implement account value retrieval
-        total_capital = self._get_account_value()  # This method needs to be implemented
+        total_capital = self.get_account_value()  # This method needs to be implemented
         
         # Calculate quantity based on security type
         quantity = self._calculate_quantity(security_type, entry_price, stop_loss, 
@@ -229,14 +232,62 @@ class OrderExecutor(EClient, EWrapper):
             profit_target = entry_price - (risk_amount * risk_reward_ratio)
         return profit_target
 
-    def _get_account_value(self):
-        """Get total account value - placeholder implementation"""
-        # TODO: Implement actual account value retrieval from IBKR
-        # This should query account summary for NetLiquidation value
-        print("⚠️  WARNING: Using placeholder account value of $100,000")
-        print("💡 Implement _get_account_value() to retrieve actual account value from IBKR")
-        return 100000.0  # Placeholder value
+    def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):
+        """Callback: Received account value updates"""
+        super().updateAccountValue(key, val, currency, accountName)
+        
+        # Store important account values
+        if key == "NetLiquidation":  # Total account equity
+            self.account_values["NetLiquidation"] = float(val)
+        elif key == "TotalCashValue":  # Cash balance
+            self.account_values["TotalCashValue"] = float(val)
+        elif key == "UnrealizedPnL":  # Open position PnL
+            self.account_values["UnrealizedPnL"] = float(val)
+        elif key == "RealizedPnL":  # Closed position PnL
+            self.account_values["RealizedPnL"] = float(val)
+            
+        # Signal that we've received account data
+        self.account_value_received.set()
 
+    def updatePortfolio(self, contract: Contract, position: float, marketPrice: float, marketValue: float, 
+                      averageCost: float, unrealizedPNL: float, realizedPNL: float, accountName: str):
+        """Callback: Received portfolio updates"""
+        super().updatePortfolio(contract, position, marketPrice, marketValue, averageCost, 
+                              unrealizedPNL, realizedPNL, accountName)
+        # Portfolio updates can be used for more detailed position tracking
+
+    def get_account_value(self, timeout=5.0) -> float:
+        """
+        Get the current net liquidation value from IBKR
+        Returns the total account equity (cash + positions at market value)
+        """
+        if not self.connected:
+            print("❌ Not connected to IBKR - cannot retrieve account value")
+            return 100000.0  # Fallback to default
+            
+        # Request account updates
+        self.account_value_received.clear()
+        self.reqAccountUpdates(True, self.account_number)
+        
+        # Wait for account data with timeout
+        if not self.account_value_received.wait(timeout):
+            print("⚠️  Timeout waiting for account value data - using fallback value")
+            self.reqAccountUpdates(False, self.account_number)  # Unsubscribe
+            return 100000.0
+            
+        # Return net liquidation value if available, otherwise total cash
+        net_liquidation = self.account_values.get("NetLiquidation")
+        if net_liquidation is not None:
+            print(f"✅ Current account value: ${net_liquidation:,.2f}")
+            self.reqAccountUpdates(False, self.account_number)  # Unsubscribe after getting value
+            return net_liquidation
+            
+        # Fallback to cash value if net liquidation not available
+        cash_value = self.account_values.get("TotalCashValue", 100000.0)
+        print(f"⚠️  Using cash value: ${cash_value:,.2f} (NetLiquidation not available)")
+        self.reqAccountUpdates(False, self.account_number)  # Unsubscribe
+        return cash_value
+    
     def place_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
                           risk_per_trade, risk_reward_ratio):
         """
