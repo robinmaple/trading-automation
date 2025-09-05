@@ -31,11 +31,11 @@ from ibapi.tag_value import TagValue
 
 from ibapi.account_summary_tags import *
 
-from ContractSamples import ContractSamples
-from OrderSamples import OrderSamples
-from AvailableAlgoParams import AvailableAlgoParams
-from ScannerSubscriptionSamples import ScannerSubscriptionSamples
-from FaAllocationSamples import FaAllocationSamples
+from samples.ContractSamples import ContractSamples
+from samples.OrderSamples import OrderSamples
+from samples.AvailableAlgoParams import AvailableAlgoParams
+from samples.ScannerSubscriptionSamples import ScannerSubscriptionSamples
+from samples.FaAllocationSamples import FaAllocationSamples
 from ibapi.scanner import ScanData
 from decimal import Decimal
 from ibapi.ineligibility_reason import IneligibilityReason
