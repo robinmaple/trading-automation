@@ -106,8 +106,8 @@ class OrderExecutor(EClient, EWrapper):
         contract.currency = currency
         return contract
     
-    def create_native_bracket_order(self, action, entry_price, quantity=20000, 
-                                  profit_pct=0.005, loss_pct=0.005):
+    def create_native_bracket_order(self, action, order_type, security_type, entry_price, stop_loss,
+                                  risk_per_trade, risk_reward_ratio):
         """
         Create a native bracket order for Forex
         Returns: list of [parent_order, take_profit_order, stop_loss_order]
@@ -117,61 +117,128 @@ class OrderExecutor(EClient, EWrapper):
         
         parent_id = self.next_valid_id
         
+        # Get total capital from account - this needs to be implemented separately
+        # For now, we'll use a placeholder - you'll need to implement account value retrieval
+        total_capital = self._get_account_value()  # This method needs to be implemented
+        
+        # Calculate quantity based on security type
+        quantity = self._calculate_quantity(security_type, entry_price, stop_loss, 
+                                          total_capital, risk_per_trade)
+        
+        # Calculate profit target based on risk reward ratio
+        profit_target = self._calculate_profit_target(action, entry_price, stop_loss, risk_reward_ratio)
+        
         # 1. PARENT ORDER (Entry)
         parent = Order()
         parent.orderId = parent_id
-        parent.action = action  # CHANGED: Use the provided action
-        parent.orderType = "LMT"
+        parent.action = action
+        parent.orderType = order_type
         parent.totalQuantity = quantity
         parent.lmtPrice = round(entry_price, 5)
         parent.transmit = False
         
-        # NEW: Determine opposite action for closing orders
+        # Determine opposite action for closing orders
         closing_action = "SELL" if action == "BUY" else "BUY"
         
         # 2. TAKE-PROFIT ORDER
         take_profit = Order()
         take_profit.orderId = parent_id + 1
-        take_profit.action = closing_action  # CHANGED: Use opposite action
+        take_profit.action = closing_action
         take_profit.orderType = "LMT"
         take_profit.totalQuantity = quantity
         
-        # CHANGED: Calculate profit target based on action
-        if action == "BUY":
-            take_profit.lmtPrice = round(entry_price * (1 + profit_pct), 5)
-        else:  # SELL
-            take_profit.lmtPrice = round(entry_price * (1 - profit_pct), 5)
-            
+        # Use calculated profit target
+        take_profit.lmtPrice = round(profit_target, 5)
         take_profit.parentId = parent_id
         take_profit.transmit = False
         take_profit.openClose = "C"
         take_profit.origin = 0
         
         # 3. STOP-LOSS ORDER
-        stop_loss = Order()
-        stop_loss.orderId = parent_id + 2
-        stop_loss.action = closing_action  # CHANGED: Use opposite action
-        stop_loss.orderType = "STP"
-        stop_loss.totalQuantity = quantity
+        stop_loss_order = Order()
+        stop_loss_order.orderId = parent_id + 2
+        stop_loss_order.action = closing_action
+        stop_loss_order.orderType = "STP"
+        stop_loss_order.totalQuantity = quantity
         
-        # CHANGED: Calculate stop loss based on action
-        if action == "BUY":
-            stop_loss.auxPrice = round(entry_price * (1 - loss_pct), 5)
-        else:  # SELL
-            stop_loss.auxPrice = round(entry_price * (1 + loss_pct), 5)
+        # Use provided stop loss price
+        stop_loss_order.auxPrice = round(stop_loss, 5)
             
-        stop_loss.parentId = parent_id
-        stop_loss.transmit = True
-        stop_loss.openClose = "C"
-        stop_loss.origin = 0
+        stop_loss_order.parentId = parent_id
+        stop_loss_order.transmit = True
+        stop_loss_order.openClose = "C"
+        stop_loss_order.origin = 0
         
         # Reserve the next two IDs
         self.next_valid_id += 3
         
-        return [parent, take_profit, stop_loss]
+        return [parent, take_profit, stop_loss_order]
 
-    def place_bracket_order(self, contract, action, entry_price, quantity=20000,  # CHANGED: Added action parameter
-                          profit_pct=0.005, loss_pct=0.005):
+    def _calculate_quantity(self, security_type, entry_price, stop_loss, total_capital, risk_per_trade):
+        """Calculate position size based on security type and risk management"""
+        if entry_price is None or stop_loss is None:
+            raise ValueError("Entry price and stop loss are required for quantity calculation")
+            
+        # Different risk calculation based on security type
+        if security_type == "OPT":
+            # For options, risk is the premium difference per contract
+            # Options are typically 100 shares per contract, so multiply by 100
+            risk_per_unit = abs(entry_price - stop_loss) * 100
+        else:
+            # For stocks, forex, futures, etc. - risk is price difference per share/unit
+            risk_per_unit = abs(entry_price - stop_loss)
+        
+        if risk_per_unit == 0:
+            raise ValueError("Entry price and stop loss cannot be the same")
+            
+        risk_amount = total_capital * risk_per_trade
+        base_quantity = risk_amount / risk_per_unit
+        
+        # Different rounding and minimums based on security type
+        if security_type == "CASH":
+            # Forex typically trades in standard lots (100,000) or mini lots (10,000)
+            # Round to the nearest 10,000 units for reasonable position sizing
+            quantity = round(base_quantity / 10000) * 10000
+            quantity = max(quantity, 10000)  # Minimum 10,000 units
+        elif security_type == "STK":
+            # Stocks trade in whole shares
+            quantity = round(base_quantity)
+            quantity = max(quantity, 1)  # Minimum 1 share
+        elif security_type == "OPT":
+            # Options trade in whole contracts (each typically represents 100 shares)
+            quantity = round(base_quantity)
+            quantity = max(quantity, 1)  # Minimum 1 contract
+            print(f"Options position: {quantity} contracts (each = 100 shares)")
+        elif security_type == "FUT":
+            # Futures trade in whole contracts
+            quantity = round(base_quantity)
+            quantity = max(quantity, 1)  # Minimum 1 contract
+        else:
+            # Default to whole units for other security types
+            quantity = round(base_quantity)
+            quantity = max(quantity, 1)
+            
+        return quantity
+
+    def _calculate_profit_target(self, action, entry_price, stop_loss, risk_reward_ratio):
+        """Calculate profit target based on risk reward ratio"""
+        risk_amount = abs(entry_price - stop_loss)
+        if action == "BUY":
+            profit_target = entry_price + (risk_amount * risk_reward_ratio)
+        else:  # SELL
+            profit_target = entry_price - (risk_amount * risk_reward_ratio)
+        return profit_target
+
+    def _get_account_value(self):
+        """Get total account value - placeholder implementation"""
+        # TODO: Implement actual account value retrieval from IBKR
+        # This should query account summary for NetLiquidation value
+        print("⚠️  WARNING: Using placeholder account value of $100,000")
+        print("💡 Implement _get_account_value() to retrieve actual account value from IBKR")
+        return 100000.0  # Placeholder value
+
+    def place_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
+                          risk_per_trade, risk_reward_ratio):
         """
         Place a complete bracket order
         Returns: order IDs of the placed orders
@@ -180,13 +247,12 @@ class OrderExecutor(EClient, EWrapper):
             if not self.connected:
                 raise Exception("Not connected to IB. Call connect_to_ib() first.")
             
-            orders = self.create_native_bracket_order(action, entry_price, quantity,  # CHANGED: Pass action
-                                                    profit_pct, loss_pct)
+            orders = self.create_native_bracket_order(action, order_type, security_type, entry_price, stop_loss,
+                                                    risk_per_trade, risk_reward_ratio)
             
-            print(f"\nPlacing bracket order:")
-            print(f"Entry: {action} {quantity} @ {entry_price}")  # CHANGED: Use action variable
-            print(f"Take Profit: {orders[1].action} @ {orders[1].lmtPrice}")  # CHANGED: Show correct action
-            print(f"Stop Loss: {orders[2].action} @ {orders[2].auxPrice}")  # CHANGED: Show correct action
+            print(f"Entry: {action} {orders[0].totalQuantity} @ {entry_price}")
+            print(f"Take Profit: {orders[1].action} @ {orders[1].lmtPrice}")
+            print(f"Stop Loss: {orders[2].action} @ {orders[2].auxPrice}")
             
             # Place all orders
             order_ids = []

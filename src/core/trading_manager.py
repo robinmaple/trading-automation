@@ -175,7 +175,7 @@ class TradingManager:
         """
         try:
             print(f"🎯 EXECUTING: {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
-            print(f"   Quantity: {order.calculate_quantity(self.total_capital):.0f}")
+            # Quantity will be calculated by OrderExecutor based on risk management
             print(f"   Fill Probability: {fill_probability:.2%}")
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             
@@ -184,16 +184,17 @@ class TradingManager:
                 and self.order_executor.connected):
                 
                 contract = order.to_ib_contract()
-                quantity = order.calculate_quantity(self.total_capital)
                 
                 # Place real order through IBKR
                 order_ids = self.order_executor.place_bracket_order(
                     contract=contract,
-                    action=order.action.value,  # CHANGED: Pass the action
+                    action=order.action.value,
+                    order_type=order.order_type.value,
+                    security_type=order.security_type.value,
                     entry_price=order.entry_price,
-                    quantity=quantity,
-                    profit_pct=(order.calculate_profit_target() / order.entry_price - 1),
-                    loss_pct=(1 - order.stop_loss / order.entry_price)
+                    stop_loss=order.stop_loss,
+                    risk_per_trade=order.risk_per_trade,
+                    risk_reward_ratio=order.risk_reward_ratio
                 )
                 
                 if order_ids:
