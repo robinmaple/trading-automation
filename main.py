@@ -3,7 +3,7 @@ from trading_manager import TradingManager
 from abstract_data_feed import AbstractDataFeed
 from ibkr_data_feed import IBKRDataFeed
 from yfinance_historical_feed import YFinanceHistoricalFeed
-from mock_feed import MockFeed  # NEW IMPORT
+from mock_feed import MockFeed
 import time
 import sys
 import argparse
@@ -12,7 +12,7 @@ def main():
     try:
         # Parse command line arguments
         parser = argparse.ArgumentParser(description='Trading System')
-        parser.add_argument('--mode', choices=['live', 'historical', 'mock'], required=True,  # CHANGED: added 'mock'
+        parser.add_argument('--mode', choices=['live', 'historical', 'mock'], required=True,
                           help='Select data feed mode: live (IBKR), historical (yfinance), or mock (generated data)')
         
         # Add historical mode specific options
@@ -20,9 +20,12 @@ def main():
         parser.add_argument('--end-date', help='End date for historical data (YYYY-MM-DD)')
         parser.add_argument('--interval', choices=['1m', '5m', '15m', '30m', '1h', '1d'],
                           default='1m', help='Data interval for historical mode')
-        # NEW: Add mock mode specific option
-        parser.add_argument('--anchor-price', required='--mode mock' in sys.argv,  # Required only for mock mode
+        # Add mock mode specific options
+        parser.add_argument('--anchor-price', required='--mode mock' in sys.argv,
                           help='Starting price for mock data feed (e.g., "EUR=1.095")')
+        # NEW: Add trend argument for mock mode
+        parser.add_argument('--mock-trend', choices=['up', 'down', 'random'], default='random',
+                          help='Global price trend direction for mock data (default: random)')
         
         args = parser.parse_args()
         
@@ -42,7 +45,7 @@ def main():
                 print("Connection timeout")
                 return
                 
-        elif args.mode == 'historical':  # CHANGED: added elif
+        elif args.mode == 'historical':
             # Initialize historical/replay components with configurable parameters
             data_feed = YFinanceHistoricalFeed(
                 start_date=args.start_date,
@@ -52,9 +55,9 @@ def main():
             trading_mgr = TradingManager(data_feed, "plan.xlsx")
             data_feed.connect()  # Load historical data (replaces IB connection)
         
-        else:  # args.mode == 'mock'  # NEW: mock mode
-            # Initialize mock data feed with anchor price
-            data_feed = MockFeed(args.anchor_price)
+        else:  # args.mode == 'mock'
+            # Initialize mock data feed with anchor price and trend
+            data_feed = MockFeed(args.anchor_price, args.mock_trend)  # MODIFIED: Added trend argument
             trading_mgr = TradingManager(data_feed, "plan.xlsx")
             data_feed.connect()  # Initialize the mock data generator
         
@@ -70,7 +73,7 @@ def main():
             print("Continuing without planned orders...")
         
         # Start monitoring
-        trading_mgr.start_monitoring(interval_seconds=30)
+        trading_mgr.start_monitoring(interval_seconds=5)
         
         # Keep running
         try:

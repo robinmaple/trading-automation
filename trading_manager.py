@@ -42,7 +42,7 @@ class TradingManager:
         print("✅ Trading manager initialized")
         return True
 
-    def start_monitoring(self, interval_seconds: int = 30):
+    def start_monitoring(self, interval_seconds: int = 5):
         """Start monitoring with automatic initialization"""
         if not self._initialize():
             print("❌ Failed to initialize trading manager")
@@ -141,7 +141,6 @@ class TradingManager:
         
         for i, order in enumerate(self.planned_orders):
             # Get current market price for this symbol
-            # CHANGED: self.market_data -> self.data_feed
             price_data = self.data_feed.get_current_price(order.symbol)
             current_price = price_data['price'] if price_data and price_data.get('price') else None
             
@@ -157,9 +156,37 @@ class TradingManager:
                 print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
                       f"No market data yet | Entry: ${order.entry_price:8.4f}")
         
-        # For now, just monitor - execution will come in Phase 2
-        print("💡 Monitoring mode - No orders executed yet")
+        executable_orders = self._find_executable_orders()
+        if executable_orders:
+            print(f"🎯 Found {len(executable_orders)} executable orders")
+            for executable in executable_orders:
+                order = executable['order']
+                fill_prob = executable['fill_probability']
+                self._execute_order(order, fill_prob)        
+        else:
+            print("💡 No executable orders found at this time")
+        
         print("-" * 50)
+
+    def _execute_order(self, order, fill_probability):
+        """
+        Execute a single order (simulation for now)
+        """
+        try:
+            print(f"🎯 EXECUTING: {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
+            print(f"   Quantity: {order.calculate_quantity(self.total_capital):.0f}")
+            print(f"   Fill Probability: {fill_probability:.2%}")
+            print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
+            
+            # In a real implementation, you would call:
+            # self.order_executor.place_bracket_order(contract, entry_price, quantity, ...)
+            
+            # For now, simulate execution
+            print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
+            
+        except Exception as e:
+            print(f"❌ Failed to execute order for {order.symbol}: {e}")
+
 
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders"""
@@ -183,11 +210,14 @@ class TradingManager:
             # Check intelligent execution criteria
             should_execute, fill_prob = self.probability_engine.should_execute_order(order)
             
+            # NEW: Debug output
+            print(f"   Checking {order.action.value} {order.symbol}: should_execute={should_execute}, fill_prob={fill_prob:.3f}")
+
             if should_execute:
                 executable.append({
                     'order': order,
                     'fill_probability': fill_prob,
-                    'timestamp': datetime.now()
+                    'timestamp': datetime.datetime.now()
                 })
         
         return executable
