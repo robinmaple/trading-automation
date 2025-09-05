@@ -129,10 +129,26 @@ class YFinanceHistoricalFeed(AbstractDataFeed):
             return False
     
     def get_current_price(self, symbol: str) -> Optional[Dict[str, Any]]:
+        if symbol == 'EUR' and not self.data:  # If no yfinance data was loaded
+            if not hasattr(self, '_hardcoded_eur_price'):
+                self._hardcoded_eur_price = 1.16455  # Start at anchor price
+            else:
+                self._hardcoded_eur_price += 0.001  # Increment by 1 pip each call
+
+            price_data = {
+                'price': self._hardcoded_eur_price,
+                'timestamp': datetime.datetime.now(),
+                'data_type': 'HARDCODED',
+                'updates': 0,
+                'history': []
+            }
+            return price_data
+        
         """
         Get the next historical data point for the symbol.
         Advances the iterator each time called.
         """
+        
         with self.lock:
             if symbol not in self.iterators:
                 return None
