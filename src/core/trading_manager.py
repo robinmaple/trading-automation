@@ -13,8 +13,14 @@ from src.core.database import get_db_session
 from src.core.models import PlannedOrderDB, PositionStrategy
 # ==================== DATABASE INTEGRATION - END ====================
 
+# ==================== ORDER PERSISTENCE SERVICE - BEGIN ====================
+from src.core.order_persistence_service import OrderPersistenceService
+# ==================== ORDER PERSISTENCE SERVICE - END ====================
+
 class TradingManager:
-    def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", ibkr_client: Optional[IbkrClient] = None):
+    def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", 
+                 ibkr_client: Optional[IbkrClient] = None,
+                 order_persistence_service: Optional[OrderPersistenceService] = None):
         self.data_feed = data_feed
         self.excel_path = excel_path
         self.ibkr_client = ibkr_client
@@ -36,6 +42,11 @@ class TradingManager:
         # Initialize database session for order persistence
         self.db_session = get_db_session()
         # ==================== DATABASE INTEGRATION - END ====================
+
+        # ==================== ORDER PERSISTENCE SERVICE - BEGIN ====================
+        # Initialize order persistence service
+        self.order_persistence = order_persistence_service or OrderPersistenceService(self.db_session)
+        # ==================== ORDER PERSISTENCE SERVICE - END ====================
 
     def _initialize(self):
         """Internal initialization - called automatically when needed"""
@@ -60,6 +71,140 @@ class TradingManager:
             
         return True
     
+    def _execute_order(self, order, fill_probability):
+        """
+        Execute a single order - now with injected persistence service
+        """
+        try:
+            # Get actual account value from IBKR
+            if self.ibkr_client and self.ibkr_client.connected:
+                total_capital = self.ibkr_client.get_account_value()
+            else:
+                total_capital = self.total_capital
+            
+            # Live/Paper trading tracking - Begin
+            is_live_trading = self._get_trading_mode()
+            mode_str = "LIVE" if is_live_trading else "PAPER"
+            # Live/Paper trading tracking - End
+            
+            print(f"🎯 EXECUTING ({mode_str}): {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
+            print(f"   Account Value: ${total_capital:,.2f}")
+            print(f"   Fill Probability: {fill_probability:.2%}")
+            print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
+            
+            # Real order execution if executor is available and connected
+            if self.ibkr_client and self.ibkr_client.connected:
+                
+                contract = order.to_ib_contract()
+                
+                # Place real order through IBKR - now passing total_capital
+                order_ids = self.ibkr_client.place_bracket_order(
+                    contract,
+                    order.action.value,
+                    order.order_type.value,
+                    order.security_type.value,
+                    order.entry_price,
+                    order.stop_loss,
+                    order.risk_per_trade,
+                    order.risk_reward_ratio,
+                    total_capital  # ADDED: pass total_capital parameter
+                )
+                
+                if order_ids:
+                    print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
+                    
+                    # Update order status to LIVE in database using persistence service
+                    self.order_persistence.update_order_status(order, 'LIVE', order_ids)
+                    
+                    # Track the active order
+                    self.active_orders[order_ids[0]] = {
+                        'order': order,
+                        'order_ids': order_ids,
+                        'timestamp': datetime.datetime.now(),
+                        'status': 'Submitted',
+                        'is_live_trading': is_live_trading  # Store mode for later tracking
+                    }
+                else:
+                    print("❌ Failed to place real order through IBKR")
+                    
+            else:
+                # Fall back to simulation
+                print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
+                
+                # Mark as FILLED in database for simulation
+                self.order_persistence.update_order_status(order, 'FILLED')
+                
+                # Record simulated execution with trading mode
+                quantity = self._calculate_quantity(
+                    order.security_type.value,
+                    order.entry_price,
+                    order.stop_loss,
+                    total_capital,
+                    order.risk_per_trade
+                )
+                
+                self.order_persistence.record_order_execution(
+                    order, 
+                    order.entry_price, 
+                    quantity, 
+                    0.0, 
+                    'FILLED', 
+                    is_live_trading
+                )
+            
+        except Exception as e:
+            print(f"❌ Failed to execute order for {order.symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ==================== QUANTITY CALCULATION - BEGIN ====================
+    def _calculate_quantity(self, security_type, entry_price, stop_loss, total_capital, risk_per_trade):
+        """Calculate position size based on security type and risk management"""
+        if entry_price is None or stop_loss is None:
+            raise ValueError("Entry price and stop loss are required for quantity calculation")
+            
+        # Different risk calculation based on security type
+        if security_type == "OPT":
+            # For options, risk is the premium difference per contract
+            # Options are typically 100 shares per contract, so multiply by 100
+            risk_per_unit = abs(entry_price - stop_loss) * 100
+        else:
+            # For stocks, forex, futures, etc. - risk is price difference per share/unit
+            risk_per_unit = abs(entry_price - stop_loss)
+        
+        if risk_per_unit == 0:
+            raise ValueError("Entry price and stop loss cannot be the same")
+            
+        risk_amount = total_capital * risk_per_trade
+        base_quantity = risk_amount / risk_per_unit
+        
+        # Different rounding and minimums based on security type
+        if security_type == "CASH":
+            # Forex typically trades in standard lots (100,000) or mini lots (10,000)
+            # Round to the nearest 10,000 units for reasonable position sizing
+            quantity = round(base_quantity / 10000) * 10000
+            quantity = max(quantity, 10000)  # Minimum 10,000 units
+        elif security_type == "STK":
+            # Stocks trade in whole shares
+            quantity = round(base_quantity)
+            quantity = max(quantity, 1)  # Minimum 1 share
+        elif security_type == "OPT":
+            # Options trade in whole contracts (each typically represents 100 shares)
+            quantity = round(base_quantity)
+            quantity = max(quantity, 1)  # Minimum 1 contract
+            print(f"Options position: {quantity} contracts (each = 100 shares)")
+        elif security_type == "FUT":
+            # Futures trade in whole contracts
+            quantity = round(base_quantity)
+            quantity = max(quantity, 1)  # Minimum 1 contract
+        else:
+            # Default to whole units for other security types
+            quantity = round(base_quantity)
+            quantity = max(quantity, 1)
+            
+        return quantity
+    # ==================== QUANTITY CALCULATION - END ====================
+
     def start_monitoring(self, interval_seconds: int = 5):
         """Start monitoring with automatic initialization"""
         if not self._initialize():
@@ -178,71 +323,6 @@ class TradingManager:
         
         print("-" * 50)
 
-    def _execute_order(self, order, fill_probability):
-        """
-        Execute a single order - now with database persistence
-        """
-        try:
-            # Get actual account value from IBKR
-            if self.ibkr_client and self.ibkr_client.connected:
-                total_capital = self.ibkr_client.get_account_value()
-            else:
-                total_capital = self.total_capital
-            
-            print(f"🎯 EXECUTING: {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
-            print(f"   Account Value: ${total_capital:,.2f}")
-            print(f"   Fill Probability: {fill_probability:.2%}")
-            print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
-            
-            # Real order execution if executor is available and connected
-            if self.ibkr_client and self.ibkr_client.connected:
-                
-                contract = order.to_ib_contract()
-                
-                # Place real order through IBKR
-                order_ids = self.ibkr_client.place_bracket_order(
-                    contract,
-                    order.action.value,
-                    order.order_type.value,
-                    order.security_type.value,
-                    order.entry_price,
-                    order.stop_loss,
-                    order.risk_per_trade,
-                    order.risk_reward_ratio
-                )
-                
-                if order_ids:
-                    print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
-                    
-                    # ==================== DATABASE INTEGRATION - BEGIN ====================
-                    # Update order status to LIVE in database
-                    self._update_order_status(order, 'LIVE', order_ids)
-                    # ==================== DATABASE INTEGRATION - END ====================
-                    
-                    # Track the active order
-                    self.active_orders[order_ids[0]] = {
-                        'order': order,
-                        'order_ids': order_ids,
-                        'timestamp': datetime.datetime.now(),
-                        'status': 'Submitted'
-                    }
-                else:
-                    print("❌ Failed to place real order through IBKR")
-                    
-            else:
-                # Fall back to simulation
-                print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
-                
-                # ==================== DATABASE INTEGRATION - BEGIN ====================
-                # Mark as FILLED in database for simulation
-                self._update_order_status(order, 'FILLED')
-                # ==================== DATABASE INTEGRATION - END ====================
-            
-        except Exception as e:
-            print(f"❌ Failed to execute order for {order.symbol}: {e}")
-            import traceback
-            traceback.print_exc()
-            
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel and persist to database"""
         try:
@@ -345,6 +425,10 @@ class TradingManager:
         if not position_strategy:
             raise ValueError(f"Position strategy {planned_order.position_strategy.value} not found in database")
         
+        # Live/Paper trading tracking - Begin
+        is_live_trading = self._get_trading_mode()
+        # Live/Paper trading tracking - End
+
         return PlannedOrderDB(
             symbol=planned_order.symbol,
             security_type=planned_order.security_type.value,
@@ -355,7 +439,10 @@ class TradingManager:
             risk_per_trade=planned_order.risk_per_trade,
             risk_reward_ratio=planned_order.risk_reward_ratio,
             position_strategy_id=position_strategy.id,
-            status='PENDING'
+            status='PENDING',
+            # Live/Paper trading tracking - Begin
+            is_live_trading=is_live_trading
+            # Live/Paper trading tracking - End
         )
 
     def _update_order_status(self, order, status, order_ids=None):
@@ -378,4 +465,17 @@ class TradingManager:
         except Exception as e:
             self.db_session.rollback()
             print(f"❌ Failed to update order status: {e}")
+
+    def _get_trading_mode(self) -> bool:
+        """Determine if we're in live trading using existing IbkrClient detection"""
+        if self.ibkr_client and self.ibkr_client.connected:
+            # Use the existing paper account detection from IbkrClient
+            is_live_trading = not self.ibkr_client.is_paper_account
+            print(f"📊 Trading mode detected: {'LIVE' if is_live_trading else 'PAPER'} (Account: {self.ibkr_client.account_number})")
+            return is_live_trading
+        else:
+            # Simulation mode - treat as paper trading
+            print("📊 Trading mode: PAPER (Simulation/No IBKR connection)")
+            return False
+        
     # ==================== DATABASE INTEGRATION - END ====================

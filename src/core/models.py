@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 import datetime
@@ -55,6 +55,10 @@ class PlannedOrderDB(Base):
     planned_at = Column(DateTime, default=datetime.datetime.now)
     updated_at = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
     
+    # Live vs Paper trading tracking - Begin
+    is_live_trading = Column(Boolean, default=False, nullable=False)
+    # Live vs Paper trading tracking - End
+    
     # Relationships
     trading_setup = relationship("TradingSetup", back_populates="planned_orders")
     position_strategy = relationship("PositionStrategy", back_populates="planned_orders")
@@ -80,6 +84,10 @@ class ExecutedOrderDB(Base):
     status = Column(String(20), default='FILLED')  # FILLED, CANCELLED, REJECTED
     executed_at = Column(DateTime, default=datetime.datetime.now)
     closed_at = Column(DateTime, nullable=True)  # When position fully closed
+    
+    # Live vs Paper trading tracking - Begin
+    is_live_trading = Column(Boolean, default=False, nullable=False)
+    # Live vs Paper trading tracking - End
     
     # Relationship
     planned_order = relationship("PlannedOrderDB", back_populates="executed_orders")
