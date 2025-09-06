@@ -8,24 +8,34 @@ from src.core.planned_order import PlannedOrder, PlannedOrderManager
 from src.core.probability_engine import FillProbabilityEngine
 from src.core.abstract_data_feed import AbstractDataFeed
 
+# ==================== DATABASE INTEGRATION - BEGIN ====================
+from src.core.database import get_db_session
+from src.core.models import PlannedOrderDB, PositionStrategy
+# ==================== DATABASE INTEGRATION - END ====================
+
 class TradingManager:
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", ibkr_client: Optional[IbkrClient] = None):
         self.data_feed = data_feed
         self.excel_path = excel_path
-        self.ibkr_client = ibkr_client  # NEW: Store the IbkrClient facade
+        self.ibkr_client = ibkr_client
         self.planned_orders: List[PlannedOrder] = []
-        self.active_orders: Dict[int, Dict] = {}  # order_id -> order info
+        self.active_orders: Dict[int, Dict] = {}
         self.monitoring = False
         self.monitor_thread: Optional[threading.Thread] = None
-        self.total_capital = 100000  # Default, should be configurable
+        self.total_capital = 100000
         
         self.max_open_orders = 5
         self.execution_threshold = 0.7
 
         # Track market data subscriptions
         self.subscribed_symbols = set()
-        self.market_data_updates = {}  # symbol -> update count
-        self._initialized = False  # Track initialization state
+        self.market_data_updates = {}
+        self._initialized = False
+
+        # ==================== DATABASE INTEGRATION - BEGIN ====================
+        # Initialize database session for order persistence
+        self.db_session = get_db_session()
+        # ==================== DATABASE INTEGRATION - END ====================
 
     def _initialize(self):
         """Internal initialization - called automatically when needed"""
@@ -41,7 +51,6 @@ class TradingManager:
         self._initialized = True
         print("✅ Trading manager initialized")
         
-        # NEW: Check if we have an order executor for real trading
         if self.ibkr_client and self.ibkr_client.connected:
             print("✅ Real order execution enabled (IBKR connected)")
         elif self.ibkr_client:
@@ -171,14 +180,14 @@ class TradingManager:
 
     def _execute_order(self, order, fill_probability):
         """
-        Execute a single order - now supports both simulation and real execution
+        Execute a single order - now with database persistence
         """
         try:
-            # NEW: Get actual account value from IBKR
+            # Get actual account value from IBKR
             if self.ibkr_client and self.ibkr_client.connected:
                 total_capital = self.ibkr_client.get_account_value()
             else:
-                total_capital = self.total_capital  # Fallback to default
+                total_capital = self.total_capital
             
             print(f"🎯 EXECUTING: {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
             print(f"   Account Value: ${total_capital:,.2f}")
@@ -190,20 +199,26 @@ class TradingManager:
                 
                 contract = order.to_ib_contract()
                 
-                # Place real order through IBKR with new parameter signature
+                # Place real order through IBKR
                 order_ids = self.ibkr_client.place_bracket_order(
                     contract,
                     order.action.value,
                     order.order_type.value,
-                    order.security_type.value,  # NEW: security_type
+                    order.security_type.value,
                     order.entry_price,
                     order.stop_loss,
-                    order.risk_per_trade,       # NEW: risk_per_trade
-                    order.risk_reward_ratio     # NEW: risk_reward_ratio
+                    order.risk_per_trade,
+                    order.risk_reward_ratio
                 )
                 
                 if order_ids:
                     print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
+                    
+                    # ==================== DATABASE INTEGRATION - BEGIN ====================
+                    # Update order status to LIVE in database
+                    self._update_order_status(order, 'LIVE', order_ids)
+                    # ==================== DATABASE INTEGRATION - END ====================
+                    
                     # Track the active order
                     self.active_orders[order_ids[0]] = {
                         'order': order,
@@ -217,6 +232,11 @@ class TradingManager:
             else:
                 # Fall back to simulation
                 print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
+                
+                # ==================== DATABASE INTEGRATION - BEGIN ====================
+                # Mark as FILLED in database for simulation
+                self._update_order_status(order, 'FILLED')
+                # ==================== DATABASE INTEGRATION - END ====================
             
         except Exception as e:
             print(f"❌ Failed to execute order for {order.symbol}: {e}")
@@ -224,12 +244,32 @@ class TradingManager:
             traceback.print_exc()
             
     def load_planned_orders(self) -> List[PlannedOrder]:
-        """Load and validate planned orders"""
+        """Load and validate planned orders from Excel and persist to database"""
         try:
-            self.planned_orders = PlannedOrderManager.from_excel(self.excel_path)
-            print(f"Loaded {len(self.planned_orders)} planned orders")
-            return self.planned_orders
+            # Load from Excel first
+            excel_orders = PlannedOrderManager.from_excel(self.excel_path)
+            print(f"Loaded {len(excel_orders)} planned orders from Excel")
+            
+            # ==================== DATABASE INTEGRATION - BEGIN ====================
+            # Persist all orders to database
+            db_orders = []
+            for excel_order in excel_orders:
+                db_order = self._convert_to_db_model(excel_order)
+                self.db_session.add(db_order)
+                db_orders.append(db_order)
+            
+            self.db_session.commit()
+            print(f"✅ Persisted {len(db_orders)} orders to database")
+            # ==================== DATABASE INTEGRATION - END ====================
+            
+            # Keep in memory for processing
+            self.planned_orders = excel_orders
+            return excel_orders
+            
         except Exception as e:
+            # ==================== DATABASE INTEGRATION - BEGIN ====================
+            self.db_session.rollback()
+            # ==================== DATABASE INTEGRATION - END ====================
             print(f"Error loading planned orders: {e}")
             return []
 
@@ -266,8 +306,7 @@ class TradingManager:
         if order.entry_price is None:
             return False
             
-        # NEW: Check if this specific order is already active
-        # Create a unique key based on order parameters to prevent duplicates
+        # Check if this specific order is already active
         order_key = f"{order.symbol}_{order.action.value}_{order.entry_price}_{order.stop_loss}"
         
         for active_order in self.active_orders.values():
@@ -280,8 +319,63 @@ class TradingManager:
         return True
     
     def stop_monitoring(self):
-        """Stop the monitoring loop"""
+        """Stop the monitoring loop and clean up database connection"""
         self.monitoring = False
         if self.monitor_thread:
             self.monitor_thread.join(timeout=5)
+        
+        # ==================== DATABASE INTEGRATION - BEGIN ====================
+        # Close database session on shutdown
+        if self.db_session:
+            self.db_session.close()
+        # ==================== DATABASE INTEGRATION - END ====================
+        
         print("Monitoring stopped")
+
+    # ==================== DATABASE INTEGRATION - BEGIN ====================
+    # New methods for database operations
+    
+    def _convert_to_db_model(self, planned_order: PlannedOrder) -> PlannedOrderDB:
+        """Convert PlannedOrder to PlannedOrderDB for database persistence"""
+        # Find position strategy in database
+        position_strategy = self.db_session.query(PositionStrategy).filter_by(
+            name=planned_order.position_strategy.value
+        ).first()
+        
+        if not position_strategy:
+            raise ValueError(f"Position strategy {planned_order.position_strategy.value} not found in database")
+        
+        return PlannedOrderDB(
+            symbol=planned_order.symbol,
+            security_type=planned_order.security_type.value,
+            action=planned_order.action.value,
+            order_type=planned_order.order_type.value,
+            entry_price=planned_order.entry_price,
+            stop_loss=planned_order.stop_loss,
+            risk_per_trade=planned_order.risk_per_trade,
+            risk_reward_ratio=planned_order.risk_reward_ratio,
+            position_strategy_id=position_strategy.id,
+            status='PENDING'
+        )
+
+    def _update_order_status(self, order, status, order_ids=None):
+        """Update order status in database"""
+        try:
+            # Find the order in database
+            db_order = self.db_session.query(PlannedOrderDB).filter_by(
+                symbol=order.symbol,
+                entry_price=order.entry_price,
+                stop_loss=order.stop_loss
+            ).first()
+            
+            if db_order:
+                db_order.status = status
+                if order_ids:
+                    db_order.ibkr_order_ids = str(order_ids)
+                self.db_session.commit()
+                print(f"✅ Updated order status to {status} in database")
+                
+        except Exception as e:
+            self.db_session.rollback()
+            print(f"❌ Failed to update order status: {e}")
+    # ==================== DATABASE INTEGRATION - END ====================

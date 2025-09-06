@@ -1,6 +1,18 @@
 from decimal import Decimal
 import time
 import datetime
+from typing import Optional, TYPE_CHECKING
+
+# Database Integration - Begin
+from sqlalchemy.orm import Session
+from src.core.database import get_db_session
+from src.core.models import ExecutedOrderDB, PlannedOrderDB
+# Database Integration - End
+
+# Type checking import - Begin
+if TYPE_CHECKING:
+    from src.core.planned_order import PlannedOrder
+# Type checking import - End
 
 class OrderExecutor:
     """
@@ -8,8 +20,11 @@ class OrderExecutor:
     Decoupled from IBKR API communication.
     """
     
-    def __init__(self):
-        pass  # No state needed for pure business logic
+    def __init__(self, db_session: Optional[Session] = None):
+        # Database Integration - Begin
+        # Accept optional session, fall back to global session
+        self.db_session = db_session or get_db_session()
+        # Database Integration - End
     
     def create_forex_contract(self, symbol='EUR', currency='USD'):
         """Create a Forex contract"""
@@ -135,3 +150,61 @@ class OrderExecutor:
         else:  # SELL
             profit_target = entry_price - (risk_amount * risk_reward_ratio)
         return profit_target
+
+    # Database Integration - Begin
+    def record_order_execution(self, planned_order: 'PlannedOrder', filled_price: float, 
+                             filled_quantity: float, commission: float = 0.0, 
+                             status: str = 'FILLED') -> Optional[int]:
+        """
+        Record an order execution in the database.
+        Returns the ID of the created ExecutedOrderDB record, or None on failure.
+        """
+        try:
+            # Find the corresponding planned order in database
+            planned_order_id = self._find_planned_order_id(planned_order)
+            
+            if planned_order_id is None:
+                print(f"❌ Cannot record execution: Planned order not found in database for {planned_order.symbol}")
+                return None
+            
+            # Create executed order record
+            executed_order = ExecutedOrderDB(
+                planned_order_id=planned_order_id,
+                filled_price=filled_price,
+                filled_quantity=filled_quantity,
+                commission=commission,
+                status=status,
+                executed_at=datetime.datetime.now()
+            )
+            
+            # Add to database and commit
+            self.db_session.add(executed_order)
+            self.db_session.commit()
+            
+            print(f"✅ Execution recorded for {planned_order.symbol}: "
+                  f"{filled_quantity} @ {filled_price}, Status: {status}")
+            
+            return executed_order.id
+            
+        except Exception as e:
+            self.db_session.rollback()
+            print(f"❌ Failed to record order execution: {e}")
+            return None
+
+    def _find_planned_order_id(self, planned_order: 'PlannedOrder') -> Optional[int]:
+        """Find the database ID for a matching planned order"""
+        try:
+            db_order = self.db_session.query(PlannedOrderDB).filter_by(
+                symbol=planned_order.symbol,
+                entry_price=planned_order.entry_price,
+                stop_loss=planned_order.stop_loss,
+                action=planned_order.action.value,
+                order_type=planned_order.order_type.value
+            ).first()
+            
+            return db_order.id if db_order else None
+            
+        except Exception as e:
+            print(f"❌ Error finding planned order in database: {e}")
+            return None
+    # Database Integration - End
