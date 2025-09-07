@@ -145,43 +145,6 @@ class TestTradingManager:
         # record_order_execution should NOT be called for live orders (handled by IBKR callbacks)
         mock_persistence.record_order_execution.assert_not_called()
     
-    @patch('src.core.trading_manager.get_db_session')
-    def test_load_planned_orders_persists_to_database(self, mock_get_session, mock_data_feed, db_session):
-        """Test that loading planned orders persists them to database"""
-        mock_get_session.return_value = db_session
-        
-        tm = TradingManager(mock_data_feed, "test.xlsx")
-        
-        with patch('src.core.trading_manager.PlannedOrderManager.from_excel') as mock_loader:
-            # Create a mock planned order with proper attributes
-            mock_order = Mock()
-            mock_order.symbol = "EUR"
-            mock_order.security_type.value = "CASH"
-            mock_order.action.value = "BUY"
-            mock_order.order_type.value = "LMT"
-            mock_order.entry_price = 1.1000
-            mock_order.stop_loss = 1.0950
-            mock_order.risk_per_trade = 0.001
-            mock_order.risk_reward_ratio = 2.0
-            mock_order.priority = 3
-            mock_order.position_strategy.value = "DAY"
-            
-            mock_loader.return_value = [mock_order]
-            
-            # Load and persist orders
-            orders = tm.load_planned_orders()
-            
-            assert len(orders) == 1
-            mock_loader.assert_called_once_with("test.xlsx")
-            
-            # Verify orders were persisted to database
-            db_orders = db_session.query(PlannedOrderDB).all()
-            assert len(db_orders) == 1
-            assert db_orders[0].symbol == "EUR"
-            assert db_orders[0].status == "PENDING"
-
-    # ... (keep other existing tests but ensure they mock get_db_session) ...    
-    
     def test_record_order_execution_success(self, db_session, sample_planned_order_db):
         """Test successful order execution recording"""
         service = OrderPersistenceService(db_session=db_session)
@@ -329,7 +292,7 @@ class TestTradingManager:
         tm.db_session = mock_session
 
         with patch('src.core.trading_manager.PlannedOrderManager.from_excel') as mock_loader:
-            # Create a proper mock with all required attributes
+            # Create a proper mock with all required attributes including mock config
             mock_order = Mock()
             mock_order.symbol = "EUR"
             mock_order.security_type.value = "CASH"
@@ -340,6 +303,10 @@ class TestTradingManager:
             mock_order.risk_per_trade = 0.001
             mock_order.risk_reward_ratio = 2.0
             mock_order.position_strategy.value = "DAY"
+            mock_order.priority = 3
+            mock_order.mock_anchor_price = 1.1000
+            mock_order.mock_trend = "up"
+            mock_order.mock_volatility = 0.0005
             
             mock_loader.return_value = [mock_order]
             
@@ -383,7 +350,6 @@ class TestTradingManager:
         tm = TradingManager(mock_data_feed, "test.xlsx")
         
         # Fill active orders to max capacity with ActiveOrder objects
-        # Phase 2 - Test Update - Begin
         for i in range(5):
             tm.active_orders[i] = ActiveOrder(
                 planned_order=Mock(spec=PlannedOrder),
@@ -395,7 +361,6 @@ class TestTradingManager:
                 is_live_trading=False,
                 fill_probability=0.8
             )
-        # Phase 2 - Test Update - End
         
         assert tm._can_place_order(sample_planned_order) == False
     
@@ -409,7 +374,6 @@ class TestTradingManager:
         tm = TradingManager(mock_data_feed, "test.xlsx")
         
         # Add the same order to active orders as ActiveOrder object
-        # Phase 2 - Test Update - Begin
         tm.active_orders[1] = ActiveOrder(
             planned_order=sample_planned_order,
             order_ids=[1],
@@ -420,7 +384,6 @@ class TestTradingManager:
             is_live_trading=False,
             fill_probability=0.8
         )
-        # Phase 2 - Test Update - End
         
         # Should prevent duplicate
         assert tm._can_place_order(sample_planned_order) == False    
@@ -479,7 +442,7 @@ class TestTradingManager:
         
         tm = TradingManager(mock_data_feed, "test.xlsx")
         
-        # Create a sample planned order
+        # Create a REAL planned order, not a mock, to avoid the issue
         from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
         planned_order = PlannedOrder(
             security_type=SecurityType.CASH,
@@ -492,18 +455,67 @@ class TestTradingManager:
             entry_price=1.1000,
             stop_loss=1.0950,
             risk_reward_ratio=2.0,
-            position_strategy=PositionStrategy.DAY
+            position_strategy=PositionStrategy.DAY,
+            priority=4
         )
         
         # Convert to database model
         db_model = tm._convert_to_db_model(planned_order)
         
-        # Verify conversion
+        # Verify conversion - only fields that exist in PlannedOrderDB
         assert db_model.symbol == "EUR"
         assert db_model.security_type == "CASH"
         assert db_model.action == "BUY"
         assert db_model.entry_price == 1.1000
+        assert db_model.priority == 4
         assert db_model.position_strategy_id == position_strategies["DAY"].id
+        
+        # Verify mock data fields are NOT in the database model
+        assert not hasattr(db_model, 'mock_anchor_price')
+        assert not hasattr(db_model, 'mock_trend')
+        assert not hasattr(db_model, 'mock_volatility')
+        
+    # Phase 2 - Remove Mock Config from DB Tests - 2025-09-07 13:26 - Begin
+    @patch('src.core.trading_manager.get_db_session')
+    def test_load_planned_orders_persists_to_database(self, mock_get_session, mock_data_feed, db_session):
+        """Test that loading planned orders persists them to database"""
+        mock_get_session.return_value = db_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        with patch('src.core.trading_manager.PlannedOrderManager.from_excel') as mock_loader:
+            # Create a mock planned order with proper attributes
+            mock_order = Mock()
+            mock_order.symbol = "EUR"
+            mock_order.security_type.value = "CASH"
+            mock_order.action.value = "BUY"
+            mock_order.order_type.value = "LMT"
+            mock_order.entry_price = 1.1000
+            mock_order.stop_loss = 1.0950
+            mock_order.risk_per_trade = 0.001
+            mock_order.risk_reward_ratio = 2.0
+            mock_order.priority = 3
+            mock_order.position_strategy.value = "DAY"
+            # Mock configuration is NOT persisted to database
+            mock_order.mock_anchor_price = 1.1000
+            mock_order.mock_trend = "up"
+            mock_order.mock_volatility = 0.0005
+            
+            mock_loader.return_value = [mock_order]
+            
+            # Load and persist orders
+            orders = tm.load_planned_orders()
+            
+            assert len(orders) == 1
+            mock_loader.assert_called_once_with("test.xlsx")
+            
+            # Verify orders were persisted to database (only core trading data)
+            db_orders = db_session.query(PlannedOrderDB).all()
+            assert len(db_orders) == 1
+            assert db_orders[0].symbol == "EUR"
+            assert db_orders[0].status == "PENDING"
+            # Mock configuration should NOT be in database
+            # Phase 2 - Remove Mock Config from DB Tests - 2025-09-07 13:26 - End
 
     @patch('src.core.trading_manager.get_db_session')
     def test_update_order_status(self, mock_get_session, mock_data_feed, db_session):
@@ -527,7 +539,9 @@ class TestTradingManager:
             risk_per_trade=0.001,
             risk_reward_ratio=2.0,
             position_strategy_id=position_strategy.id,
-            status="PENDING"
+            status="PENDING",
+            priority=3
+            # Mock configuration is NOT persisted to database
         )
         db_session.add(test_order)
         db_session.commit()
@@ -544,7 +558,7 @@ class TestTradingManager:
         # Verify update
         updated_order = db_session.query(PlannedOrderDB).filter_by(symbol="EUR").first()
         assert updated_order.status == "LIVE"
-
+        
     @patch('src.core.trading_manager.get_db_session')
     def test_get_trading_mode_live(self, mock_get_session, mock_data_feed, mock_ibkr_client):
         """Test trading mode detection for live trading"""
@@ -946,8 +960,6 @@ class TestTradingManager:
         
         active_order.status = 'CANCELLED'
         assert active_order.is_working() == False
-
-
 
     @patch('src.core.trading_manager.get_db_session')
     def test_cancel_active_order_failure(self, mock_get_session, mock_data_feed, mock_ibkr_client):

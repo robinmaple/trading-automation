@@ -69,6 +69,11 @@ class PlannedOrder:
     priority: int = 3  # Default to medium priority (scale 1-5)
     # Phase 1 - Priority Field - End
     
+    # NEW: Mock data configuration fields
+    mock_anchor_price: Optional[float] = None
+    mock_trend: str = 'random'  # 'up', 'down', 'random'
+    mock_volatility: float = 0.001  # Base price movement per tick
+
     # Calculated fields (no need to store in Excel)
     _quantity: Optional[float] = None
     _profit_target: Optional[float] = None
@@ -85,7 +90,11 @@ class PlannedOrder:
         if not 1 <= self.priority <= 5:
             raise ValueError("Priority must be between 1 and 5")
         # Phase 1 - Priority Validation - End
-        
+
+        # NEW: Mock trend validation
+        if self.mock_trend not in ['up', 'down', 'random']:
+            raise ValueError("Mock trend must be 'up', 'down', or 'random'")
+                
         if self.entry_price is not None and self.stop_loss is not None:
             if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
                (self.action == Action.SELL and self.stop_loss <= self.entry_price):
@@ -229,7 +238,21 @@ class PlannedOrderManager:
                     priority = int(row.get('Priority', 3))  # Default to 3 if column missing
                     print(f"Priority: {priority}")
                     # Phase 1 - Priority Parsing - End    
+
+                    # NEW: Mock configuration parsing
+                    mock_anchor_price = None
+                    if pd.notna(row.get('Mock Anchor Price')):
+                        mock_anchor_price = float(row['Mock Anchor Price'])
+                    print(f"Mock Anchor Price: {mock_anchor_price}")
                     
+                    mock_trend = str(row.get('Mock Trend', 'random')).strip().lower()
+                    if mock_trend not in ['up', 'down', 'random']:
+                        mock_trend = 'random'  # Default to random if invalid
+                    print(f"Mock Trend: {mock_trend}")
+                    
+                    mock_volatility = float(row.get('Mock Volatility', 0.001))
+                    print(f"Mock Volatility: {mock_volatility}")
+
                     # Create the order
                     order = PlannedOrder(
                         security_type=security_type,
@@ -244,8 +267,12 @@ class PlannedOrderManager:
                         risk_reward_ratio=risk_reward_ratio,
                         position_strategy=position_strategy,
                         # Phase 1 - Priority Assignment - Begin
-                        priority=priority
+                        priority=priority,
                         # Phase 1 - Priority Assignment - End
+                        # NEW: Mock configuration assignment
+                        mock_anchor_price=mock_anchor_price,
+                        mock_trend=mock_trend,
+                        mock_volatility=mock_volatility
                     )
                     
                     orders.append(order)

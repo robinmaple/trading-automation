@@ -12,36 +12,29 @@ class MockFeed(AbstractDataFeed):
     Useful for testing order execution logic.
     """
     
-    def __init__(self, anchor_price_str: str, trend_direction: str = 'random'):
+    # Phase 2 - Excel-based Mock Configuration - 2025-09-07 12:00 - Begin
+    def __init__(self, planned_orders: list = None):
         """
-        Initialize the mock data feed.
+        Initialize the mock data feed with configuration from planned orders.
         
         Args:
-            anchor_price_str: String in format "SYM1=PRICE1,SYM2=PRICE2" 
-                            (e.g., "EUR=1.095,USD=1.2")
-            trend_direction: Global bias for price movement ['up', 'down', 'random']
+            planned_orders: List of PlannedOrder objects with mock configuration
         """
         self._connected = False
-        self.anchor_prices: Dict[str, float] = {}
         self.current_prices: Dict[str, float] = {}
-        self.price_increment = 0.001  # Fixed base increment per call (1 pip)
+        self.mock_config: Dict[str, Dict[str, Any]] = {}  # symbol -> config
         
-        # NEW: Configure price movement based on trend direction
-        self.trend_direction = trend_direction.lower()
-        if self.trend_direction == 'up':
-            self.price_delta = self.price_increment  # Always move up
-        elif self.trend_direction == 'down':
-            self.price_delta = -self.price_increment  # Always move down
-        else:  # 'random' or any other value
-            self.price_delta = self.price_increment  # Will be randomized in get_current_price
-        
-        # Parse the anchor price string
-        if anchor_price_str:
-            for pair in anchor_price_str.split(','):
-                if '=' in pair:
-                    symbol, price_str = pair.split('=')
-                    self.anchor_prices[symbol.strip()] = float(price_str.strip())
-                    self.current_prices[symbol.strip()] = float(price_str.strip())
+        if planned_orders:
+            for order in planned_orders:
+                if order.mock_anchor_price is not None:
+                    symbol = order.symbol
+                    self.current_prices[symbol] = order.mock_anchor_price
+                    self.mock_config[symbol] = {
+                        'trend': order.mock_trend,
+                        'volatility': order.mock_volatility,
+                        'anchor_price': order.mock_anchor_price
+                    }
+    # Phase 2 - Excel-based Mock Configuration - 2025-09-07 12:00 - End
         
     def connect(self) -> bool:
         """
@@ -49,10 +42,11 @@ class MockFeed(AbstractDataFeed):
         """
         try:
             self._connected = True
-            print(f"Mock data feed initialized with symbols: {list(self.anchor_prices.keys())}")
-            print(f"Global trend direction: {self.trend_direction.upper()}")  # NEW: Print trend info
-            for symbol, price in self.anchor_prices.items():
-                print(f"  {symbol}: {price}")
+            # Phase 2 - Updated Connection Message - 2025-09-07 12:00 - Begin
+            print(f"Mock data feed initialized with {len(self.current_prices)} symbols:")
+            for symbol, config in self.mock_config.items():
+                print(f"  {symbol}: {config['anchor_price']} ({config['trend']}, vol: {config['volatility']})")
+            # Phase 2 - Updated Connection Message - 2025-09-07 12:00 - End            
             return True
         except Exception as e:
             print(f"Failed to initialize mock data feed: {e}")
@@ -65,31 +59,39 @@ class MockFeed(AbstractDataFeed):
         """
         Subscribe to a symbol. For mock feed, this just verifies we have an anchor price.
         """
-        if symbol in self.anchor_prices:
+        # Phase 2 - Updated Subscription Check - 2025-09-07 12:00 - Begin
+        if symbol in self.mock_config:
             print(f"✅ Mock data subscribed: {symbol}")
             return True
         else:
-            print(f"❌ No anchor price configured for symbol: {symbol}")
+            print(f"❌ No mock configuration for symbol: {symbol}")
             return False
-    
+        # Phase 2 - Updated Subscription Check - 2025-09-07 12:00 - End
+            
     def get_current_price(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
         Get the next mock data point for the symbol.
         Applies trend-based increment to the price each call.
         """
-        if symbol not in self.anchor_prices:
+        # Phase 2 - Per-Symbol Configuration - 2025-09-07 12:00 - Begin
+        if symbol not in self.mock_config:
             return None
             
-        # NEW: Apply trend-based price movement
-        if self.trend_direction == 'random':
-            # Random walk: 50/50 chance of up/down movement
-            current_delta = self.price_increment * random.choice([1, -1])
-        else:
-            # Deterministic trend: always use the configured delta
-            current_delta = self.price_delta
+        config = self.mock_config.get(symbol, {})
+        trend = config.get('trend', 'random')
+        volatility = config.get('volatility', 0.001)
+        
+        # Calculate price movement based on per-symbol trend
+        if trend == 'random':
+            current_delta = volatility * random.choice([1, -1])
+        elif trend == 'up':
+            current_delta = volatility
+        else:  # 'down'
+            current_delta = -volatility
             
         self.current_prices[symbol] += current_delta
-        
+        # Phase 2 - Per-Symbol Configuration - 2025-09-07 12:00 - End
+                
         # Create the return data structure
         price_data = {
             'price': self.current_prices[symbol],
