@@ -3,6 +3,8 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import pandas as pd
+from typing import List, Optional
+import datetime
 
 class SecurityType(Enum):
     STK = "STK"
@@ -63,6 +65,9 @@ class PlannedOrder:
     stop_loss: Optional[float] = None
     risk_reward_ratio: float = 2.0
     position_strategy: PositionStrategy = PositionStrategy.CORE
+    # Phase 1 - Priority Field - Begin
+    priority: int = 3  # Default to medium priority (scale 1-5)
+    # Phase 1 - Priority Field - End
     
     # Calculated fields (no need to store in Excel)
     _quantity: Optional[float] = None
@@ -75,6 +80,12 @@ class PlannedOrder:
         """Validate the order parameters"""
         if self.risk_per_trade > 0.02:  # Max 2% risk
             raise ValueError("Risk per trade cannot exceed 2%")
+        
+        # Phase 1 - Priority Validation - Begin
+        if not 1 <= self.priority <= 5:
+            raise ValueError("Priority must be between 1 and 5")
+        # Phase 1 - Priority Validation - End
+        
         if self.entry_price is not None and self.stop_loss is not None:
             if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
                (self.action == Action.SELL and self.stop_loss <= self.entry_price):
@@ -145,6 +156,7 @@ class PlannedOrder:
         return order
 
 class PlannedOrderManager:
+
     @staticmethod
     def from_excel(file_path: str) -> list[PlannedOrder]:
         """Load planned orders from Excel template with detailed debugging"""
@@ -212,6 +224,11 @@ class PlannedOrderManager:
                     
                     risk_reward_ratio = float(row.get('Risk Reward Ratio', 2.0))
                     print(f"Risk Reward Ratio: {risk_reward_ratio}")
+                                    
+                    # Phase 1 - Priority Parsing - Begin
+                    priority = int(row.get('Priority', 3))  # Default to 3 if column missing
+                    print(f"Priority: {priority}")
+                    # Phase 1 - Priority Parsing - End    
                     
                     # Create the order
                     order = PlannedOrder(
@@ -225,7 +242,10 @@ class PlannedOrderManager:
                         entry_price=entry_price,
                         stop_loss=stop_loss,
                         risk_reward_ratio=risk_reward_ratio,
-                        position_strategy=position_strategy
+                        position_strategy=position_strategy,
+                        # Phase 1 - Priority Assignment - Begin
+                        priority=priority
+                        # Phase 1 - Priority Assignment - End
                     )
                     
                     orders.append(order)
@@ -260,3 +280,30 @@ class PlannedOrderManager:
         print("Order Type options:", [e.name for e in OrderType])
         print("Position Management Strategy options:", [e.name for e in PositionStrategy])
         print("=== END VALID VALUES ===\n")
+
+# Add this after the PlannedOrderManager class definition
+# Phase 2 - ActiveOrder Dataclass - Begin
+@dataclass
+class ActiveOrder:
+    """Structured representation of an order that has been submitted to IBKR"""
+    planned_order: PlannedOrder
+    order_ids: List[int]
+    db_id: int
+    status: str  # 'SUBMITTED', 'WORKING', 'FILLED', 'CANCELLING'
+    capital_commitment: float
+    timestamp: datetime.datetime
+    is_live_trading: bool
+    fill_probability: float  # Probability at time of submission
+    
+    def is_working(self) -> bool:
+        """Check if the order is still active (not filled or cancelled)"""
+        return self.status in ['SUBMITTED', 'WORKING']
+    
+    def age_seconds(self) -> float:
+        """Return how long this order has been active in seconds"""
+        return (datetime.datetime.now() - self.timestamp).total_seconds()
+    
+    def __str__(self) -> str:
+        return (f"ActiveOrder({self.planned_order.symbol}, status={self.status}, "
+                f"capital=${self.capital_commitment:,.2f}, age={self.age_seconds():.1f}s)")
+# Phase 2 - ActiveOrder Dataclass - End

@@ -1,7 +1,8 @@
+import datetime
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from src.core.trading_manager import TradingManager
-from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
+from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy, ActiveOrder
 from src.core.probability_engine import FillProbabilityEngine
 from src.core.models import ExecutedOrderDB, PlannedOrderDB
 from src.core.order_persistence_service import OrderPersistenceService
@@ -161,6 +162,7 @@ class TestTradingManager:
             mock_order.stop_loss = 1.0950
             mock_order.risk_per_trade = 0.001
             mock_order.risk_reward_ratio = 2.0
+            mock_order.priority = 3
             mock_order.position_strategy.value = "DAY"
             
             mock_loader.return_value = [mock_order]
@@ -379,9 +381,20 @@ class TestTradingManager:
         
         tm = TradingManager(mock_data_feed, "test.xlsx")
         
-        # Fill active orders to max capacity
+        # Fill active orders to max capacity with ActiveOrder objects
+        # Phase 2 - Test Update - Begin
         for i in range(5):
-            tm.active_orders[i] = {'order': Mock(spec=PlannedOrder)}
+            tm.active_orders[i] = ActiveOrder(
+                planned_order=Mock(spec=PlannedOrder),
+                order_ids=[i],
+                db_id=i,
+                status='SUBMITTED',
+                capital_commitment=1000.0,
+                timestamp=datetime.datetime.now(),
+                is_live_trading=False,
+                fill_probability=0.8
+            )
+        # Phase 2 - Test Update - End
         
         assert tm._can_place_order(sample_planned_order) == False
     
@@ -394,11 +407,22 @@ class TestTradingManager:
         
         tm = TradingManager(mock_data_feed, "test.xlsx")
         
-        # Add the same order to active orders
-        tm.active_orders[1] = {'order': sample_planned_order}
+        # Add the same order to active orders as ActiveOrder object
+        # Phase 2 - Test Update - Begin
+        tm.active_orders[1] = ActiveOrder(
+            planned_order=sample_planned_order,
+            order_ids=[1],
+            db_id=1,
+            status='SUBMITTED',
+            capital_commitment=1000.0,
+            timestamp=datetime.datetime.now(),
+            is_live_trading=False,
+            fill_probability=0.8
+        )
+        # Phase 2 - Test Update - End
         
         # Should prevent duplicate
-        assert tm._can_place_order(sample_planned_order) == False
+        assert tm._can_place_order(sample_planned_order) == False    
     
     @patch('src.core.trading_manager.get_db_session')
     def test_find_executable_orders(self, mock_get_session, mock_data_feed, sample_planned_order):

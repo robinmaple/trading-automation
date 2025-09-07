@@ -4,7 +4,7 @@ import threading
 import time
 import pandas as pd
 from src.core.ibkr_client import IbkrClient
-from src.core.planned_order import PlannedOrder, PlannedOrderManager
+from src.core.planned_order import PlannedOrder, PlannedOrderManager, ActiveOrder
 from src.core.probability_engine import FillProbabilityEngine
 from src.core.abstract_data_feed import AbstractDataFeed
 
@@ -25,6 +25,9 @@ class TradingManager:
         self.excel_path = excel_path
         self.ibkr_client = ibkr_client
         self.planned_orders: List[PlannedOrder] = []
+        # Phase 2 - ActiveOrder Tracking - Begin
+        self.active_orders: Dict[int, ActiveOrder] = {}  # Changed: Now uses ActiveOrder class
+        # Phase 2 - ActiveOrder Tracking - End
         self.active_orders: Dict[int, Dict] = {}
         self.monitoring = False
         self.monitor_thread: Optional[threading.Thread] = None
@@ -92,6 +95,12 @@ class TradingManager:
             print(f"   Fill Probability: {fill_probability:.2%}")
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             
+            # Calculate capital commitment for this order
+            # Phase 2 - Capital Commitment Calculation - Begin
+            capital_commitment = self._calculate_capital_commitment(order, total_capital)
+            print(f"   Capital Commitment: ${capital_commitment:,.2f}")
+            # Phase 2 - Capital Commitment Calculation - End
+            
             # Real order execution if executor is available and connected
             if self.ibkr_client and self.ibkr_client.connected:
                 
@@ -116,14 +125,30 @@ class TradingManager:
                     # Update order status to LIVE in database using persistence service
                     self.order_persistence.update_order_status(order, 'LIVE', order_ids)
                     
-                    # Track the active order
-                    self.active_orders[order_ids[0]] = {
-                        'order': order,
-                        'order_ids': order_ids,
-                        'timestamp': datetime.datetime.now(),
-                        'status': 'Submitted',
-                        'is_live_trading': is_live_trading  # Store mode for later tracking
-                    }
+                    # Find the database ID for this order
+                    # Phase 2 - Database ID Lookup - Begin
+                    db_order_id = self._find_planned_order_db_id(order)
+                    if not db_order_id:
+                        print(f"❌ Could not find database ID for order {order.symbol}")
+                        return
+                    # Phase 2 - Database ID Lookup - End
+                    
+                    # Track the active order using structured class
+                    # Phase 2 - ActiveOrder Creation - Begin
+                    active_order = ActiveOrder(
+                        planned_order=order,
+                        order_ids=order_ids,
+                        db_id=db_order_id,
+                        status='SUBMITTED',
+                        capital_commitment=capital_commitment,
+                        timestamp=datetime.datetime.now(),
+                        is_live_trading=is_live_trading,
+                        fill_probability=fill_probability
+                    )
+                    self.active_orders[order_ids[0]] = active_order
+                    print(f"✅ Active order tracked: {active_order}")
+                    # Phase 2 - ActiveOrder Creation - End
+                    
                 else:
                     print("❌ Failed to place real order through IBKR")
                     
@@ -438,6 +463,9 @@ class TradingManager:
             stop_loss=planned_order.stop_loss,
             risk_per_trade=planned_order.risk_per_trade,
             risk_reward_ratio=planned_order.risk_reward_ratio,
+            # Phase 1 - Priority Field - Begin
+            priority=planned_order.priority,
+            # Phase 1 - Priority Field - End            
             position_strategy_id=position_strategy.id,
             status='PENDING',
             # Live/Paper trading tracking - Begin
@@ -479,3 +507,68 @@ class TradingManager:
             return False
         
     # ==================== DATABASE INTEGRATION - END ====================
+
+    # Phase 2 - Database ID Lookup Method - Begin
+    def _find_planned_order_db_id(self, order) -> Optional[int]:
+        """Find the database ID for a planned order"""
+        try:
+            db_order = self.db_session.query(PlannedOrderDB).filter_by(
+                symbol=order.symbol,
+                entry_price=order.entry_price,
+                stop_loss=order.stop_loss,
+                action=order.action.value,
+                order_type=order.order_type.value
+            ).first()
+            
+            return db_order.id if db_order else None
+            
+        except Exception as e:
+            print(f"❌ Error finding planned order in database: {e}")
+            return None
+    # Phase 2 - Database ID Lookup Method - End
+
+    # Phase 2 - Capital Commitment Calculation - Begin
+    def _calculate_capital_commitment(self, order, total_capital: float) -> float:
+        """Calculate the capital commitment for an order"""
+        try:
+            quantity = order.calculate_quantity(total_capital)
+            capital_commitment = order.entry_price * quantity
+            
+            # For non-stock instruments, this would be more complex
+            # (margin requirements, option premiums, etc.)
+            # For now, we use simple calculation for stocks/ETFs
+            return capital_commitment
+            
+        except Exception as e:
+            print(f"❌ Error calculating capital commitment for {order.symbol}: {e}")
+            return 0.0
+    # Phase 2 - Capital Commitment Calculation - End
+
+    def _can_place_order(self, order):
+        """Basic validation for order placement"""
+        # Check if we already have max open orders
+        # Phase 2 - ActiveOrder Structure Update - Begin
+        working_orders = sum(1 for ao in self.active_orders.values() if ao.is_working())
+        if working_orders >= self.max_open_orders:
+            return False
+        # Phase 2 - ActiveOrder Structure Update - End
+            
+        # Check for required price data
+        if order.entry_price is None:
+            return False
+            
+        # Check if this specific order is already active
+        order_key = f"{order.symbol}_{order.action.value}_{order.entry_price}_{order.stop_loss}"
+        
+        # Phase 2 - ActiveOrder Structure Update - Begin
+        for active_order in self.active_orders.values():
+            if not active_order.is_working():
+                continue
+            active_order_obj = active_order.planned_order
+            active_key = f"{active_order_obj.symbol}_{active_order_obj.action.value}_{active_order_obj.entry_price}_{active_order_obj.stop_loss}"
+            if order_key == active_key:
+                print(f"⚠️  Order already active: {order.symbol} {order.action.value} @ {order.entry_price}")
+                return False
+        # Phase 2 - ActiveOrder Structure Update - End
+                
+        return True

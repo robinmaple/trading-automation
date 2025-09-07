@@ -49,7 +49,10 @@ class PlannedOrderDB(Base):
     stop_loss = Column(Float, nullable=False)
     risk_per_trade = Column(Float, nullable=False)  # 0.001 for 0.1%
     risk_reward_ratio = Column(Float, nullable=False)  # 2.0
-    
+    # Phase 1 - Priority Field - Begin
+    priority = Column(Integer, nullable=False, default=3)  # Priority scale 1-5, default medium
+    # Phase 1 - Priority Field - End
+
     # Status tracking
     status = Column(String(20), default='PENDING')  # PENDING, LIVE, FILLED, CANCELLED
     planned_at = Column(DateTime, default=datetime.datetime.now)
