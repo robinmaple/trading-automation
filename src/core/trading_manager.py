@@ -572,3 +572,90 @@ class TradingManager:
         # Phase 2 - ActiveOrder Structure Update - End
                 
         return True
+    
+    # Phase 2 - Order Scoring Helper - Begin
+    def _calculate_order_score(self, order: PlannedOrder, fill_probability: float) -> float:
+        """
+        Calculate a combined score for order prioritization.
+        Uses: score = priority * fill_probability
+        """
+        return order.priority * fill_probability
+    # Phase 2 - Order Scoring Helper - End
+
+        # Phase 2 - Eligible Orders Method - Begin
+    def _get_eligible_orders(self) -> List[Dict]:
+        """
+        Find all eligible orders that meet execution criteria, sorted by score.
+        Returns: List of dicts with order, fill_probability, and score
+        """
+        eligible_orders = []
+        
+        for order in self.planned_orders:
+            # Skip orders that can't be placed due to basic constraints
+            if not self._can_place_order(order):
+                continue
+            
+            # Check intelligent execution criteria
+            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
+            
+            if should_execute:
+                score = self._calculate_order_score(order, fill_prob)
+                eligible_orders.append({
+                    'order': order,
+                    'fill_probability': fill_prob,
+                    'score': score,
+                    'timestamp': datetime.datetime.now()
+                })
+        
+        # Sort by score descending (highest score first)
+        eligible_orders.sort(key=lambda x: x['score'], reverse=True)
+        return eligible_orders
+    # Phase 2 - Eligible Orders Method - End
+
+    # Phase 2 - Committed Capital Method - Begin
+    def _get_committed_capital(self) -> float:
+        """
+        Calculate total capital currently committed to working orders.
+        """
+        committed_capital = 0.0
+        
+        for active_order in self.active_orders.values():
+            if active_order.is_working():
+                committed_capital += active_order.capital_commitment
+                
+        return committed_capital
+    # Phase 2 - Committed Capital Method - End
+
+    # Phase 2 - Worst Active Order Method - Begin
+    def _find_worst_active_order(self, min_score_threshold: float = 0.0) -> Optional[ActiveOrder]:
+        """
+        Find the worst active order that is stale and eligible for replacement.
+        Returns: The ActiveOrder with lowest score that's stale, or None
+        """
+        worst_order = None
+        worst_score = float('inf')
+        current_time = datetime.datetime.now()
+        
+        for active_order in self.active_orders.values():
+            if not active_order.is_working():
+                continue
+                
+            # Check if order is stale (>30 minutes)
+            age_minutes = (current_time - active_order.timestamp).total_seconds() / 60
+            if age_minutes < 30:
+                continue
+                
+            # Calculate current score for this active order
+            current_score = self._calculate_order_score(active_order.planned_order, active_order.fill_probability)
+            
+            # Apply minimum score threshold (for replacement logic)
+            if current_score < min_score_threshold:
+                continue
+                
+            # Find the order with the lowest score
+            if current_score < worst_score:
+                worst_score = current_score
+                worst_order = active_order
+        
+        return worst_order
+    # Phase 2 - Worst Active Order Method - End

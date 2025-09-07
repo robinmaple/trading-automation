@@ -605,3 +605,301 @@ class TestTradingManager:
             # Verify session was closed
             mock_close.assert_called_once()
 # Database Persistence Tests - End
+
+    # Add this fixture to the TestTradingManager class or in conftest.py
+    # For now, I'll add it as a method in the test class
+
+    def create_test_active_order(self, planned_order, status='SUBMITTED', minutes_old=0, capital=1000.0, fill_prob=0.8):
+        """Helper to create ActiveOrder objects for testing"""
+        from src.core.planned_order import ActiveOrder
+        import datetime
+        
+        timestamp = datetime.datetime.now() - datetime.timedelta(minutes=minutes_old)
+        
+        return ActiveOrder(
+            planned_order=planned_order,
+            order_ids=[1],
+            db_id=1,
+            status=status,
+            capital_commitment=capital,
+            timestamp=timestamp,
+            is_live_trading=False,
+            fill_probability=fill_prob
+        )
+    
+    @patch('src.core.trading_manager.get_db_session')
+    def test_calculate_order_score(self, mock_get_session, mock_data_feed):
+        """Test order scoring calculation"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        # Create a mock order with priority 4
+        mock_order = Mock()
+        mock_order.priority = 4
+        
+        # Test score calculation: priority * probability
+        score = tm._calculate_order_score(mock_order, 0.75)
+        assert score == 3.0  # 4 * 0.75
+        
+        # Test edge cases
+        score = tm._calculate_order_score(mock_order, 0.0)
+        assert score == 0.0
+        
+        score = tm._calculate_order_score(mock_order, 1.0)
+        assert score == 4.0
+
+    @patch('src.core.trading_manager.get_db_session')
+    def test_get_committed_capital(self, mock_get_session, mock_data_feed, sample_planned_order):
+        """Test capital commitment calculation"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        # Add working orders with capital commitments
+        active_order1 = self.create_test_active_order(sample_planned_order, capital=5000.0)
+        active_order2 = self.create_test_active_order(sample_planned_order, capital=3000.0)
+        
+        tm.active_orders[1] = active_order1
+        tm.active_orders[2] = active_order2
+        
+        # Test total committed capital
+        committed = tm._get_committed_capital()
+        assert committed == 8000.0  # 5000 + 3000
+        
+        # Test with non-working orders (should not be counted)
+        filled_order = self.create_test_active_order(sample_planned_order, status='FILLED', capital=2000.0)
+        tm.active_orders[3] = filled_order
+        
+        committed = tm._get_committed_capital()
+        assert committed == 8000.0  # Still only working orders
+
+    @patch('src.core.trading_manager.get_db_session')
+    def test_get_eligible_orders(self, mock_get_session, mock_data_feed, sample_planned_order):
+        """Test eligible order finding and sorting"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        # Create orders with different priorities
+        high_priority_order = Mock()
+        high_priority_order.priority = 5
+        high_priority_order.entry_price = 1.1000
+        high_priority_order.stop_loss = 1.0950
+        
+        medium_priority_order = Mock()
+        medium_priority_order.priority = 3  
+        medium_priority_order.entry_price = 1.2000
+        medium_priority_order.stop_loss = 1.1950
+        
+        # Mock the planned orders list
+        tm.planned_orders = [high_priority_order, medium_priority_order]
+        
+        # Mock the probability engine to return different probabilities
+        tm.probability_engine = Mock()
+        tm.probability_engine.should_execute_order.side_effect = [
+            (True, 0.6),  # High priority, medium probability
+            (True, 0.9)   # Medium priority, high probability
+        ]
+        
+        # Mock _can_place_order to return True for both
+        with patch.object(tm, '_can_place_order', return_value=True):
+            eligible_orders = tm._get_eligible_orders()
+            
+            # Should return both orders, sorted by score descending
+            assert len(eligible_orders) == 2
+            
+            # Calculate expected scores: priority * probability
+            # high: 5 * 0.6 = 3.0, medium: 3 * 0.9 = 2.7
+            assert eligible_orders[0]['score'] == 3.0  # High priority first
+            assert eligible_orders[1]['score'] == 2.7  # Medium priority second
+            
+            assert eligible_orders[0]['order'] == high_priority_order
+            assert eligible_orders[1]['order'] == medium_priority_order
+
+    @patch('src.core.trading_manager.get_db_session')
+    def test_get_eligible_orders_filters_low_probability(self, mock_get_session, mock_data_feed, sample_planned_order):
+        """Test that low probability orders are filtered out"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        tm.planned_orders = [sample_planned_order]
+        
+        # Mock probability engine to return below threshold
+        tm.probability_engine = Mock()
+        tm.probability_engine.should_execute_order.return_value = (False, 0.2)
+        
+        with patch.object(tm, '_can_place_order', return_value=True):
+            eligible_orders = tm._get_eligible_orders()
+            assert len(eligible_orders) == 0  # Should be filtered out
+
+    @patch('src.core.trading_manager.get_db_session')
+    def test_find_worst_active_order_no_stale_orders(self, mock_get_session, mock_data_feed, sample_planned_order):
+        """Test when no stale orders exist"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        # Add only fresh orders
+        fresh_order = self.create_test_active_order(
+            sample_planned_order,
+            minutes_old=10,  # Not stale
+            capital=1000.0
+        )
+        tm.active_orders = {1: fresh_order}
+        
+        # Should return None since no stale orders
+        worst = tm._find_worst_active_order()
+        assert worst is None
+
+    def test_find_worst_active_order(self, mock_data_feed):
+        """Test finding the worst active order based on fill probability"""
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        # Mock the _calculate_order_score method
+        tm._calculate_order_score = Mock()
+        tm._calculate_order_score.side_effect = lambda order, prob: prob * 100  # Simple scoring
+
+        # Create mock ActiveOrder objects with all required attributes and methods
+        import datetime
+        
+        # Create current time for timestamp comparison
+        current_time = datetime.datetime.now()
+        stale_time = current_time - datetime.timedelta(minutes=31)  # 31 minutes old (stale)
+        fresh_time = current_time - datetime.timedelta(minutes=29)  # 29 minutes old (not stale)
+
+        # Order 1: Stale but high score (should not be worst)
+        order1 = Mock()
+        order1.is_working.return_value = True
+        order1.timestamp = stale_time
+        order1.planned_order = Mock()
+        order1.fill_probability = 0.8  # High probability = high score
+        order1.symbol = "EUR"
+
+        # Order 2: Stale and low score (should be worst)
+        order2 = Mock()
+        order2.is_working.return_value = True
+        order2.timestamp = stale_time
+        order2.planned_order = Mock()
+        order2.fill_probability = 0.4  # Low probability = low score
+        order2.symbol = "GBP"
+
+        # Order 3: Not stale (should be skipped)
+        order3 = Mock()
+        order3.is_working.return_value = True
+        order3.timestamp = fresh_time
+        order3.planned_order = Mock()
+        order3.fill_probability = 0.2  # Very low but not stale
+        order3.symbol = "JPY"
+
+        # Order 4: Not working (should be skipped)
+        order4 = Mock()
+        order4.is_working.return_value = False
+        order4.timestamp = stale_time
+        order4.planned_order = Mock()
+        order4.fill_probability = 0.1  # Very low but not working
+        order4.symbol = "CHF"
+
+        tm.active_orders = {
+            1: order1,
+            2: order2,
+            3: order3,
+            4: order4
+        }
+
+        worst_order = tm._find_worst_active_order()
+        
+        # The worst order should be order2 (stale, working, lowest score)
+        assert worst_order is not None
+        assert worst_order.symbol == "GBP"
+        assert worst_order.fill_probability == 0.4
+
+    def test_find_worst_active_order_no_stale_orders(self, mock_data_feed):
+        """Test that no worst order is found when no orders are stale"""
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        # Mock the _calculate_order_score method
+        tm._calculate_order_score = Mock()
+        tm._calculate_order_score.side_effect = lambda order, prob: prob * 100
+
+        # Create mock ActiveOrder objects that are not stale
+        import datetime
+        
+        current_time = datetime.datetime.now()
+        fresh_time = current_time - datetime.timedelta(minutes=29)  # Not stale
+
+        order1 = Mock()
+        order1.is_working.return_value = True
+        order1.timestamp = fresh_time
+        order1.planned_order = Mock()
+        order1.fill_probability = 0.4
+        order1.symbol = "EUR"
+
+        order2 = Mock()
+        order2.is_working.return_value = True
+        order2.timestamp = fresh_time
+        order2.planned_order = Mock()
+        order2.fill_probability = 0.2
+        order2.symbol = "GBP"
+
+        tm.active_orders = {
+            1: order1,
+            2: order2
+        }
+
+        worst_order = tm._find_worst_active_order()
+        
+        # Should return None since no orders are stale
+        assert worst_order is None
+
+    def test_find_worst_active_order_with_min_score_threshold(self, mock_data_feed):
+        """Test that orders below minimum score threshold are skipped"""
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        # Mock the _calculate_order_score method
+        tm._calculate_order_score = Mock()
+        tm._calculate_order_score.side_effect = lambda order, prob: prob * 100
+
+        import datetime
+        
+        current_time = datetime.datetime.now()
+        stale_time = current_time - datetime.timedelta(minutes=31)
+
+        # Order 1: Stale but above threshold
+        order1 = Mock()
+        order1.is_working.return_value = True
+        order1.timestamp = stale_time
+        order1.planned_order = Mock()
+        order1.fill_probability = 0.5  # Score = 50
+        order1.symbol = "EUR"
+
+        # Order 2: Stale but below threshold (should be skipped)
+        order2 = Mock()
+        order2.is_working.return_value = True
+        order2.timestamp = stale_time
+        order2.planned_order = Mock()
+        order2.fill_probability = 0.2  # Score = 20 (below threshold of 30)
+        order2.symbol = "GBP"
+
+        tm.active_orders = {
+            1: order1,
+            2: order2
+        }
+
+        # Set minimum score threshold to 30
+        worst_order = tm._find_worst_active_order(min_score_threshold=30)
+        
+        # Should return order1 (only one above threshold)
+        assert worst_order is not None
+        assert worst_order.symbol == "EUR"
+        assert worst_order.fill_probability == 0.5
