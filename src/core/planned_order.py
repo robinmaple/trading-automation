@@ -295,6 +295,11 @@ class ActiveOrder:
     is_live_trading: bool
     fill_probability: float  # Probability at time of submission
     
+    @property
+    def symbol(self) -> str:
+        """Convenience property to access the symbol from the planned order"""
+        return self.planned_order.symbol
+
     def is_working(self) -> bool:
         """Check if the order is still active (not filled or cancelled)"""
         return self.status in ['SUBMITTED', 'WORKING']
@@ -306,4 +311,9 @@ class ActiveOrder:
     def __str__(self) -> str:
         return (f"ActiveOrder({self.planned_order.symbol}, status={self.status}, "
                 f"capital=${self.capital_commitment:,.2f}, age={self.age_seconds():.1f}s)")
+    
+    def update_status(self, new_status: str) -> None:
+        """Update the status of this order"""
+        self.status = new_status
+
 # Phase 2 - ActiveOrder Dataclass - End

@@ -76,7 +76,7 @@ class TradingManager:
     
     def _execute_order(self, order, fill_probability):
         """
-        Execute a single order - now with injected persistence service
+        Execute a single order - now creates ActiveOrder objects
         """
         try:
             # Get actual account value from IBKR
@@ -85,28 +85,21 @@ class TradingManager:
             else:
                 total_capital = self.total_capital
             
-            # Live/Paper trading tracking - Begin
+            # Live/Paper trading tracking
             is_live_trading = self._get_trading_mode()
             mode_str = "LIVE" if is_live_trading else "PAPER"
-            # Live/Paper trading tracking - End
             
             print(f"🎯 EXECUTING ({mode_str}): {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
             print(f"   Account Value: ${total_capital:,.2f}")
             print(f"   Fill Probability: {fill_probability:.2%}")
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             
-            # Calculate capital commitment for this order
-            # Phase 2 - Capital Commitment Calculation - Begin
-            capital_commitment = self._calculate_capital_commitment(order, total_capital)
-            print(f"   Capital Commitment: ${capital_commitment:,.2f}")
-            # Phase 2 - Capital Commitment Calculation - End
-            
             # Real order execution if executor is available and connected
             if self.ibkr_client and self.ibkr_client.connected:
                 
                 contract = order.to_ib_contract()
                 
-                # Place real order through IBKR - now passing total_capital
+                # Place real order through IBKR
                 order_ids = self.ibkr_client.place_bracket_order(
                     contract,
                     order.action.value,
@@ -116,38 +109,38 @@ class TradingManager:
                     order.stop_loss,
                     order.risk_per_trade,
                     order.risk_reward_ratio,
-                    total_capital  # ADDED: pass total_capital parameter
+                    total_capital
                 )
                 
                 if order_ids:
                     print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
                     
-                    # Update order status to LIVE in database using persistence service
+                    # Update order status to LIVE in database
                     self.order_persistence.update_order_status(order, 'LIVE', order_ids)
                     
-                    # Find the database ID for this order
-                    # Phase 2 - Database ID Lookup - Begin
-                    db_order_id = self._find_planned_order_db_id(order)
-                    if not db_order_id:
-                        print(f"❌ Could not find database ID for order {order.symbol}")
-                        return
-                    # Phase 2 - Database ID Lookup - End
-                    
-                    # Track the active order using structured class
-                    # Phase 2 - ActiveOrder Creation - Begin
+                    # ==================== ACTIVE ORDER MANAGEMENT - BEGIN ====================
+                    # Create ActiveOrder object for tracking
                     active_order = ActiveOrder(
                         planned_order=order,
                         order_ids=order_ids,
-                        db_id=db_order_id,
-                        status='SUBMITTED',
-                        capital_commitment=capital_commitment,
                         timestamp=datetime.datetime.now(),
-                        is_live_trading=is_live_trading,
-                        fill_probability=fill_probability
+                        fill_probability=fill_probability,
+                        status='SUBMITTED',
+                        symbol=order.symbol,
+                        entry_price=order.entry_price,
+                        action=order.action.value,
+                        quantity=self._calculate_quantity(
+                            order.security_type.value,
+                            order.entry_price,
+                            order.stop_loss,
+                            total_capital,
+                            order.risk_per_trade
+                        )
                     )
+                    
+                    # Track the active order
                     self.active_orders[order_ids[0]] = active_order
-                    print(f"✅ Active order tracked: {active_order}")
-                    # Phase 2 - ActiveOrder Creation - End
+                    # ==================== ACTIVE ORDER MANAGEMENT - END ====================
                     
                 else:
                     print("❌ Failed to place real order through IBKR")
@@ -159,7 +152,7 @@ class TradingManager:
                 # Mark as FILLED in database for simulation
                 self.order_persistence.update_order_status(order, 'FILLED')
                 
-                # Record simulated execution with trading mode
+                # Record simulated execution
                 quantity = self._calculate_quantity(
                     order.security_type.value,
                     order.entry_price,
@@ -181,6 +174,105 @@ class TradingManager:
             print(f"❌ Failed to execute order for {order.symbol}: {e}")
             import traceback
             traceback.print_exc()
+
+    # ==================== ACTIVE ORDER MANAGEMENT - BEGIN ====================
+    def _find_worst_active_order(self, min_score_threshold: float = 0.0) -> Optional[ActiveOrder]:
+        """
+        Find the worst active order that is stale and eligible for replacement.
+        Enhanced with proper ActiveOrder objects and replacement logic.
+        """
+        worst_order = None
+        worst_score = float('inf')
+        current_time = datetime.datetime.now()
+        
+        for active_order in self.active_orders.values():
+            if not active_order.is_working():
+                continue
+                
+            # Check if order is stale
+            if not active_order.is_stale(minutes_threshold=30):
+                continue
+                
+            # Calculate current score for this active order
+            current_score = active_order.calculate_score(self.probability_engine)
+            
+            # Apply minimum score threshold
+            if current_score < min_score_threshold:
+                continue
+                
+            # Find the order with the lowest score
+            if current_score < worst_score:
+                worst_score = current_score
+                worst_order = active_order
+        
+        return worst_order
+
+    def cancel_active_order(self, active_order: ActiveOrder) -> bool:
+        """
+        Cancel an active order through IBKR API
+        Returns: Success status
+        """
+        if not self.ibkr_client or not self.ibkr_client.connected:
+            print("❌ Cannot cancel order - not connected to IBKR")
+            return False
+            
+        try:
+            # Cancel all orders in the bracket (parent, take-profit, stop-loss)
+            for order_id in active_order.order_ids:
+                success = self.ibkr_client.cancel_order(order_id)
+                if not success:
+                    print(f"❌ Failed to cancel order {order_id}")
+                    return False
+            
+            # Update order status
+            active_order.update_status('CANCELLED')
+            print(f"✅ Cancelled order {active_order.symbol} (IDs: {active_order.order_ids})")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error cancelling order {active_order.symbol}: {e}")
+            return False
+
+    def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder, 
+                           new_fill_probability: float) -> bool:
+        """
+        Replace a stale active order with a new order
+        Returns: Success status
+        """
+        print(f"🔄 Replacing stale order {old_order.symbol} with new order")
+        
+        # 1. Cancel the old order
+        if not self.cancel_active_order(old_order):
+            print("❌ Replacement failed - could not cancel old order")
+            return False
+        
+        # 2. Execute the new order
+        self._execute_order(new_planned_order, new_fill_probability)
+        
+        # 3. Update old order status
+        old_order.update_status('REPLACED')
+        
+        print(f"✅ Successfully replaced order {old_order.symbol}")
+        return True
+
+    def cleanup_completed_orders(self):
+        """Remove filled/cancelled/replaced orders from active tracking"""
+        orders_to_remove = []
+        
+        for order_id, active_order in self.active_orders.items():
+            if not active_order.is_working():
+                orders_to_remove.append(order_id)
+        
+        for order_id in orders_to_remove:
+            del self.active_orders[order_id]
+            
+        if orders_to_remove:
+            print(f"🧹 Cleaned up {len(orders_to_remove)} completed orders")
+
+    def get_active_orders_summary(self) -> List[Dict]:
+        """Get summary of all active orders for monitoring"""
+        return [active_order.to_dict() for active_order in self.active_orders.values()]
+    # ==================== ACTIVE ORDER MANAGEMENT - END ====================
 
     # ==================== QUANTITY CALCULATION - BEGIN ====================
     def _calculate_quantity(self, security_type, entry_price, stop_loss, total_capital, risk_per_trade):

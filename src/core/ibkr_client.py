@@ -302,3 +302,21 @@ class IbkrClient(EClient, EWrapper):
                     order['avg_fill_price'] = avgFillPrice
 
         print(f"Order status: {orderId} - {status}, Filled: {filled}, Remaining: {remaining}")
+
+    def cancel_order(self, order_id: int) -> bool:
+        """
+        Cancel an order through IBKR API
+        Returns: Success status
+        """
+        if not self.connected:
+            print(f"❌ Cannot cancel order {order_id} - not connected to IBKR")
+            return False
+            
+        try:
+            self.cancelOrder(order_id)
+            print(f"✅ Sent cancel request for order {order_id}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed to cancel order {order_id}: {e}")
+            return False

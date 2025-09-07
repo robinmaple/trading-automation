@@ -2,6 +2,8 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, 
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 import datetime
+from typing import Optional, Dict, Any
+from dataclasses import dataclass
 
 Base = declarative_base()
 
