@@ -17,6 +17,13 @@ from src.core.models import PlannedOrderDB, PositionStrategy
 from src.core.order_persistence_service import OrderPersistenceService
 # ==================== ORDER PERSISTENCE SERVICE - END ====================
 
+# ==================== SERVICE LAYER INTEGRATION - BEGIN ====================
+from src.services.order_eligibility_service import OrderEligibilityService
+from src.services.order_execution_service import OrderExecutionService
+from src.services.order_state_service import OrderStateService
+from src.services.position_sizing_service import PositionSizingService
+# ==================== SERVICE LAYER INTEGRATION - END ====================
+
 class TradingManager:
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", 
                  ibkr_client: Optional[IbkrClient] = None,
@@ -51,6 +58,15 @@ class TradingManager:
         self.order_persistence = order_persistence_service or OrderPersistenceService(self.db_session)
         # ==================== ORDER PERSISTENCE SERVICE - END ====================
 
+        # ==================== SERVICE LAYER INTEGRATION - BEGIN ====================
+        # Initialize the new service classes for the refactored architecture.
+        # Phase 0: These services will initially delegate back to TradingManager methods.
+        self.eligibility_service = OrderEligibilityService(self)
+        self.execution_service = OrderExecutionService(self, self.ibkr_client)
+        self.state_service = OrderStateService(self, self.db_session)
+        self.sizing_service = PositionSizingService(self)
+        # ==================== SERVICE LAYER INTEGRATION - END ====================
+
     def _initialize(self):
         """Internal initialization - called automatically when needed"""
         if self._initialized:
@@ -73,7 +89,7 @@ class TradingManager:
             print("ℹ️  No order executor provided - using simulation mode")
             
         return True
-    
+
     def _execute_order(self, order, fill_probability):
         """
         Execute a single order - now creates ActiveOrder objects
@@ -94,14 +110,13 @@ class TradingManager:
             print(f"   Fill Probability: {fill_probability:.2%}")
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             
-            # Calculate quantity and capital commitment
-            quantity = self._calculate_quantity(
-                order.security_type.value,
-                order.entry_price,
-                order.stop_loss,
-                total_capital,
-                order.risk_per_trade
+            # ==================== SERVICE INTEGRATION - BEGIN ====================
+            # Phase 0: Delegate quantity calculation to the sizing service.
+            quantity = self.sizing_service.calculate_order_quantity(
+                order,
+                total_capital
             )
+            # ==================== SERVICE INTEGRATION - END ====================
             capital_commitment = order.entry_price * quantity
             print(f"   Quantity: {quantity}, Capital Commitment: ${capital_commitment:,.2f}")
             
@@ -111,103 +126,114 @@ class TradingManager:
             print(f"   IBKR Connected: {ibkr_connected}, Live Trading: {is_live_trading}")
             # ==================== EXECUTION PATH DEBUGGING - END ====================
             
-            # Real order execution if executor is available and connected
-            if ibkr_connected:
-                print("   Taking LIVE order execution path...")
-                
-                contract = order.to_ib_contract()
-                
-                # Place real order through IBKR
-                order_ids = self.ibkr_client.place_bracket_order(
-                    contract,
-                    order.action.value,
-                    order.order_type.value,
-                    order.security_type.value,
-                    order.entry_price,
-                    order.stop_loss,
-                    order.risk_per_trade,
-                    order.risk_reward_ratio,
-                    total_capital
-                )
-                
-                if order_ids:
-                    print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
-                    
-                    # Update order status to LIVE in database
-                    update_success = self.order_persistence.update_order_status(order, 'LIVE', order_ids)
-                    print(f"   Order status update success: {update_success}")
-                    
-                    # ==================== LIVE EXECUTION PERSISTENCE - BEGIN ====================
-                    # Record execution for live orders - use 'SUBMITTED' status since not filled yet
-                    execution_id = self.order_persistence.record_order_execution(
-                        order, 
-                        order.entry_price,  # This is the intended price, not actual fill price
-                        quantity, 
-                        0.0,  # Commission will be updated via IBKR callbacks
-                        'SUBMITTED',  # Changed from 'LIVE' to match order lifecycle
-                        is_live_trading
-                    )
-                    
-                    if execution_id:
-                        print(f"✅ Execution recorded for live order: ID {execution_id}")
-                    else:
-                        print("❌ FAILED to record execution for live order")
-                    # ==================== LIVE EXECUTION PERSISTENCE - END ====================
-                    
-                    # Create ActiveOrder object for tracking
-                    db_id = self._find_planned_order_db_id(order)
-                    if db_id:
-                        active_order = ActiveOrder(
-                            planned_order=order,
-                            order_ids=order_ids,
-                            db_id=db_id,
-                            status='SUBMITTED',
-                            capital_commitment=capital_commitment,
-                            timestamp=datetime.datetime.now(),
-                            is_live_trading=is_live_trading,
-                            fill_probability=fill_probability
-                        )
-                        self.active_orders[order_ids[0]] = active_order
-                    else:
-                        print("⚠️  Could not create ActiveOrder - database ID not found")
-                    
-                else:
-                    print("❌ Failed to place real order through IBKR")
-                    
-            else:
-                print("   Taking SIMULATION order execution path...")
-                # Fall back to simulation
-                print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
-                
-                # Mark as FILLED in database for simulation
-                update_success = self.order_persistence.update_order_status(order, 'FILLED')
-                print(f"   Order status update success: {update_success}")
-                
-                # Record simulated execution
-                execution_id = self.order_persistence.record_order_execution(
-                    order, 
-                    order.entry_price, 
-                    quantity, 
-                    0.0, 
-                    'FILLED', 
-                    is_live_trading
-                )
-                
-                if execution_id:
-                    print(f"✅ Simulation execution recorded: ID {execution_id}")
-                else:
-                    print("❌ FAILED to record simulation execution")
+            # ==================== SERVICE INTEGRATION - BEGIN ====================
+            # Phase 0: Delegate order execution to the dedicated service.
+            # The service will call the original _execute_order logic internally.
+            self.execution_service.place_order(order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading)
+            # ==================== SERVICE INTEGRATION - END ====================
             
         except Exception as e:
             print(f"❌ Failed to execute order for {order.symbol}: {e}")
             import traceback
             traceback.print_exc()
 
-        except Exception as e:
-            print(f"❌ Failed to execute order for {order.symbol}: {e}")
-            import traceback
-            traceback.print_exc()
-
+    def _execute_single_order(self, order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading):
+        """
+        Core order execution logic - extracted from _execute_order for service delegation.
+        This method contains the actual order placement implementation.
+        """
+        # Real order execution if executor is available and connected
+        ibkr_connected = self.ibkr_client and self.ibkr_client.connected
+        if ibkr_connected:
+            print("   Taking LIVE order execution path...")
+            
+            contract = order.to_ib_contract()
+            
+            # Place real order through IBKR
+            order_ids = self.ibkr_client.place_bracket_order(
+                contract,
+                order.action.value,
+                order.order_type.value,
+                order.security_type.value,
+                order.entry_price,
+                order.stop_loss,
+                order.risk_per_trade,
+                order.risk_reward_ratio,
+                total_capital
+            )
+            
+            if order_ids:
+                print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
+                
+                # ==================== SERVICE INTEGRATION - BEGIN ====================
+                # Phase 0: Delegate order status update to the state service.
+                update_success = self.state_service.update_planned_order_status(order, 'LIVE', order_ids)
+                # ==================== SERVICE INTEGRATION - END ====================
+                print(f"   Order status update success: {update_success}")
+                
+                # ==================== LIVE EXECUTION PERSISTENCE - BEGIN ====================
+                # Record execution for live orders - use 'SUBMITTED' status since not filled yet
+                execution_id = self.order_persistence.record_order_execution(
+                    order, 
+                    order.entry_price,  # This is the intended price, not actual fill price
+                    quantity, 
+                    0.0,  # Commission will be updated via IBKR callbacks
+                    'SUBMITTED',  # Changed from 'LIVE' to match order lifecycle
+                    is_live_trading
+                )
+                
+                if execution_id:
+                    print(f"✅ Execution recorded for live order: ID {execution_id}")
+                else:
+                    print("❌ FAILED to record execution for live order")
+                # ==================== LIVE EXECUTION PERSISTENCE - END ====================
+                
+                # Create ActiveOrder object for tracking
+                db_id = self._find_planned_order_db_id(order)
+                if db_id:
+                    active_order = ActiveOrder(
+                        planned_order=order,
+                        order_ids=order_ids,
+                        db_id=db_id,
+                        status='SUBMITTED',
+                        capital_commitment=capital_commitment,
+                        timestamp=datetime.datetime.now(),
+                        is_live_trading=is_live_trading,
+                        fill_probability=fill_probability
+                    )
+                    self.active_orders[order_ids[0]] = active_order
+                else:
+                    print("⚠️  Could not create ActiveOrder - database ID not found")
+                
+            else:
+                print("❌ Failed to place real order through IBKR")
+                
+        else:
+            print("   Taking SIMULATION order execution path...")
+            # Fall back to simulation
+            print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
+            
+            # ==================== SERVICE INTEGRATION - BEGIN ====================
+            # Phase 0: Delegate order status update to the state service.
+            update_success = self.state_service.update_planned_order_status(order, 'FILLED')
+            # ==================== SERVICE INTEGRATION - END ====================
+            print(f"   Order status update success: {update_success}")
+            
+            # Record simulated execution
+            execution_id = self.order_persistence.record_order_execution(
+                order, 
+                order.entry_price, 
+                quantity, 
+                0.0, 
+                'FILLED', 
+                is_live_trading
+            )
+            
+            if execution_id:
+                print(f"✅ Simulation execution recorded: ID {execution_id}")
+            else:
+                print("❌ FAILED to record simulation execution")
+    
     # ==================== ACTIVE ORDER MANAGEMENT - BEGIN ====================
     def _find_worst_active_order(self, min_score_threshold: float = 0.0) -> Optional[ActiveOrder]:
         """
@@ -464,7 +490,12 @@ class TradingManager:
                 print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
                       f"No market data yet | Entry: {entry_display}")
                         
-        executable_orders = self._find_executable_orders()
+        # ==================== SERVICE INTEGRATION - BEGIN ====================                        
+        # Phase 0: Use the new service to find executable orders.
+        # The service currently delegates to the old _find_executable_orders method.
+        executable_orders = self.eligibility_service.find_executable_orders()
+        # ==================== SERVICE INTEGRATION - END ====================                        
+                        
         if executable_orders:
             print(f"🎯 Found {len(executable_orders)} executable orders")
             for executable in executable_orders:
@@ -475,7 +506,7 @@ class TradingManager:
             print("💡 No executable orders found at this time")
         
         print("-" * 50)
-
+        
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persist only valid ones to database"""
         try:
@@ -913,3 +944,18 @@ class TradingManager:
         
         return worst_order
     # Phase 2 - Worst Active Order Method - End
+
+    # ==================== POSITION SIZING SERVICE BRIDGE - BEGIN ====================
+    def _calculate_position_size(self, planned_order, total_capital, risk_per_trade):
+        """
+        Bridge method for PositionSizingService to delegate to the existing calculation logic.
+        Extracts parameters from PlannedOrder and calls _calculate_quantity.
+        """
+        return self._calculate_quantity(
+            planned_order.security_type.value,
+            planned_order.entry_price,
+            planned_order.stop_loss,
+            total_capital,
+            risk_per_trade
+        )
+    # ==================== POSITION SIZING SERVICE BRIDGE - END ====================
