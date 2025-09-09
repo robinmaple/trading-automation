@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 plan.xlsx
+~$plan.xlsx
 __pycache__/
 *.py[cod]
 *$py.class

@@ -94,8 +94,26 @@ class TradingManager:
             print(f"   Fill Probability: {fill_probability:.2%}")
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             
+            # Calculate quantity and capital commitment
+            quantity = self._calculate_quantity(
+                order.security_type.value,
+                order.entry_price,
+                order.stop_loss,
+                total_capital,
+                order.risk_per_trade
+            )
+            capital_commitment = order.entry_price * quantity
+            print(f"   Quantity: {quantity}, Capital Commitment: ${capital_commitment:,.2f}")
+            
+            # ==================== EXECUTION PATH DEBUGGING - BEGIN ====================
+            # Debug: Show which execution path we're taking
+            ibkr_connected = self.ibkr_client and self.ibkr_client.connected
+            print(f"   IBKR Connected: {ibkr_connected}, Live Trading: {is_live_trading}")
+            # ==================== EXECUTION PATH DEBUGGING - END ====================
+            
             # Real order execution if executor is available and connected
-            if self.ibkr_client and self.ibkr_client.connected:
+            if ibkr_connected:
+                print("   Taking LIVE order execution path...")
                 
                 contract = order.to_ib_contract()
                 
@@ -116,52 +134,57 @@ class TradingManager:
                     print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
                     
                     # Update order status to LIVE in database
-                    self.order_persistence.update_order_status(order, 'LIVE', order_ids)
+                    update_success = self.order_persistence.update_order_status(order, 'LIVE', order_ids)
+                    print(f"   Order status update success: {update_success}")
                     
-                    # ==================== ACTIVE ORDER MANAGEMENT - BEGIN ====================
-                    # Create ActiveOrder object for tracking
-                    active_order = ActiveOrder(
-                        planned_order=order,
-                        order_ids=order_ids,
-                        timestamp=datetime.datetime.now(),
-                        fill_probability=fill_probability,
-                        status='SUBMITTED',
-                        symbol=order.symbol,
-                        entry_price=order.entry_price,
-                        action=order.action.value,
-                        quantity=self._calculate_quantity(
-                            order.security_type.value,
-                            order.entry_price,
-                            order.stop_loss,
-                            total_capital,
-                            order.risk_per_trade
-                        )
+                    # ==================== LIVE EXECUTION PERSISTENCE - BEGIN ====================
+                    # Record execution for live orders - use 'SUBMITTED' status since not filled yet
+                    execution_id = self.order_persistence.record_order_execution(
+                        order, 
+                        order.entry_price,  # This is the intended price, not actual fill price
+                        quantity, 
+                        0.0,  # Commission will be updated via IBKR callbacks
+                        'SUBMITTED',  # Changed from 'LIVE' to match order lifecycle
+                        is_live_trading
                     )
                     
-                    # Track the active order
-                    self.active_orders[order_ids[0]] = active_order
-                    # ==================== ACTIVE ORDER MANAGEMENT - END ====================
+                    if execution_id:
+                        print(f"✅ Execution recorded for live order: ID {execution_id}")
+                    else:
+                        print("❌ FAILED to record execution for live order")
+                    # ==================== LIVE EXECUTION PERSISTENCE - END ====================
+                    
+                    # Create ActiveOrder object for tracking
+                    db_id = self._find_planned_order_db_id(order)
+                    if db_id:
+                        active_order = ActiveOrder(
+                            planned_order=order,
+                            order_ids=order_ids,
+                            db_id=db_id,
+                            status='SUBMITTED',
+                            capital_commitment=capital_commitment,
+                            timestamp=datetime.datetime.now(),
+                            is_live_trading=is_live_trading,
+                            fill_probability=fill_probability
+                        )
+                        self.active_orders[order_ids[0]] = active_order
+                    else:
+                        print("⚠️  Could not create ActiveOrder - database ID not found")
                     
                 else:
                     print("❌ Failed to place real order through IBKR")
                     
             else:
+                print("   Taking SIMULATION order execution path...")
                 # Fall back to simulation
                 print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
                 
                 # Mark as FILLED in database for simulation
-                self.order_persistence.update_order_status(order, 'FILLED')
+                update_success = self.order_persistence.update_order_status(order, 'FILLED')
+                print(f"   Order status update success: {update_success}")
                 
                 # Record simulated execution
-                quantity = self._calculate_quantity(
-                    order.security_type.value,
-                    order.entry_price,
-                    order.stop_loss,
-                    total_capital,
-                    order.risk_per_trade
-                )
-                
-                self.order_persistence.record_order_execution(
+                execution_id = self.order_persistence.record_order_execution(
                     order, 
                     order.entry_price, 
                     quantity, 
@@ -169,7 +192,17 @@ class TradingManager:
                     'FILLED', 
                     is_live_trading
                 )
+                
+                if execution_id:
+                    print(f"✅ Simulation execution recorded: ID {execution_id}")
+                else:
+                    print("❌ FAILED to record simulation execution")
             
+        except Exception as e:
+            print(f"❌ Failed to execute order for {order.symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+
         except Exception as e:
             print(f"❌ Failed to execute order for {order.symbol}: {e}")
             import traceback
@@ -416,18 +449,21 @@ class TradingManager:
             price_data = self.data_feed.get_current_price(order.symbol)
             current_price = price_data['price'] if price_data and price_data.get('price') else None
             
-            if current_price:
+            # FIX: Handle None entry_price gracefully
+            entry_display = f"${order.entry_price:8.4f}" if order.entry_price is not None else "None"
+
+            if current_price and order.entry_price is not None:
                 # Calculate basic metrics for display
-                price_diff = current_price - order.entry_price if order.entry_price else 0
-                percent_diff = (price_diff / order.entry_price * 100) if order.entry_price else 0
+                price_diff = current_price - order.entry_price
+                percent_diff = (price_diff / order.entry_price * 100)
                 
                 print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
-                      f"Current: ${current_price:8.4f} | Entry: ${order.entry_price:8.4f} | "
+                      f"Current: ${current_price:8.4f} | Entry: {entry_display} | "
                       f"Diff: {percent_diff:6.2f}%")
             else:
                 print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
-                      f"No market data yet | Entry: ${order.entry_price:8.4f}")
-        
+                      f"No market data yet | Entry: {entry_display}")
+                        
         executable_orders = self._find_executable_orders()
         if executable_orders:
             print(f"🎯 Found {len(executable_orders)} executable orders")
@@ -441,27 +477,88 @@ class TradingManager:
         print("-" * 50)
 
     def load_planned_orders(self) -> List[PlannedOrder]:
-        """Load and validate planned orders from Excel and persist to database"""
+        """Load and validate planned orders from Excel, persist only valid ones to database"""
         try:
             # Load from Excel first
             excel_orders = PlannedOrderManager.from_excel(self.excel_path)
             print(f"Loaded {len(excel_orders)} planned orders from Excel")
             
-            # ==================== DATABASE INTEGRATION - BEGIN ====================
-            # Persist all orders to database
-            db_orders = []
+            valid_orders = []
+            invalid_count = 0
+            # ==================== VARIABLE SCOPE FIX - BEGIN ====================
+            duplicate_count = 0  # Initialize here to fix scope issue
+            # ==================== VARIABLE SCOPE FIX - END ====================
+            
+            # ==================== VALIDATION FILTER - BEGIN ====================
             for excel_order in excel_orders:
-                db_order = self._convert_to_db_model(excel_order)
-                self.db_session.add(db_order)
-                db_orders.append(db_order)
+                # Basic sanity checks
+                if excel_order.entry_price is None:
+                    print(f"❌ Skipping order {excel_order.symbol}: missing entry price")
+                    invalid_count += 1
+                    continue
+                    
+                if excel_order.stop_loss is None:
+                    print(f"❌ Skipping order {excel_order.symbol}: missing stop loss")  
+                    invalid_count += 1
+                    continue
+                    
+                if excel_order.entry_price == excel_order.stop_loss:
+                    print(f"❌ Skipping order {excel_order.symbol}: entry price equals stop loss")
+                    invalid_count += 1
+                    continue
+                    
+                # Business-rule validation (without max_orders check since we're just loading)
+                if not self._validate_order_basic(excel_order):
+                    print(f"❌ Skipping order {excel_order.symbol}: basic validation failed")
+                    invalid_count += 1
+                    continue
+                    
+                # ==================== DUPLICATE DETECTION FIX - BEGIN ====================
+                # Check for duplicates in current Excel load - only same symbol + entry + stop
+                is_duplicate = False
+                for valid_order in valid_orders:
+                    if (valid_order.symbol == excel_order.symbol and
+                        valid_order.entry_price == excel_order.entry_price and
+                        valid_order.stop_loss == excel_order.stop_loss and
+                        valid_order.action == excel_order.action):
+                        print(f"❌ Skipping duplicate order in Excel: {excel_order.symbol} @ {excel_order.entry_price}")
+                        duplicate_count += 1
+                        is_duplicate = True
+                        break
+                
+                if is_duplicate:
+                    continue
+                    
+                # Check for duplicates in existing database - only same symbol + entry + stop
+                existing_order = self._find_existing_planned_order(excel_order)
+                if existing_order:
+                    print(f"❌ Skipping duplicate order in database: {excel_order.symbol} @ {excel_order.entry_price}")
+                    duplicate_count += 1
+                    continue
+                # ==================== DUPLICATE DETECTION FIX - END ====================
+                    
+                # If everything looks fine, persist
+                try:
+                    db_order = self._convert_to_db_model(excel_order)
+                    self.db_session.add(db_order)
+                    valid_orders.append(excel_order)
+                    print(f"✅ Valid order: {excel_order.symbol} - Entry: ${excel_order.entry_price:.4f}, Stop: ${excel_order.stop_loss:.4f}")
+                    
+                except Exception as e:
+                    print(f"❌ Failed to persist order {excel_order.symbol}: {e}")
+                    invalid_count += 1
+            # ==================== VALIDATION FILTER - END ====================
             
             self.db_session.commit()
-            print(f"✅ Persisted {len(db_orders)} orders to database")
-            # ==================== DATABASE INTEGRATION - END ====================
+            print(f"✅ Persisted {len(valid_orders)} valid orders to database")
+            if invalid_count > 0:
+                print(f"⚠️  Skipped {invalid_count} invalid orders")
+            if duplicate_count > 0:
+                print(f"⚠️  Skipped {duplicate_count} duplicate orders")
             
-            # Keep in memory for processing
-            self.planned_orders = excel_orders
-            return excel_orders
+            # Keep only valid orders in memory for processing
+            self.planned_orders = valid_orders
+            return valid_orders
             
         except Exception as e:
             # ==================== DATABASE INTEGRATION - BEGIN ====================
@@ -469,6 +566,63 @@ class TradingManager:
             # ==================== DATABASE INTEGRATION - END ====================
             print(f"Error loading planned orders: {e}")
             return []
+                    
+        except Exception as e:
+            # ==================== DATABASE INTEGRATION - BEGIN ====================
+            self.db_session.rollback()
+            # ==================== DATABASE INTEGRATION - END ====================
+            print(f"Error loading planned orders: {e}")
+            return []
+
+    # ==================== DUPLICATE DETECTION HELPER - BEGIN ====================
+    def _find_existing_planned_order(self, order: PlannedOrder) -> Optional[PlannedOrderDB]:
+        """
+        Check if an order already exists in the database.
+        Returns: The existing PlannedOrderDB if found, None otherwise.
+        """
+        try:
+            existing_order = self.db_session.query(PlannedOrderDB).filter_by(
+                symbol=order.symbol,
+                entry_price=order.entry_price,
+                stop_loss=order.stop_loss,
+                action=order.action.value
+            ).first()
+            
+            return existing_order
+            
+        except Exception as e:
+            print(f"❌ Error checking for existing order {order.symbol}: {e}")
+            return None
+    # ==================== DUPLICATE DETECTION HELPER - END ====================
+
+    # Phase 2 - Order Validation Helper - Begin
+    def _validate_order_basic(self, order: PlannedOrder) -> bool:
+        """
+        Basic validation for orders (without max_orders check).
+        Used for filtering during order loading.
+        """
+        # Check for required price data
+        if order.entry_price is None or order.stop_loss is None:
+            return False
+            
+        # Check stop loss is protective
+        if (order.action.value == 'BUY' and order.stop_loss >= order.entry_price) or \
+           (order.action.value == 'SELL' and order.stop_loss <= order.entry_price):
+            return False
+            
+        # Check risk management
+        if order.risk_per_trade <= 0 or order.risk_per_trade > 0.02:  # Max 2% risk
+            return False
+            
+        if order.risk_reward_ratio < 1.0:  # At least 1:1 risk reward
+            return False
+            
+        # Check priority is valid
+        if not 1 <= order.priority <= 5:
+            return False
+            
+        return True
+    # Phase 2 - Order Validation Helper - End        
 
     def _find_executable_orders(self):
         """Find orders that meet execution criteria"""
@@ -477,6 +631,7 @@ class TradingManager:
         for order in self.planned_orders:
             # Check basic constraints
             if not self._can_place_order(order):
+                print(f"   ⚠️  {order.symbol}: Cannot place order (basic constraints failed)")
                 continue
             
             # Check intelligent execution criteria
@@ -494,27 +649,30 @@ class TradingManager:
         return executable
 
     def _can_place_order(self, order):
-        """Basic validation for order placement"""
+        """Basic validation for order placement - now uses the validation helper"""
         # Check if we already have max open orders
-        if len(self.active_orders) >= self.max_open_orders:
+        working_orders = sum(1 for ao in self.active_orders.values() if ao.is_working())
+        if working_orders >= self.max_open_orders:
             return False
             
-        # Check for required price data
-        if order.entry_price is None:
+        # Use the shared validation helper for basic order validity
+        if not self._validate_order_basic(order):
             return False
             
         # Check if this specific order is already active
         order_key = f"{order.symbol}_{order.action.value}_{order.entry_price}_{order.stop_loss}"
         
         for active_order in self.active_orders.values():
-            active_order_obj = active_order['order']
+            if not active_order.is_working():
+                continue
+            active_order_obj = active_order.planned_order
             active_key = f"{active_order_obj.symbol}_{active_order_obj.action.value}_{active_order_obj.entry_price}_{active_order_obj.stop_loss}"
             if order_key == active_key:
                 print(f"⚠️  Order already active: {order.symbol} {order.action.value} @ {order.entry_price}")
                 return False
                 
         return True
-    
+        
     def stop_monitoring(self):
         """Stop the monitoring loop and clean up database connection"""
         self.monitoring = False
@@ -546,7 +704,7 @@ class TradingManager:
         is_live_trading = self._get_trading_mode()
         # Live/Paper trading tracking - End
 
-        return PlannedOrderDB(
+        db_model = PlannedOrderDB(
             symbol=planned_order.symbol,
             security_type=planned_order.security_type.value,
             action=planned_order.action.value,
@@ -564,6 +722,10 @@ class TradingManager:
             is_live_trading=is_live_trading
             # Live/Paper trading tracking - End
         )
+
+        print(f"DEBUG: Created DB model - entry_price: {db_model.entry_price}, stop_loss: {db_model.stop_loss}")
+
+        return db_model
 
     def _update_order_status(self, order, status, order_ids=None):
         """Update order status in database"""

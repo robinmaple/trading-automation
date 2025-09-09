@@ -29,6 +29,12 @@ class OrderPersistenceService:
             
             if planned_order_id is None:
                 print(f"❌ Cannot record execution: Planned order not found in database for {planned_order.symbol}")
+                print(f"   Searching for: {planned_order.symbol}, {planned_order.entry_price}, {planned_order.stop_loss}")
+                # Debug: Show what's actually in the database
+                existing_orders = self.db_session.query(PlannedOrderDB).filter_by(symbol=planned_order.symbol).all()
+                print(f"   Existing orders for {planned_order.symbol}: {len(existing_orders)}")
+                for order in existing_orders:
+                    print(f"     - {order.symbol}: entry={order.entry_price}, stop={order.stop_loss}, status={order.status}")
                 return None
             
             # Create executed order record
@@ -54,8 +60,10 @@ class OrderPersistenceService:
         except Exception as e:
             self.db_session.rollback()
             print(f"❌ Failed to record order execution: {e}")
+            import traceback
+            traceback.print_exc()
             return None
-
+        
     def _find_planned_order_id(self, planned_order) -> Optional[int]:
         """Find the database ID for a matching planned order"""
         try:

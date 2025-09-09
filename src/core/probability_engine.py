@@ -18,6 +18,12 @@ class FillProbabilityEngine:
         volatility = self.estimate_volatility(order.symbol, price_history, order)
         fill_prob = self.calculate_fill_probability(order, current_price, volatility)
         
+        # Debug output - Begin
+        print(f"🔍 {order.symbol}: Current={current_price:.5f}, Entry={order.entry_price:.5f}, "
+              f"FillProb={fill_prob:.3f}, Threshold={self.execution_threshold:.3f}, "
+              f"Execute={fill_prob >= self.execution_threshold}")
+        # Debug output - End
+
         return fill_prob >= self.execution_threshold, fill_prob
 
     def estimate_volatility(self, symbol, price_history, order):

@@ -4,6 +4,9 @@ from src.core.abstract_data_feed import AbstractDataFeed
 from src.data_feeds.ibkr_data_feed import IBKRDataFeed
 from src.data_feeds.yfinance_historical_feed import YFinanceHistoricalFeed
 from src.data_feeds.mock_feed import MockFeed
+# Database Initialization Import - 2025-09-07 19:36 - Begin
+from src.core.database import init_database
+# Database Initialization Import - 2025-09-07 19:36 - End
 import time
 import sys
 import argparse
@@ -26,7 +29,11 @@ def main():
         # Phase 2 - Remove Mock Command-line Parameters - 2025-09-07 13:26 - End        
 
         args = parser.parse_args()
-        
+
+        # Database Initialization Call - 2025-09-07 19:36 - Begin
+        init_database()  # Initialize the database before creating any managers
+        # Database Initialization Call - 2025-09-07 19:36 - End
+                
         # Load planned orders first to get mock configuration
         # Phase 2 - Load Orders Before Feed Initialization - 2025-09-07 13:26 - Begin
         from src.core.planned_order import PlannedOrderManager
@@ -85,16 +92,7 @@ def main():
                  
             # Initialize mock data feed
             data_feed.connect()
-        # Phase 2 - Updated Mock Mode Initialization - 2025-09-07 13:26 - End
-                    
-            # Connect to IB for order execution
-            if not ibkr_client.connect('127.0.0.1', 7497, 0):
-                print("Failed to connect to IB")
-                return
-                 
-            # Initialize mock data feed
-            data_feed.connect()
-                    
+                   
         # Phase 2 - Moved Order Loading Earlier - 2025-09-07 13:26 - Begin
         # Load planned orders (already loaded above, just register with trading manager)
         try:
