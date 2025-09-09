@@ -4,7 +4,7 @@ import threading
 import time
 import pandas as pd
 from src.core.ibkr_client import IbkrClient
-from src.core.planned_order import PlannedOrder, PlannedOrderManager, ActiveOrder
+from src.core.planned_order import PlannedOrder, ActiveOrder
 from src.core.probability_engine import FillProbabilityEngine
 from src.core.abstract_data_feed import AbstractDataFeed
 
@@ -22,6 +22,7 @@ from src.services.order_eligibility_service import OrderEligibilityService
 from src.services.order_execution_service import OrderExecutionService
 from src.services.order_state_service import OrderStateService
 from src.services.position_sizing_service import PositionSizingService
+from src.services.order_loading_service import OrderLoadingService
 # ==================== SERVICE LAYER INTEGRATION - END ====================
 
 class TradingManager:
@@ -65,6 +66,7 @@ class TradingManager:
         self.execution_service = OrderExecutionService(self, self.ibkr_client)
         self.state_service = OrderStateService(self, self.db_session)
         self.sizing_service = PositionSizingService(self)
+        self.loading_service = OrderLoadingService(self, self.db_session)
         # ==================== SERVICE LAYER INTEGRATION - END ====================
 
     def _initialize(self):
@@ -151,38 +153,6 @@ class TradingManager:
         return self.execution_service.execute_single_order(
             order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading
         )
-
-    # ==================== ACTIVE ORDER MANAGEMENT - BEGIN ====================
-    def _find_worst_active_order(self, min_score_threshold: float = 0.0) -> Optional[ActiveOrder]:
-        """
-        Find the worst active order that is stale and eligible for replacement.
-        Enhanced with proper ActiveOrder objects and replacement logic.
-        """
-        worst_order = None
-        worst_score = float('inf')
-        current_time = datetime.datetime.now()
-        
-        for active_order in self.active_orders.values():
-            if not active_order.is_working():
-                continue
-                
-            # Check if order is stale
-            if not active_order.is_stale(minutes_threshold=30):
-                continue
-                
-            # Calculate current score for this active order
-            current_score = active_order.calculate_score(self.probability_engine)
-            
-            # Apply minimum score threshold
-            if current_score < min_score_threshold:
-                continue
-                
-            # Find the order with the lowest score
-            if current_score < worst_score:
-                worst_score = current_score
-                worst_order = active_order
-        
-        return worst_order
 
     def cancel_active_order(self, active_order: ActiveOrder) -> bool:
         """
@@ -388,101 +358,20 @@ class TradingManager:
         
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persist only valid ones to database"""
-        try:
-            # Load from Excel first
-            excel_orders = PlannedOrderManager.from_excel(self.excel_path)
-            print(f"Loaded {len(excel_orders)} planned orders from Excel")
-            
-            valid_orders = []
-            invalid_count = 0
-            # ==================== VARIABLE SCOPE FIX - BEGIN ====================
-            duplicate_count = 0  # Initialize here to fix scope issue
-            # ==================== VARIABLE SCOPE FIX - END ====================
-            
-            # ==================== VALIDATION FILTER - BEGIN ====================
-            for excel_order in excel_orders:
-                # Basic sanity checks
-                if excel_order.entry_price is None:
-                    print(f"❌ Skipping order {excel_order.symbol}: missing entry price")
-                    invalid_count += 1
-                    continue
-                    
-                if excel_order.stop_loss is None:
-                    print(f"❌ Skipping order {excel_order.symbol}: missing stop loss")  
-                    invalid_count += 1
-                    continue
-                    
-                if excel_order.entry_price == excel_order.stop_loss:
-                    print(f"❌ Skipping order {excel_order.symbol}: entry price equals stop loss")
-                    invalid_count += 1
-                    continue
-                    
-                # Business-rule validation (without max_orders check since we're just loading)
-                if not self._validate_order_basic(excel_order):
-                    print(f"❌ Skipping order {excel_order.symbol}: basic validation failed")
-                    invalid_count += 1
-                    continue
-                    
-                # ==================== DUPLICATE DETECTION FIX - BEGIN ====================
-                # Check for duplicates in current Excel load - only same symbol + entry + stop
-                is_duplicate = False
-                for valid_order in valid_orders:
-                    if (valid_order.symbol == excel_order.symbol and
-                        valid_order.entry_price == excel_order.entry_price and
-                        valid_order.stop_loss == excel_order.stop_loss and
-                        valid_order.action == excel_order.action):
-                        print(f"❌ Skipping duplicate order in Excel: {excel_order.symbol} @ {excel_order.entry_price}")
-                        duplicate_count += 1
-                        is_duplicate = True
-                        break
-                
-                if is_duplicate:
-                    continue
-                    
-                # Check for duplicates in existing database - only same symbol + entry + stop
-                existing_order = self._find_existing_planned_order(excel_order)
-                if existing_order:
-                    print(f"❌ Skipping duplicate order in database: {excel_order.symbol} @ {excel_order.entry_price}")
-                    duplicate_count += 1
-                    continue
-                # ==================== DUPLICATE DETECTION FIX - END ====================
-                    
-                # If everything looks fine, persist
-                try:
-                    db_order = self._convert_to_db_model(excel_order)
-                    self.db_session.add(db_order)
-                    valid_orders.append(excel_order)
-                    print(f"✅ Valid order: {excel_order.symbol} - Entry: ${excel_order.entry_price:.4f}, Stop: ${excel_order.stop_loss:.4f}")
-                    
-                except Exception as e:
-                    print(f"❌ Failed to persist order {excel_order.symbol}: {e}")
-                    invalid_count += 1
-            # ==================== VALIDATION FILTER - END ====================
-            
-            self.db_session.commit()
-            print(f"✅ Persisted {len(valid_orders)} valid orders to database")
-            if invalid_count > 0:
-                print(f"⚠️  Skipped {invalid_count} invalid orders")
-            if duplicate_count > 0:
-                print(f"⚠️  Skipped {duplicate_count} duplicate orders")
-            
-            # Keep only valid orders in memory for processing
-            self.planned_orders = valid_orders
-            return valid_orders
-            
-        except Exception as e:
-            # ==================== DATABASE INTEGRATION - BEGIN ====================
-            self.db_session.rollback()
-            # ==================== DATABASE INTEGRATION - END ====================
-            print(f"Error loading planned orders: {e}")
-            return []
-                    
-        except Exception as e:
-            # ==================== DATABASE INTEGRATION - BEGIN ====================
-            self.db_session.rollback()
-            # ==================== DATABASE INTEGRATION - END ====================
-            print(f"Error loading planned orders: {e}")
-            return []
+        valid_orders = self.loading_service.load_and_validate_orders(self.excel_path)
+        
+        # Persist valid orders to database
+        for order in valid_orders:
+            try:
+                db_order = self.state_service.convert_to_db_model(order)
+                self.db_session.add(db_order)
+                print(f"✅ Persisted order: {order.symbol}")
+            except Exception as e:
+                print(f"❌ Failed to persist order {order.symbol}: {e}")
+        
+        self.db_session.commit()
+        self.planned_orders = valid_orders
+        return valid_orders
 
     # ==================== DUPLICATE DETECTION HELPER - BEGIN ====================
     def _find_existing_planned_order(self, order: PlannedOrder) -> Optional[PlannedOrderDB]:
@@ -539,31 +428,6 @@ class TradingManager:
         # Phase 1: Delegate to the service which now contains the actual logic.
         return self.eligibility_service.find_executable_orders()
     
-    def _can_place_order(self, order):
-        """Basic validation for order placement - now uses the validation helper"""
-        # Check if we already have max open orders
-        working_orders = sum(1 for ao in self.active_orders.values() if ao.is_working())
-        if working_orders >= self.max_open_orders:
-            return False
-            
-        # Use the shared validation helper for basic order validity
-        if not self._validate_order_basic(order):
-            return False
-            
-        # Check if this specific order is already active
-        order_key = f"{order.symbol}_{order.action.value}_{order.entry_price}_{order.stop_loss}"
-        
-        for active_order in self.active_orders.values():
-            if not active_order.is_working():
-                continue
-            active_order_obj = active_order.planned_order
-            active_key = f"{active_order_obj.symbol}_{active_order_obj.action.value}_{active_order_obj.entry_price}_{active_order_obj.stop_loss}"
-            if order_key == active_key:
-                print(f"⚠️  Order already active: {order.symbol} {order.action.value} @ {order.entry_price}")
-                return False
-                
-        return True
-        
     def stop_monitoring(self):
         """Stop the monitoring loop and clean up database connection"""
         self.monitoring = False
@@ -581,43 +445,6 @@ class TradingManager:
     # ==================== DATABASE INTEGRATION - BEGIN ====================
     # New methods for database operations
     
-    def _convert_to_db_model(self, planned_order: PlannedOrder) -> PlannedOrderDB:
-        """Convert PlannedOrder to PlannedOrderDB for database persistence"""
-        # Find position strategy in database
-        position_strategy = self.db_session.query(PositionStrategy).filter_by(
-            name=planned_order.position_strategy.value
-        ).first()
-        
-        if not position_strategy:
-            raise ValueError(f"Position strategy {planned_order.position_strategy.value} not found in database")
-        
-        # Live/Paper trading tracking - Begin
-        is_live_trading = self._get_trading_mode()
-        # Live/Paper trading tracking - End
-
-        db_model = PlannedOrderDB(
-            symbol=planned_order.symbol,
-            security_type=planned_order.security_type.value,
-            action=planned_order.action.value,
-            order_type=planned_order.order_type.value,
-            entry_price=planned_order.entry_price,
-            stop_loss=planned_order.stop_loss,
-            risk_per_trade=planned_order.risk_per_trade,
-            risk_reward_ratio=planned_order.risk_reward_ratio,
-            # Phase 1 - Priority Field - Begin
-            priority=planned_order.priority,
-            # Phase 1 - Priority Field - End            
-            position_strategy_id=position_strategy.id,
-            status='PENDING',
-            # Live/Paper trading tracking - Begin
-            is_live_trading=is_live_trading
-            # Live/Paper trading tracking - End
-        )
-
-        print(f"DEBUG: Created DB model - entry_price: {db_model.entry_price}, stop_loss: {db_model.stop_loss}")
-
-        return db_model
-
     def _update_order_status(self, order, status, order_ids=None):
         """Update order status in database"""
         try:

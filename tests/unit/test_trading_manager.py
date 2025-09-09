@@ -275,54 +275,54 @@ class TestTradingManager:
             
             assert result is False
                 
-    @patch('src.core.trading_manager.get_db_session')
-    def test_load_planned_orders(self, mock_get_session, mock_data_feed):
-        """Test loading planned orders from Excel (mocked)"""
-        # Mock the database session
-        mock_session = Mock()
-        mock_get_session.return_value = mock_session
-        
-        tm = TradingManager(mock_data_feed, "test.xlsx")
-        # Replace the actual session with our mock to avoid database errors
-        tm.db_session = mock_session
+@patch('src.core.trading_manager.get_db_session')
+def test_load_planned_orders(mock_get_session, mock_data_feed):
+    """Test loading planned orders from Excel and persisting to database"""
 
-        with patch('src.core.trading_manager.PlannedOrderManager.from_excel') as mock_loader:
-            # Create a proper mock with all required attributes for VALIDATION
-            mock_order = Mock()
-            mock_order.symbol = "EUR"
-            mock_order.security_type.value = "CASH"
-            mock_order.action.value = "BUY"
-            mock_order.order_type.value = "LMT"
-            mock_order.entry_price = 1.1000  # Must have entry price
-            mock_order.stop_loss = 1.0950    # Must have stop loss
-            mock_order.risk_per_trade = 0.001
-            mock_order.risk_reward_ratio = 2.0
-            mock_order.priority = 3
-            mock_order.position_strategy.value = "DAY"
-            
-            mock_loader.return_value = [mock_order]
-            
-            # ==================== ADDED VALIDATION MOCKING - BEGIN ====================
-            # Mock the validation methods to return True
-            with patch.object(tm, '_validate_order_basic', return_value=True):
-                with patch.object(tm, '_find_existing_planned_order', return_value=None):
-            # ==================== ADDED VALIDATION MOCKING - END ====================
-                
-                    # Mock the database operations to avoid actual database calls
-                    with patch.object(tm, '_convert_to_db_model') as mock_convert:
-                        mock_db_order = Mock()
-                        mock_convert.return_value = mock_db_order
-                        
-                        orders = tm.load_planned_orders()
-                        
-                        # ==================== UPDATED ASSERTION - BEGIN ====================
-                        # Should return 1 order since we mocked validation to pass
-                        assert len(orders) == 1
-                        # ==================== UPDATED ASSERTION - END ====================
-                        mock_loader.assert_called_once_with("test.xlsx")
-                        # Verify database operations were attempted
-                        mock_session.add.assert_called_with(mock_db_order)
-                        mock_session.commit.assert_called_once()
+    # Mock the database session
+    mock_session = Mock()
+    mock_get_session.return_value = mock_session
+
+    # Create TradingManager with mock data feed + Excel path
+    tm = TradingManager(mock_data_feed, "test.xlsx")
+    tm.db_session = mock_session  # replace real DB session with mock
+
+    # Patch the service call that TradingManager uses
+    with patch('src.core.trading_manager.OrderLoadingService.load_and_validate_orders') as mock_loader:
+        # Build a fake valid planned order
+        mock_order = Mock()
+        mock_order.symbol = "EUR"
+        mock_order.security_type.value = "CASH"
+        mock_order.action.value = "BUY"
+        mock_order.order_type.value = "LMT"
+        mock_order.entry_price = 1.1000
+        mock_order.stop_loss = 1.0950
+        mock_order.risk_per_trade = 0.001
+        mock_order.risk_reward_ratio = 2.0
+        mock_order.priority = 3
+        mock_order.position_strategy.value = "DAY"
+
+        # Simulate service returning this order
+        mock_loader.return_value = [mock_order]
+
+        # Mock convert_to_db_model so it returns a DB object
+        mock_db_order = Mock()
+        tm.state_service.convert_to_db_model = Mock(return_value=mock_db_order)
+
+        # Run the method under test
+        orders = tm.load_planned_orders()
+
+        # ==== Assertions ====
+        # Returned orders
+        assert len(orders) == 1
+        assert orders[0].symbol == "EUR"
+
+        # Service was called with the Excel path
+        mock_loader.assert_called_once_with("test.xlsx")
+
+        # DB persistence
+        mock_session.add.assert_called_once_with(mock_db_order)
+        mock_session.commit.assert_called_once()
 
     @patch('src.core.trading_manager.get_db_session')
     def test_can_place_order_basic_validation(self, mock_get_session, mock_data_feed, sample_planned_order):
@@ -465,7 +465,7 @@ class TestTradingManager:
         )
         
         # Convert to database model
-        db_model = tm._convert_to_db_model(planned_order)
+        db_model = tm.state_service.convert_to_db_model(planned_order)
         
         # Verify conversion - only fields that exist in PlannedOrderDB
         assert db_model.symbol == "EUR"

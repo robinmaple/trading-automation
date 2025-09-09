@@ -1,3 +1,6 @@
+from core.models import PlannedOrderDB, PositionStrategy
+
+
 class OrderStateService:
     """
     Service responsible for managing the persistence and state transitions
@@ -31,3 +34,38 @@ class OrderStateService:
         """
         # Phase 1: Delegate to existing logic.
         return self._trading_manager._create_executed_order_record(planned_order, fill_info)
+    
+    def convert_to_db_model(self, planned_order):
+        """
+        Convert PlannedOrder to PlannedOrderDB for database persistence.
+        Extracted from TradingManager._convert_to_db_model.
+        """
+        # Find position strategy in database
+        position_strategy = self._db_session.query(PositionStrategy).filter_by(
+            name=planned_order.position_strategy.value
+        ).first()
+        
+        if not position_strategy:
+            raise ValueError(f"Position strategy {planned_order.position_strategy.value} not found in database")
+        
+        # Live/Paper trading tracking - Get mode from the trading manager
+        is_live_trading = self._trading_manager._get_trading_mode()
+
+        db_model = PlannedOrderDB(
+            symbol=planned_order.symbol,
+            security_type=planned_order.security_type.value,
+            action=planned_order.action.value,
+            order_type=planned_order.order_type.value,
+            entry_price=planned_order.entry_price,
+            stop_loss=planned_order.stop_loss,
+            risk_per_trade=planned_order.risk_per_trade,
+            risk_reward_ratio=planned_order.risk_reward_ratio,
+            priority=planned_order.priority,
+            position_strategy_id=position_strategy.id,
+            status='PENDING',
+            is_live_trading=is_live_trading
+        )
+
+        print(f"DEBUG: Created DB model - entry_price: {db_model.entry_price}, stop_loss: {db_model.stop_loss}")
+
+        return db_model
