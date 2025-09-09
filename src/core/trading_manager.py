@@ -62,11 +62,11 @@ class TradingManager:
         # ==================== SERVICE LAYER INTEGRATION - BEGIN ====================
         # Initialize the new service classes for the refactored architecture.
         # Phase 0: These services will initially delegate back to TradingManager methods.
-        self.eligibility_service = OrderEligibilityService(self)
         self.execution_service = OrderExecutionService(self, self.ibkr_client)
         self.state_service = OrderStateService(self, self.db_session)
         self.sizing_service = PositionSizingService(self)
         self.loading_service = OrderLoadingService(self, self.db_session)
+        self.eligibility_service = None
         # ==================== SERVICE LAYER INTEGRATION - END ====================
 
     def _initialize(self):
@@ -79,13 +79,14 @@ class TradingManager:
             return False
             
         self.probability_engine = FillProbabilityEngine(self.data_feed)
-        
+      
         # ==================== SERVICE DEPENDENCY SETUP - BEGIN ====================
-        # Phase 1: Set dependencies for services that need them
-        self.eligibility_service.set_dependencies(self.planned_orders, self.probability_engine)
+        # Initialize complex services that need probability_engine
+        self.eligibility_service = OrderEligibilityService(self.planned_orders, self.probability_engine)
+        # Set dependencies for execution service
         self.execution_service.set_dependencies(self.order_persistence, self.active_orders)
         # ==================== SERVICE DEPENDENCY SETUP - END ====================
-
+        
         self._initialized = True
         print("✅ Trading manager initialized")
         

@@ -1,4 +1,4 @@
-from core.models import PlannedOrderDB, PositionStrategy
+from src.core.models import PlannedOrderDB, PositionStrategy
 
 
 class OrderStateService:
@@ -19,10 +19,34 @@ class OrderStateService:
             planned_order (PlannedOrder): The order to update.
             new_status (str): The new status (e.g., 'LIVE_WORKING', 'CANCELLED').
             order_ids (list, optional): List of order IDs from the broker.
+        Returns:
+            bool: True if successful, False if order not found
         """
-        # Phase 1: Delegate to existing logic.
-        self._trading_manager._update_order_status(planned_order, new_status, order_ids)
-
+        try:
+            # Find the order in database
+            db_order = self._db_session.query(PlannedOrderDB).filter_by(
+                symbol=planned_order.symbol,
+                entry_price=planned_order.entry_price,
+                stop_loss=planned_order.stop_loss,
+                action=planned_order.action.value
+            ).first()
+            
+            if db_order:
+                db_order.status = new_status
+                if order_ids:
+                    db_order.ibkr_order_ids = str(order_ids)
+                self._db_session.commit()
+                print(f"✅ Updated order status to {new_status} in database")
+                return True
+            else:
+                print(f"❌ Order not found in database: {planned_order.symbol}")
+                return False
+                
+        except Exception as e:
+            self._db_session.rollback()
+            print(f"❌ Failed to update order status: {e}")
+            return False
+        
     def create_executed_order(self, planned_order, fill_info):
         """
         Creates a new ExecutedOrder record from a PlannedOrder and fill information.

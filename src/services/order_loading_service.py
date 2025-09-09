@@ -1,5 +1,5 @@
-from core.models import PlannedOrderDB
-from core.planned_order import PlannedOrderManager
+from src.core.models import PlannedOrderDB
+from src.core.planned_order import PlannedOrderManager
 
 
 class OrderLoadingService:
