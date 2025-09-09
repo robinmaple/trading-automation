@@ -1,3 +1,6 @@
+import datetime
+
+
 class OrderEligibilityService:
     """
     Service responsible for determining if a PlannedOrder is eligible for execution.
@@ -5,9 +8,16 @@ class OrderEligibilityService:
     """
 
     def __init__(self, trading_manager):
-        # Phase 1: Hold a reference to the TradingManager to delegate calls
-        # during the initial refactoring phase. This will be removed later.
+        # Phase 1: We need references to the data this service requires
         self._trading_manager = trading_manager
+        # These will be set after TradingManager initialization
+        self.planned_orders = []
+        self.probability_engine = None
+
+    def set_dependencies(self, planned_orders, probability_engine):
+        """Set the dependencies required for finding executable orders"""
+        self.planned_orders = planned_orders
+        self.probability_engine = probability_engine
 
     def can_trade(self, planned_order):
         """
@@ -27,6 +37,25 @@ class OrderEligibilityService:
         Finds all orders that meet execution criteria based on market conditions.
         Returns: List of executable orders with their fill probability.
         """
-        # Phase 0: Delegate to the existing logic in TradingManager.
-        # This method will be refactored to implement the logic internally later.
-        return self._trading_manager._find_executable_orders()
+        # Phase 1: Implement the actual logic instead of delegating
+        executable = []
+        
+        for order in self.planned_orders:
+            # Check basic constraints
+            if not self._trading_manager._can_place_order(order):
+                print(f"   ⚠️  {order.symbol}: Cannot place order (basic constraints failed)")
+                continue
+            
+            # Check intelligent execution criteria
+            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
+            
+            print(f"   Checking {order.action.value} {order.symbol}: should_execute={should_execute}, fill_prob={fill_prob:.3f}")
+
+            if should_execute:
+                executable.append({
+                    'order': order,
+                    'fill_probability': fill_prob,
+                    'timestamp': datetime.datetime.now()
+                })
+        
+        return executable

@@ -78,6 +78,12 @@ class TradingManager:
             
         self.probability_engine = FillProbabilityEngine(self.data_feed)
         
+        # ==================== SERVICE DEPENDENCY SETUP - BEGIN ====================
+        # Phase 1: Set dependencies for services that need them
+        self.eligibility_service.set_dependencies(self.planned_orders, self.probability_engine)
+        self.execution_service.set_dependencies(self.order_persistence, self.active_orders)
+        # ==================== SERVICE DEPENDENCY SETUP - END ====================
+
         self._initialized = True
         print("✅ Trading manager initialized")
         
@@ -139,101 +145,13 @@ class TradingManager:
 
     def _execute_single_order(self, order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading):
         """
-        Core order execution logic - extracted from _execute_order for service delegation.
-        This method contains the actual order placement implementation.
+        Core order execution logic - now delegated to the execution service.
         """
-        # Real order execution if executor is available and connected
-        ibkr_connected = self.ibkr_client and self.ibkr_client.connected
-        if ibkr_connected:
-            print("   Taking LIVE order execution path...")
-            
-            contract = order.to_ib_contract()
-            
-            # Place real order through IBKR
-            order_ids = self.ibkr_client.place_bracket_order(
-                contract,
-                order.action.value,
-                order.order_type.value,
-                order.security_type.value,
-                order.entry_price,
-                order.stop_loss,
-                order.risk_per_trade,
-                order.risk_reward_ratio,
-                total_capital
-            )
-            
-            if order_ids:
-                print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
-                
-                # ==================== SERVICE INTEGRATION - BEGIN ====================
-                # Phase 0: Delegate order status update to the state service.
-                update_success = self.state_service.update_planned_order_status(order, 'LIVE', order_ids)
-                # ==================== SERVICE INTEGRATION - END ====================
-                print(f"   Order status update success: {update_success}")
-                
-                # ==================== LIVE EXECUTION PERSISTENCE - BEGIN ====================
-                # Record execution for live orders - use 'SUBMITTED' status since not filled yet
-                execution_id = self.order_persistence.record_order_execution(
-                    order, 
-                    order.entry_price,  # This is the intended price, not actual fill price
-                    quantity, 
-                    0.0,  # Commission will be updated via IBKR callbacks
-                    'SUBMITTED',  # Changed from 'LIVE' to match order lifecycle
-                    is_live_trading
-                )
-                
-                if execution_id:
-                    print(f"✅ Execution recorded for live order: ID {execution_id}")
-                else:
-                    print("❌ FAILED to record execution for live order")
-                # ==================== LIVE EXECUTION PERSISTENCE - END ====================
-                
-                # Create ActiveOrder object for tracking
-                db_id = self._find_planned_order_db_id(order)
-                if db_id:
-                    active_order = ActiveOrder(
-                        planned_order=order,
-                        order_ids=order_ids,
-                        db_id=db_id,
-                        status='SUBMITTED',
-                        capital_commitment=capital_commitment,
-                        timestamp=datetime.datetime.now(),
-                        is_live_trading=is_live_trading,
-                        fill_probability=fill_probability
-                    )
-                    self.active_orders[order_ids[0]] = active_order
-                else:
-                    print("⚠️  Could not create ActiveOrder - database ID not found")
-                
-            else:
-                print("❌ Failed to place real order through IBKR")
-                
-        else:
-            print("   Taking SIMULATION order execution path...")
-            # Fall back to simulation
-            print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
-            
-            # ==================== SERVICE INTEGRATION - BEGIN ====================
-            # Phase 0: Delegate order status update to the state service.
-            update_success = self.state_service.update_planned_order_status(order, 'FILLED')
-            # ==================== SERVICE INTEGRATION - END ====================
-            print(f"   Order status update success: {update_success}")
-            
-            # Record simulated execution
-            execution_id = self.order_persistence.record_order_execution(
-                order, 
-                order.entry_price, 
-                quantity, 
-                0.0, 
-                'FILLED', 
-                is_live_trading
-            )
-            
-            if execution_id:
-                print(f"✅ Simulation execution recorded: ID {execution_id}")
-            else:
-                print("❌ FAILED to record simulation execution")
-    
+        # Phase 1: Delegate to the service which now contains the actual logic.
+        return self.execution_service.execute_single_order(
+            order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading
+        )
+
     # ==================== ACTIVE ORDER MANAGEMENT - BEGIN ====================
     def _find_worst_active_order(self, min_score_threshold: float = 0.0) -> Optional[ActiveOrder]:
         """
@@ -336,49 +254,10 @@ class TradingManager:
     # ==================== QUANTITY CALCULATION - BEGIN ====================
     def _calculate_quantity(self, security_type, entry_price, stop_loss, total_capital, risk_per_trade):
         """Calculate position size based on security type and risk management"""
-        if entry_price is None or stop_loss is None:
-            raise ValueError("Entry price and stop loss are required for quantity calculation")
-            
-        # Different risk calculation based on security type
-        if security_type == "OPT":
-            # For options, risk is the premium difference per contract
-            # Options are typically 100 shares per contract, so multiply by 100
-            risk_per_unit = abs(entry_price - stop_loss) * 100
-        else:
-            # For stocks, forex, futures, etc. - risk is price difference per share/unit
-            risk_per_unit = abs(entry_price - stop_loss)
-        
-        if risk_per_unit == 0:
-            raise ValueError("Entry price and stop loss cannot be the same")
-            
-        risk_amount = total_capital * risk_per_trade
-        base_quantity = risk_amount / risk_per_unit
-        
-        # Different rounding and minimums based on security type
-        if security_type == "CASH":
-            # Forex typically trades in standard lots (100,000) or mini lots (10,000)
-            # Round to the nearest 10,000 units for reasonable position sizing
-            quantity = round(base_quantity / 10000) * 10000
-            quantity = max(quantity, 10000)  # Minimum 10,000 units
-        elif security_type == "STK":
-            # Stocks trade in whole shares
-            quantity = round(base_quantity)
-            quantity = max(quantity, 1)  # Minimum 1 share
-        elif security_type == "OPT":
-            # Options trade in whole contracts (each typically represents 100 shares)
-            quantity = round(base_quantity)
-            quantity = max(quantity, 1)  # Minimum 1 contract
-            print(f"Options position: {quantity} contracts (each = 100 shares)")
-        elif security_type == "FUT":
-            # Futures trade in whole contracts
-            quantity = round(base_quantity)
-            quantity = max(quantity, 1)  # Minimum 1 contract
-        else:
-            # Default to whole units for other security types
-            quantity = round(base_quantity)
-            quantity = max(quantity, 1)
-            
-        return quantity
+        # Phase 1: Delegate to the service which now contains the actual logic.
+        return self.sizing_service.calculate_quantity(
+            security_type, entry_price, stop_loss, total_capital, risk_per_trade
+        )
     # ==================== QUANTITY CALCULATION - END ====================
 
     def start_monitoring(self, interval_seconds: int = 5):
@@ -657,28 +536,9 @@ class TradingManager:
 
     def _find_executable_orders(self):
         """Find orders that meet execution criteria"""
-        executable = []
-        
-        for order in self.planned_orders:
-            # Check basic constraints
-            if not self._can_place_order(order):
-                print(f"   ⚠️  {order.symbol}: Cannot place order (basic constraints failed)")
-                continue
-            
-            # Check intelligent execution criteria
-            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
-            
-            print(f"   Checking {order.action.value} {order.symbol}: should_execute={should_execute}, fill_prob={fill_prob:.3f}")
-
-            if should_execute:
-                executable.append({
-                    'order': order,
-                    'fill_probability': fill_prob,
-                    'timestamp': datetime.datetime.now()
-                })
-        
-        return executable
-
+        # Phase 1: Delegate to the service which now contains the actual logic.
+        return self.eligibility_service.find_executable_orders()
+    
     def _can_place_order(self, order):
         """Basic validation for order placement - now uses the validation helper"""
         # Check if we already have max open orders
@@ -944,18 +804,3 @@ class TradingManager:
         
         return worst_order
     # Phase 2 - Worst Active Order Method - End
-
-    # ==================== POSITION SIZING SERVICE BRIDGE - BEGIN ====================
-    def _calculate_position_size(self, planned_order, total_capital, risk_per_trade):
-        """
-        Bridge method for PositionSizingService to delegate to the existing calculation logic.
-        Extracts parameters from PlannedOrder and calls _calculate_quantity.
-        """
-        return self._calculate_quantity(
-            planned_order.security_type.value,
-            planned_order.entry_price,
-            planned_order.stop_loss,
-            total_capital,
-            risk_per_trade
-        )
-    # ==================== POSITION SIZING SERVICE BRIDGE - END ====================
