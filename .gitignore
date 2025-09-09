@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 plan.xlsx
 ~$plan.xlsx
+trading_automation.db
 __pycache__/
 *.py[cod]
 *$py.class
