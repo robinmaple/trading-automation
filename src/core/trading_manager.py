@@ -13,16 +13,13 @@ from src.core.database import get_db_session
 from src.core.models import PlannedOrderDB, PositionStrategy
 # ==================== DATABASE INTEGRATION - END ====================
 
-# ==================== ORDER PERSISTENCE SERVICE - BEGIN ====================
-from src.core.order_persistence_service import OrderPersistenceService
-# ==================== ORDER PERSISTENCE SERVICE - END ====================
-
 # ==================== SERVICE LAYER INTEGRATION - BEGIN ====================
 from src.services.order_eligibility_service import OrderEligibilityService
 from src.services.order_execution_service import OrderExecutionService
 from src.services.order_state_service import OrderStateService
 from src.services.position_sizing_service import PositionSizingService
 from src.services.order_loading_service import OrderLoadingService
+from src.services.order_persistence_service import OrderPersistenceService
 # ==================== SERVICE LAYER INTEGRATION - END ====================
 
 class TradingManager:
@@ -86,7 +83,7 @@ class TradingManager:
         # Set dependencies for execution service
         self.execution_service.set_dependencies(self.order_persistence, self.active_orders)
         # ==================== SERVICE DEPENDENCY SETUP - END ====================
-        
+
         self._initialized = True
         print("✅ Trading manager initialized")
         

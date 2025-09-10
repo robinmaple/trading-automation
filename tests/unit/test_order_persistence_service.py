@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import Mock, patch
-from src.core.order_persistence_service import OrderPersistenceService
+from src.services.order_persistence_service import OrderPersistenceService
 from src.core.models import PlannedOrderDB, ExecutedOrderDB, PositionStrategy
 
 class TestOrderPersistenceService:

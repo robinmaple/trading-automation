@@ -5,7 +5,7 @@ from src.core.trading_manager import TradingManager
 from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy, ActiveOrder
 from src.core.probability_engine import FillProbabilityEngine
 from src.core.models import ExecutedOrderDB, PlannedOrderDB
-from src.core.order_persistence_service import OrderPersistenceService
+from src.services.order_persistence_service import OrderPersistenceService
 # Make sure this import is correct
 
 class TestTradingManager:
