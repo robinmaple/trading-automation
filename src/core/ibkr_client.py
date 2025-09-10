@@ -1,9 +1,11 @@
 from ibapi.client import *
 from ibapi.wrapper import *
 from ibapi.order_cancel import OrderCancel
-from typing import Optional, Any
+from typing import List, Optional, Any
 import threading
 import datetime
+
+from core.ibkr_types import IbkrOrder, IbkrPosition
 
 class IbkrClient(EClient, EWrapper):
     """
@@ -21,6 +23,14 @@ class IbkrClient(EClient, EWrapper):
         self.account_number = None
         self.is_paper_account = False
         self.displayed_errors = set()
+
+            # Phase 2: Reconciliation data tracking
+        self.open_orders: List[IbkrOrder] = []
+        self.positions: List[IbkrPosition] = []
+        self.orders_received_event = threading.Event()
+        self.positions_received_event = threading.Event()
+        self.open_orders_end_received = False
+        self.positions_end_received = False
 
     def connect(self, host='127.0.0.1', port=7497, client_id=0) -> bool:
         """Establish connection to IB Gateway/TWS. Returns success status."""
@@ -320,3 +330,132 @@ class IbkrClient(EClient, EWrapper):
         except Exception as e:
             print(f"❌ Failed to cancel order {order_id}: {e}")
             return False
+        
+    # Add new methods for reconciliation:
+    def get_open_orders(self) -> List[IbkrOrder]:
+        """
+        Fetch all open orders from IBKR API synchronously.
+        Returns: List of IbkrOrder objects or empty list on failure.
+        """
+        if not self.connected:
+            print("❌ Not connected to IBKR - cannot fetch open orders")
+            return []
+        
+        try:
+            self.open_orders.clear()
+            self.open_orders_end_received = False
+            self.orders_received_event.clear()
+            
+            print("📋 Requesting open orders from IBKR...")
+            self.reqAllOpenOrders()  # IBKR API call to get all open orders
+            
+            # Wait for data with timeout
+            if self.orders_received_event.wait(10.0):
+                print(f"✅ Received {len(self.open_orders)} open orders")
+                return self.open_orders.copy()
+            else:
+                print("❌ Timeout waiting for open orders data")
+                return []
+                
+        except Exception as e:
+            print(f"❌ Failed to fetch open orders: {e}")
+            return []
+
+    def get_positions(self) -> List[IbkrPosition]:
+        """
+        Fetch all positions from IBKR API synchronously.
+        Returns: List of IbkrPosition objects or empty list on failure.
+        """
+        if not self.connected:
+            print("❌ Not connected to IBKR - cannot fetch positions")
+            return []
+        
+        try:
+            self.positions.clear()
+            self.positions_end_received = False
+            self.positions_received_event.clear()
+            
+            print("📊 Requesting positions from IBKR...")
+            self.reqPositions()  # IBKR API call to get all positions
+            
+            # Wait for data with timeout
+            if self.positions_received_event.wait(10.0):
+                print(f"✅ Received {len(self.positions)} positions")
+                return self.positions.copy()
+            else:
+                print("❌ Timeout waiting for positions data")
+                return []
+                
+        except Exception as e:
+            print(f"❌ Failed to fetch positions: {e}")
+            return []
+
+    # Add new callback methods for order and position data:
+    def openOrder(self, orderId, contract, order, orderState):
+        """Callback: Received open order data"""
+        try:
+            ibkr_order = IbkrOrder(
+                order_id=orderId,
+                client_id=order.clientId,
+                perm_id=order.permId,
+                action=order.action,
+                order_type=order.orderType,
+                total_quantity=order.totalQuantity,
+                filled_quantity=orderState.filled,
+                remaining_quantity=orderState.remaining,
+                avg_fill_price=orderState.avgFillPrice,
+                status=orderState.status,
+                lmt_price=getattr(order, 'lmtPrice', None),
+                aux_price=getattr(order, 'auxPrice', None),
+                parent_id=getattr(order, 'parentId', None),
+                why_held=getattr(orderState, 'whyHeld', ''),
+                last_update_time=datetime.now()
+            )
+            self.open_orders.append(ibkr_order)
+            
+        except Exception as e:
+            print(f"Error processing open order {orderId}: {e}")
+
+    def openOrderEnd(self):
+        """Callback: Finished receiving open orders"""
+        self.open_orders_end_received = True
+        self.orders_received_event.set()
+        print("📋 Open orders request completed")
+
+    def position(self, account: str, contract, position: float, avgCost: float):
+        """Callback: Received position data"""
+        try:
+            ibkr_position = IbkrPosition(
+                account=account,
+                contract_id=contract.conId,
+                symbol=contract.symbol,
+                security_type=contract.secType,
+                currency=contract.currency,
+                position=position,
+                avg_cost=avgCost
+            )
+            self.positions.append(ibkr_position)
+            
+        except Exception as e:
+            print(f"Error processing position for {contract.symbol}: {e}")
+
+    def positionEnd(self):
+        """Callback: Finished receiving positions"""
+        self.positions_end_received = True
+        self.positions_received_event.set()
+        print("📊 Positions request completed")
+
+    # Add error handling for position requests
+    def error(self, reqId, errorCode, errorString, advancedOrderReject=""):
+        """Handle errors and messages"""
+        super().error(reqId, errorCode, errorString, advancedOrderReject)
+        
+        # Handle position request errors
+        if errorCode in [321, 322]:  # Position related errors
+            print(f"Position Error {errorCode}: {errorString}")
+            self.positions_received_event.set()
+        
+        # Handle open order request errors  
+        if errorCode in [201, 202]:  # Order related errors
+            print(f"Open Order Error {errorCode}: {errorString}")
+            self.orders_received_event.set()

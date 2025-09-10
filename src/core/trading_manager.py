@@ -27,6 +27,10 @@ from src.services.state_service import StateService
 from src.core.events import OrderEvent, OrderState
 # ==================== STATE SERVICE INTEGRATION - END ====================
 
+# Reconciliation Engine Integration - Begin
+from src.core.reconciliation_engine import ReconciliationEngine
+# Reconciliation Engine Integration - End
+
 class TradingManager:
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", 
                  ibkr_client: Optional[IbkrClient] = None,
@@ -38,7 +42,6 @@ class TradingManager:
         # Phase 2 - ActiveOrder Tracking - Begin
         self.active_orders: Dict[int, ActiveOrder] = {}  # Changed: Now uses ActiveOrder class
         # Phase 2 - ActiveOrder Tracking - End
-        self.active_orders: Dict[int, Dict] = {}
         self.monitoring = False
         self.monitor_thread: Optional[threading.Thread] = None
         self.total_capital = 100000
@@ -68,11 +71,16 @@ class TradingManager:
         self.state_service.subscribe('order_state_change', self._handle_order_state_change)
         # ==================== STATE SERVICE INTEGRATION - END ====================
 
+        # ==================== RECONCILIATION ENGINE INTEGRATION - BEGIN ====================
+        # Initialize reconciliation engine for state synchronization
+        self.reconciliation_engine = ReconciliationEngine(ibkr_client, self.state_service)
+        # ==================== RECONCILIATION ENGINE INTEGRATION - END ====================
+        
         # ==================== SERVICE LAYER INTEGRATION - BEGIN ====================
         # Initialize the new service classes for the refactored architecture.
         # Phase 0: These services will initially delegate back to TradingManager methods.
         self.execution_service = OrderExecutionService(self, self.ibkr_client)
-        self.state_service = OrderStateService(self, self.db_session)
+        self.order_state_service = OrderStateService(self, self.db_session)
         self.sizing_service = PositionSizingService(self)
         self.loading_service = OrderLoadingService(self, self.db_session)
         self.eligibility_service = None
@@ -293,6 +301,9 @@ class TradingManager:
             print("❌ Failed to initialize trading manager")
             return False
 
+        # Start reconciliation engine if IBKR client is connected
+        if self.ibkr_client and self.ibkr_client.connected:
+            self.reconciliation_engine.start()
         """Start continuous monitoring"""
         if not self.data_feed.is_connected():
             raise Exception("Data feed not connected")
@@ -428,7 +439,7 @@ class TradingManager:
         # Persist valid orders to database
         for order in valid_orders:
             try:
-                db_order = self.state_service.convert_to_db_model(order)
+                db_order = self.order_state_service.convert_to_db_model(order)
                 self.db_session.add(db_order)
                 print(f"✅ Persisted order: {order.symbol}")
             except Exception as e:
@@ -499,6 +510,9 @@ class TradingManager:
         if self.monitor_thread:
             self.monitor_thread.join(timeout=5)
         
+        # Stop reconciliation engine
+        self.reconciliation_engine.stop()
+
         # ==================== DATABASE INTEGRATION - BEGIN ====================
         # Close database session on shutdown
         if self.db_session:
