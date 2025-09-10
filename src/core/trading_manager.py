@@ -16,7 +16,6 @@ from src.core.models import PlannedOrderDB, PositionStrategy
 # ==================== SERVICE LAYER INTEGRATION - BEGIN ====================
 from src.services.order_eligibility_service import OrderEligibilityService
 from src.services.order_execution_service import OrderExecutionService
-from src.services.order_state_service import OrderStateService
 from src.services.position_sizing_service import PositionSizingService
 from src.services.order_loading_service import OrderLoadingService
 from src.services.order_persistence_service import OrderPersistenceService
@@ -61,7 +60,7 @@ class TradingManager:
 
         # ==================== ORDER PERSISTENCE SERVICE - BEGIN ====================
         # Initialize order persistence service
-        self.order_persistence = order_persistence_service or OrderPersistenceService(self.db_session)
+        self.order_persistence_service = order_persistence_service or OrderPersistenceService(self.db_session)
         # ==================== ORDER PERSISTENCE SERVICE - END ====================
 
         # ==================== STATE SERVICE INTEGRATION - BEGIN ====================
@@ -80,7 +79,6 @@ class TradingManager:
         # Initialize the new service classes for the refactored architecture.
         # Phase 0: These services will initially delegate back to TradingManager methods.
         self.execution_service = OrderExecutionService(self, self.ibkr_client)
-        self.order_state_service = OrderStateService(self, self.db_session)
         self.sizing_service = PositionSizingService(self)
         self.loading_service = OrderLoadingService(self, self.db_session)
         self.eligibility_service = None
@@ -101,7 +99,7 @@ class TradingManager:
         # Initialize complex services that need probability_engine
         self.eligibility_service = OrderEligibilityService(self.planned_orders, self.probability_engine)
         # Set dependencies for execution service
-        self.execution_service.set_dependencies(self.order_persistence, self.active_orders)
+        self.execution_service.set_dependencies(self.order_persistence_service, self.active_orders)
         # ==================== SERVICE DEPENDENCY SETUP - END ====================
 
         self._initialized = True
@@ -130,33 +128,6 @@ class TradingManager:
         elif event.new_state == OrderState.CANCELLED:
             print(f"❌ Order {event.order_id} was cancelled")
     # ==================== STATE EVENT HANDLER - END ====================
-
-    # ==================== STATE SERVICE INTEGRATION - BEGIN ====================
-    def _update_order_status(self, order, status, order_ids=None):
-        """
-        Update order status using StateService instead of direct DB access.
-        This replaces the old direct database update method.
-        """
-        # Convert string status to OrderState enum if needed
-        if isinstance(status, str):
-            try:
-                status = OrderState[status]
-            except KeyError:
-                print(f"Invalid status string: {status}")
-                return
-        
-        # Find the database ID for the order
-        db_order_id = self._find_planned_order_db_id(order)
-        if not db_order_id:
-            print(f"Order not found in database: {order.symbol}")
-            return False
-            
-        # Use StateService for the state update
-        details = {'order_ids': order_ids} if order_ids else None
-        return self.state_service.update_planned_order_state(
-            db_order_id, status, 'TradingManager', details
-        )
-    # ==================== STATE SERVICE INTEGRATION - END ====================
 
     def _execute_order(self, order, fill_probability):
         """
@@ -439,7 +410,7 @@ class TradingManager:
         # Persist valid orders to database
         for order in valid_orders:
             try:
-                db_order = self.order_state_service.convert_to_db_model(order)
+                db_order = self.order_persistence_service.convert_to_db_model(order)
                 self.db_session.add(db_order)
                 print(f"✅ Persisted order: {order.symbol}")
             except Exception as e:

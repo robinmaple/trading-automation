@@ -26,7 +26,7 @@ class TestTradingManager:
         assert not tm.monitoring
         # The db_session should be the mock we provided
         assert tm.db_session == mock_session
-        assert isinstance(tm.order_persistence, OrderPersistenceService)
+        assert isinstance(tm.order_persistence_service, OrderPersistenceService)
     
     @patch('src.core.trading_manager.get_db_session')
     def test_initialization_with_custom_persistence_service(self, mock_get_session, mock_data_feed):
@@ -41,7 +41,7 @@ class TestTradingManager:
             order_persistence_service=custom_persistence
         )
         
-        assert tm.order_persistence == custom_persistence
+        assert tm.order_persistence_service == custom_persistence
     
     @patch('src.core.trading_manager.get_db_session')
     def test_calculate_quantity_forex(self, mock_get_session, mock_data_feed):
@@ -114,7 +114,7 @@ class TestTradingManager:
         # ==================== TEST REFACTORING - BEGIN ====================
         # Now the TradingManager calls state_service, which should call the persistence service.
         # Let's mock the state service method to return success and verify it was called correctly.
-        with patch.object(tm.order_state_service, 'update_planned_order_status', return_value=True) as mock_state_update:
+        with patch.object(tm.order_persistence_service, 'update_planned_order_status', return_value=True) as mock_state_update:
         # ==================== TEST REFACTORING - END ====================
             # Execute order in simulation mode
             with patch('builtins.print'):
@@ -187,7 +187,7 @@ class TestTradingManager:
 
             # Mock convert_to_db_model so it returns a DB object
             mock_db_order = Mock()
-            tm.order_state_service.convert_to_db_model = Mock(return_value=mock_db_order)
+            tm.order_persistence_service.convert_to_db_model = Mock(return_value=mock_db_order)
 
             # Run the method under test
             orders = tm.load_planned_orders()
@@ -341,7 +341,7 @@ class TestTradingManager:
         )
         
         # Convert to database model
-        db_model = tm.order_state_service.convert_to_db_model(planned_order)
+        db_model = tm.order_persistence_service.convert_to_db_model(planned_order)
         
         # Verify conversion - only fields that exist in PlannedOrderDB
         assert db_model.symbol == "EUR"
