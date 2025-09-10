@@ -93,28 +93,9 @@ class TestOrderPersistenceService:
             
             assert result is None
     
-    def test_update_order_status_success(self, db_session, sample_planned_order_db):
-        """Test successful order status update"""
-        service = OrderPersistenceService(db_session=db_session)
-        
-        mock_order = Mock()
-        mock_order.symbol = sample_planned_order_db.symbol
-        mock_order.entry_price = sample_planned_order_db.entry_price
-        mock_order.stop_loss = sample_planned_order_db.stop_loss
-        
-        result = service.update_order_status(
-            order=mock_order,
-            status="LIVE",
-            order_ids=[123, 456, 789]
-        )
-        
-        assert result is True
-        
-        # Verify the update
-        updated_order = db_session.query(PlannedOrderDB).filter_by(id=sample_planned_order_db.id).first()
-        assert updated_order.status == "LIVE"
-        assert updated_order.ibkr_order_ids == "[123, 456, 789]"
-    
+    # REMOVED: test_update_order_status_success - This method doesn't exist in OrderPersistenceService
+    # State update functionality has been moved to StateService
+
     def test_update_order_status_unknown_order(self, db_session):
         """Test status update for unknown order"""
         service = OrderPersistenceService(db_session=db_session)

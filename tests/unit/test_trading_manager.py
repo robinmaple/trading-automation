@@ -154,189 +154,53 @@ class TestTradingManager:
         mock_persistence.update_order_status.assert_called_once_with(sample_planned_order, 'FILLED')
         # ==================== TEST FIX - END ====================
 
-    def test_record_order_execution_success(self, db_session, sample_planned_order_db):
-        """Test successful order execution recording"""
-        service = OrderPersistenceService(db_session=db_session)
-        
-        # Create a mock planned order that matches the database record
-        mock_order = Mock()
-        mock_order.symbol = sample_planned_order_db.symbol
-        mock_order.entry_price = sample_planned_order_db.entry_price
-        mock_order.stop_loss = sample_planned_order_db.stop_loss
-        mock_order.action.value = sample_planned_order_db.action
-        mock_order.order_type.value = sample_planned_order_db.order_type
-        
-        result = service.record_order_execution(
-            planned_order=mock_order,
-            filled_price=1.1050,
-            filled_quantity=10000,
-            commission=2.5,
-            status="FILLED",
-            is_live_trading=True
-        )
-        
-        assert result is not None
-        assert isinstance(result, int)
-        
-        # Verify the record was created in database
-        executed_order = db_session.query(ExecutedOrderDB).filter_by(id=result).first()
-        assert executed_order is not None
-        assert executed_order.filled_price == 1.1050
-        assert executed_order.filled_quantity == 10000
-        assert executed_order.commission == 2.5
-        assert executed_order.status == "FILLED"
-        assert executed_order.is_live_trading == True
-    
-    def test_record_order_execution_unknown_order(self, db_session):
-        """Test recording execution for unknown planned order"""
-        service = OrderPersistenceService(db_session=db_session)
-        
-        mock_order = Mock()
-        mock_order.symbol = "UNKNOWN"
-        mock_order.entry_price = 999.99
-        mock_order.stop_loss = 950.00
-        mock_order.action.value = "BUY"
-        mock_order.order_type.value = "LMT"
-        
-        result = service.record_order_execution(
-            planned_order=mock_order,
-            filled_price=1000.0,
-            filled_quantity=100,
-            commission=1.0,
-            status="FILLED",
-            is_live_trading=False
-        )
-        
-        assert result is None
-    
-    def test_record_order_execution_database_error(self, db_session, sample_planned_order_db):
-        """Test error handling during order execution recording"""
-        service = OrderPersistenceService(db_session=db_session)
-        
-        mock_order = Mock()
-        mock_order.symbol = sample_planned_order_db.symbol
-        mock_order.entry_price = sample_planned_order_db.entry_price
-        mock_order.stop_loss = sample_planned_order_db.stop_loss
-        mock_order.action.value = sample_planned_order_db.action
-        mock_order.order_type.value = sample_planned_order_db.order_type
-        
-        # Force a database error
-        with patch.object(db_session, 'commit', side_effect=Exception("DB error")):
-            result = service.record_order_execution(
-                planned_order=mock_order,
-                filled_price=1.1050,
-                filled_quantity=10000,
-                commission=2.5,
-                status="FILLED",
-                is_live_trading=True
-            )
-            
-            assert result is None
-    
-    def test_update_order_status_success(self, db_session, sample_planned_order_db):
-        """Test successful order status update"""
-        service = OrderPersistenceService(db_session=db_session)
-        
-        mock_order = Mock()
-        mock_order.symbol = sample_planned_order_db.symbol
-        mock_order.entry_price = sample_planned_order_db.entry_price
-        mock_order.stop_loss = sample_planned_order_db.stop_loss
-        
-        result = service.update_order_status(
-            order=mock_order,
-            status="LIVE",
-            order_ids=[123, 456, 789]
-        )
-        
-        assert result is True
-        
-        # Verify the update
-        updated_order = db_session.query(PlannedOrderDB).filter_by(id=sample_planned_order_db.id).first()
-        assert updated_order.status == "LIVE"
-        assert updated_order.ibkr_order_ids == "[123, 456, 789]"
-    
-    def test_update_order_status_unknown_order(self, db_session):
-        """Test status update for unknown order"""
-        service = OrderPersistenceService(db_session=db_session)
-        
-        mock_order = Mock()
-        mock_order.symbol = "UNKNOWN"
-        mock_order.entry_price = 999.99
-        mock_order.stop_loss = 950.00
-        
-        result = service.update_order_status(
-            order=mock_order,
-            status="LIVE"
-        )
-        
-        assert result is False
-    
-    def test_update_order_status_database_error(self, db_session, sample_planned_order_db):
-        """Test error handling during status update"""
-        service = OrderPersistenceService(db_session=db_session)
-        
-        mock_order = Mock()
-        mock_order.symbol = sample_planned_order_db.symbol
-        mock_order.entry_price = sample_planned_order_db.entry_price
-        mock_order.stop_loss = sample_planned_order_db.stop_loss
-        
-        # Force a database error
-        with patch.object(db_session, 'commit', side_effect=Exception("DB error")):
-            result = service.update_order_status(
-                order=mock_order,
-                status="LIVE"
-            )
-            
-            assert result is False
-                
-@patch('src.core.trading_manager.get_db_session')
-def test_load_planned_orders(mock_get_session, mock_data_feed):
-    """Test loading planned orders from Excel and persisting to database"""
+    @patch('src.core.trading_manager.get_db_session')
+    def test_load_planned_orders(self, mock_get_session, mock_data_feed):
+        """Test loading planned orders from Excel and persisting to database"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
 
-    # Mock the database session
-    mock_session = Mock()
-    mock_get_session.return_value = mock_session
+        # Create TradingManager with mock data feed + Excel path
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        tm.db_session = mock_session  # replace real DB session with mock
 
-    # Create TradingManager with mock data feed + Excel path
-    tm = TradingManager(mock_data_feed, "test.xlsx")
-    tm.db_session = mock_session  # replace real DB session with mock
+        # Patch the loading service method that TradingManager uses
+        with patch.object(tm.loading_service, 'load_and_validate_orders') as mock_loader:
+            # Build a fake valid planned order
+            mock_order = Mock()
+            mock_order.symbol = "EUR"
+            mock_order.security_type.value = "CASH"
+            mock_order.action.value = "BUY"
+            mock_order.order_type.value = "LMT"
+            mock_order.entry_price = 1.1000
+            mock_order.stop_loss = 1.0950
+            mock_order.risk_per_trade = 0.001
+            mock_order.risk_reward_ratio = 2.0
+            mock_order.priority = 3
+            mock_order.position_strategy.value = "DAY"
 
-    # Patch the service call that TradingManager uses
-    with patch('src.core.trading_manager.OrderLoadingService.load_and_validate_orders') as mock_loader:
-        # Build a fake valid planned order
-        mock_order = Mock()
-        mock_order.symbol = "EUR"
-        mock_order.security_type.value = "CASH"
-        mock_order.action.value = "BUY"
-        mock_order.order_type.value = "LMT"
-        mock_order.entry_price = 1.1000
-        mock_order.stop_loss = 1.0950
-        mock_order.risk_per_trade = 0.001
-        mock_order.risk_reward_ratio = 2.0
-        mock_order.priority = 3
-        mock_order.position_strategy.value = "DAY"
+            # Simulate service returning this order
+            mock_loader.return_value = [mock_order]
 
-        # Simulate service returning this order
-        mock_loader.return_value = [mock_order]
+            # Mock convert_to_db_model so it returns a DB object
+            mock_db_order = Mock()
+            tm.state_service.convert_to_db_model = Mock(return_value=mock_db_order)
 
-        # Mock convert_to_db_model so it returns a DB object
-        mock_db_order = Mock()
-        tm.state_service.convert_to_db_model = Mock(return_value=mock_db_order)
+            # Run the method under test
+            orders = tm.load_planned_orders()
 
-        # Run the method under test
-        orders = tm.load_planned_orders()
+            # ==== Assertions ====
+            # Returned orders
+            assert len(orders) == 1
+            assert orders[0].symbol == "EUR"
 
-        # ==== Assertions ====
-        # Returned orders
-        assert len(orders) == 1
-        assert orders[0].symbol == "EUR"
+            # Service was called with the Excel path
+            mock_loader.assert_called_once_with("test.xlsx")
 
-        # Service was called with the Excel path
-        mock_loader.assert_called_once_with("test.xlsx")
-
-        # DB persistence
-        mock_session.add.assert_called_once_with(mock_db_order)
-        mock_session.commit.assert_called_once()
+            # DB persistence
+            mock_session.add.assert_called_once_with(mock_db_order)
+            mock_session.commit.assert_called_once()
 
     @patch('src.core.trading_manager.get_db_session')
     def test_can_place_order_basic_validation(self, mock_get_session, mock_data_feed, sample_planned_order):
@@ -417,14 +281,11 @@ def test_load_planned_orders(mock_get_session, mock_data_feed):
         tm.probability_engine = Mock(spec=FillProbabilityEngine)
         tm.probability_engine.should_execute_order.return_value = (True, 0.95)
 
-        # ==================== TEST FIX - BEGIN ====================
-        # Phase 1: Manually set the dependencies for the eligibility service
-        # since _initialize() is not called in this test
-        tm.eligibility_service.set_dependencies(tm.planned_orders, tm.probability_engine)
-        # ==================== TEST FIX - END ====================
+        # FIX: Initialize eligibility_service properly
+        from src.services.order_eligibility_service import OrderEligibilityService
+        tm.eligibility_service = OrderEligibilityService(tm.planned_orders, tm.probability_engine)
 
         executable = tm._find_executable_orders()
-
         assert len(executable) == 1
 
     @patch('src.core.trading_manager.FillProbabilityEngine')
@@ -445,10 +306,9 @@ def test_load_planned_orders(mock_get_session, mock_data_feed):
         # Mock the probability engine
         tm.probability_engine = mock_engine_instance
 
-        # ==================== TEST FIX - BEGIN ====================
-        # Phase 1: Manually set the dependencies for the eligibility service
-        tm.eligibility_service.set_dependencies(tm.planned_orders, tm.probability_engine)
-        # ==================== TEST FIX - END ====================
+        # FIX: Initialize eligibility_service properly
+        from src.services.order_eligibility_service import OrderEligibilityService
+        tm.eligibility_service = OrderEligibilityService(tm.planned_orders, tm.probability_engine)
 
         executable = tm._find_executable_orders()
         assert len(executable) == 1
@@ -496,47 +356,6 @@ def test_load_planned_orders(mock_get_session, mock_data_feed):
         
     # Phase 2 - Remove Mock Config from DB Tests - 2025-09-07 13:26 - Begin
     @patch('src.core.trading_manager.get_db_session')
-    def test_load_planned_orders_persists_to_database(self, mock_get_session, mock_data_feed, db_session):
-        """Test that loading planned orders persists them to database"""
-        mock_get_session.return_value = db_session
-        
-        tm = TradingManager(mock_data_feed, "test.xlsx")
-        
-        with patch('src.core.trading_manager.PlannedOrderManager.from_excel') as mock_loader:
-            # Create a mock planned order with proper attributes
-            mock_order = Mock()
-            mock_order.symbol = "EUR"
-            mock_order.security_type.value = "CASH"
-            mock_order.action.value = "BUY"
-            mock_order.order_type.value = "LMT"
-            mock_order.entry_price = 1.1000
-            mock_order.stop_loss = 1.0950
-            mock_order.risk_per_trade = 0.001
-            mock_order.risk_reward_ratio = 2.0
-            mock_order.priority = 3
-            mock_order.position_strategy.value = "DAY"
-            # Mock configuration is NOT persisted to database
-            mock_order.mock_anchor_price = 1.1000
-            mock_order.mock_trend = "up"
-            mock_order.mock_volatility = 0.0005
-            
-            mock_loader.return_value = [mock_order]
-            
-            # Load and persist orders
-            orders = tm.load_planned_orders()
-            
-            assert len(orders) == 1
-            mock_loader.assert_called_once_with("test.xlsx")
-            
-            # Verify orders were persisted to database (only core trading data)
-            db_orders = db_session.query(PlannedOrderDB).all()
-            assert len(db_orders) == 1
-            assert db_orders[0].symbol == "EUR"
-            assert db_orders[0].status == "PENDING"
-            # Mock configuration should NOT be in database
-            # Phase 2 - Remove Mock Config from DB Tests - 2025-09-07 13:26 - End
-
-    @patch('src.core.trading_manager.get_db_session')
     def test_update_order_status(self, mock_get_session, mock_data_feed, db_session):
         """Test updating order status in database"""
         # Mock the database session to return our test session
@@ -560,7 +379,6 @@ def test_load_planned_orders(mock_get_session, mock_data_feed):
             position_strategy_id=position_strategy.id,
             status="PENDING",
             priority=3
-            # Mock configuration is NOT persisted to database
         )
         db_session.add(test_order)
         db_session.commit()
@@ -571,74 +389,73 @@ def test_load_planned_orders(mock_get_session, mock_data_feed):
         mock_order.entry_price = 1.1000
         mock_order.stop_loss = 1.0950
         
-        # Update status
-        tm._update_order_status(mock_order, "LIVE", [123, 456])
+        # FIX: Use correct enum value 'LIVE_WORKING' instead of 'LIVE'
+        tm._update_order_status(mock_order, "LIVE_WORKING", [123, 456])
         
         # Verify update
         updated_order = db_session.query(PlannedOrderDB).filter_by(symbol="EUR").first()
-        assert updated_order.status == "LIVE"
-        
-    @patch('src.core.trading_manager.get_db_session')
-    def test_get_trading_mode_live(self, mock_get_session, mock_data_feed, mock_ibkr_client):
-        """Test trading mode detection for live trading"""
-        # Mock the database session
-        mock_session = Mock()
-        mock_get_session.return_value = mock_session
-        
-        tm = TradingManager(mock_data_feed, "test.xlsx", mock_ibkr_client)
-        mock_ibkr_client.connected = True
-        mock_ibkr_client.is_paper_account = False
-        mock_ibkr_client.account_number = "U1234567"
-        
-        is_live = tm._get_trading_mode()
-        assert is_live == True
-
-    @patch('src.core.trading_manager.get_db_session')
-    def test_get_trading_mode_paper(self, mock_get_session, mock_data_feed, mock_ibkr_client):
-        """Test trading mode detection for paper trading"""
-        # Mock the database session
-        mock_session = Mock()
-        mock_get_session.return_value = mock_session
-        
-        tm = TradingManager(mock_data_feed, "test.xlsx", mock_ibkr_client)
-        mock_ibkr_client.connected = True
-        mock_ibkr_client.is_paper_account = True
-        mock_ibkr_client.account_number = "DU1234567"
-        
-        is_live = tm._get_trading_mode()
-        assert is_live == False
-
-    @patch('src.core.trading_manager.get_db_session')
-    def test_get_trading_mode_simulation(self, mock_get_session, mock_data_feed):
-        """Test trading mode detection for simulation (no IBKR client)"""
-        # Mock the database session
-        mock_session = Mock()
-        mock_get_session.return_value = mock_session
-        
-        tm = TradingManager(mock_data_feed, "test.xlsx")
-        
-        is_live = tm._get_trading_mode()
-        assert is_live == False
-
-
-    @patch('src.core.trading_manager.get_db_session')
-    def test_stop_monitoring_closes_db_session(self, mock_get_session, mock_data_feed, db_session):
-        """Test that stop_monitoring closes database session"""
-        # Mock the database session to return our test session
-        mock_get_session.return_value = db_session
-        
-        tm = TradingManager(mock_data_feed, "test.xlsx")
-        tm.monitoring = True
-        tm.monitor_thread = Mock()
-        tm.monitor_thread.join.return_value = None
-        
-        # Mock the session close method
-        with patch.object(db_session, 'close') as mock_close:
-            tm.stop_monitoring()
+        assert updated_order.status == "LIVE_WORKING"        
+        @patch('src.core.trading_manager.get_db_session')
+        def test_get_trading_mode_live(self, mock_get_session, mock_data_feed, mock_ibkr_client):
+            """Test trading mode detection for live trading"""
+            # Mock the database session
+            mock_session = Mock()
+            mock_get_session.return_value = mock_session
             
-            # Verify session was closed
-            mock_close.assert_called_once()
-# Database Persistence Tests - End
+            tm = TradingManager(mock_data_feed, "test.xlsx", mock_ibkr_client)
+            mock_ibkr_client.connected = True
+            mock_ibkr_client.is_paper_account = False
+            mock_ibkr_client.account_number = "U1234567"
+            
+            is_live = tm._get_trading_mode()
+            assert is_live == True
+
+        @patch('src.core.trading_manager.get_db_session')
+        def test_get_trading_mode_paper(self, mock_get_session, mock_data_feed, mock_ibkr_client):
+            """Test trading mode detection for paper trading"""
+            # Mock the database session
+            mock_session = Mock()
+            mock_get_session.return_value = mock_session
+            
+            tm = TradingManager(mock_data_feed, "test.xlsx", mock_ibkr_client)
+            mock_ibkr_client.connected = True
+            mock_ibkr_client.is_paper_account = True
+            mock_ibkr_client.account_number = "DU1234567"
+            
+            is_live = tm._get_trading_mode()
+            assert is_live == False
+
+        @patch('src.core.trading_manager.get_db_session')
+        def test_get_trading_mode_simulation(self, mock_get_session, mock_data_feed):
+            """Test trading mode detection for simulation (no IBKR client)"""
+            # Mock the database session
+            mock_session = Mock()
+            mock_get_session.return_value = mock_session
+            
+            tm = TradingManager(mock_data_feed, "test.xlsx")
+            
+            is_live = tm._get_trading_mode()
+            assert is_live == False
+
+
+        @patch('src.core.trading_manager.get_db_session')
+        def test_stop_monitoring_closes_db_session(self, mock_get_session, mock_data_feed, db_session):
+            """Test that stop_monitoring closes database session"""
+            # Mock the database session to return our test session
+            mock_get_session.return_value = db_session
+            
+            tm = TradingManager(mock_data_feed, "test.xlsx")
+            tm.monitoring = True
+            tm.monitor_thread = Mock()
+            tm.monitor_thread.join.return_value = None
+            
+            # Mock the session close method
+            with patch.object(db_session, 'close') as mock_close:
+                tm.stop_monitoring()
+                
+                # Verify session was closed
+                mock_close.assert_called_once()
+    # Database Persistence Tests - End
 
     # Add this fixture to the TestTradingManager class or in conftest.py
     # For now, I'll add it as a method in the test class

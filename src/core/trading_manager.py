@@ -22,6 +22,11 @@ from src.services.order_loading_service import OrderLoadingService
 from src.services.order_persistence_service import OrderPersistenceService
 # ==================== SERVICE LAYER INTEGRATION - END ====================
 
+# ==================== STATE SERVICE INTEGRATION - BEGIN ====================
+from src.services.state_service import StateService
+from src.core.events import OrderEvent, OrderState
+# ==================== STATE SERVICE INTEGRATION - END ====================
+
 class TradingManager:
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", 
                  ibkr_client: Optional[IbkrClient] = None,
@@ -55,6 +60,13 @@ class TradingManager:
         # Initialize order persistence service
         self.order_persistence = order_persistence_service or OrderPersistenceService(self.db_session)
         # ==================== ORDER PERSISTENCE SERVICE - END ====================
+
+        # ==================== STATE SERVICE INTEGRATION - BEGIN ====================
+        # Initialize the State Service as the single source of truth for order state
+        self.state_service = StateService(self.db_session)
+        # Subscribe to state change events
+        self.state_service.subscribe('order_state_change', self._handle_order_state_change)
+        # ==================== STATE SERVICE INTEGRATION - END ====================
 
         # ==================== SERVICE LAYER INTEGRATION - BEGIN ====================
         # Initialize the new service classes for the refactored architecture.
@@ -95,6 +107,48 @@ class TradingManager:
             print("ℹ️  No order executor provided - using simulation mode")
             
         return True
+    
+    # ==================== STATE EVENT HANDLER - BEGIN ====================
+    def _handle_order_state_change(self, event: OrderEvent) -> None:
+        """
+        Handle order state change events from the StateService.
+        This enables event-driven architecture for state changes.
+        """
+        print(f"📢 State Event: {event.symbol} {event.old_state} -> {event.new_state} via {event.source}")
+        
+        # Add custom logic here for specific state transitions
+        if event.new_state == OrderState.FILLED:
+            print(f"🎉 Order {event.order_id} filled! Details: {event.details}")
+        elif event.new_state == OrderState.CANCELLED:
+            print(f"❌ Order {event.order_id} was cancelled")
+    # ==================== STATE EVENT HANDLER - END ====================
+
+    # ==================== STATE SERVICE INTEGRATION - BEGIN ====================
+    def _update_order_status(self, order, status, order_ids=None):
+        """
+        Update order status using StateService instead of direct DB access.
+        This replaces the old direct database update method.
+        """
+        # Convert string status to OrderState enum if needed
+        if isinstance(status, str):
+            try:
+                status = OrderState[status]
+            except KeyError:
+                print(f"Invalid status string: {status}")
+                return
+        
+        # Find the database ID for the order
+        db_order_id = self._find_planned_order_db_id(order)
+        if not db_order_id:
+            print(f"Order not found in database: {order.symbol}")
+            return False
+            
+        # Use StateService for the state update
+        details = {'order_ids': order_ids} if order_ids else None
+        return self.state_service.update_planned_order_state(
+            db_order_id, status, 'TradingManager', details
+        )
+    # ==================== STATE SERVICE INTEGRATION - END ====================
 
     def _execute_order(self, order, fill_probability):
         """
@@ -131,7 +185,12 @@ class TradingManager:
             ibkr_connected = self.ibkr_client and self.ibkr_client.connected
             print(f"   IBKR Connected: {ibkr_connected}, Live Trading: {is_live_trading}")
             # ==================== EXECUTION PATH DEBUGGING - END ====================
-            
+
+            # ==================== STATE UPDATE - BEGIN ====================
+            # Update order status to LIVE_WORKING before execution
+            self._update_order_status(order, OrderState.LIVE_WORKING)
+            # ==================== STATE UPDATE - END ====================
+
             # ==================== SERVICE INTEGRATION - BEGIN ====================
             # Phase 0: Delegate order execution to the dedicated service.
             # The service will call the original _execute_order logic internally.
@@ -348,6 +407,14 @@ class TradingManager:
             for executable in executable_orders:
                 order = executable['order']
                 fill_prob = executable['fill_probability']
+                
+                # ==================== DUPLICATE CHECK - BEGIN ====================
+                # Check for existing open position before execution
+                if self.state_service.has_open_position(order.symbol):
+                    print(f"⏩ Skipping {order.symbol} - open position exists")
+                    continue
+                # ==================== DUPLICATE CHECK - END ====================
+                
                 self._execute_order(order, fill_prob)        
         else:
             print("💡 No executable orders found at this time")

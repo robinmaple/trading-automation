@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Enum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 import datetime
@@ -55,8 +55,15 @@ class PlannedOrderDB(Base):
     priority = Column(Integer, nullable=False, default=3)  # Priority scale 1-5, default medium
     # Phase 1 - Priority Field - End
 
-    # Status tracking
-    status = Column(String(20), default='PENDING')  # PENDING, LIVE, FILLED, CANCELLED
+    # Status tracking - Updated to use OrderState enum without circular import
+    # State Management Integration - Begin
+    status = Column(Enum('PENDING', 'LIVE_WORKING', 'FILLED', 'CANCELLED', 'EXPIRED', 
+                        'LIQUIDATED', 'LIQUIDATED_EXTERNALLY', 'REPLACED', 
+                        name='order_state_enum', native_enum=False), 
+                   default='PENDING')
+    created_at = Column(DateTime, default=datetime.datetime.now)  # For time-based expiration
+    # State Management Integration - End
+    
     planned_at = Column(DateTime, default=datetime.datetime.now)
     updated_at = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
     
@@ -94,6 +101,10 @@ class ExecutedOrderDB(Base):
     is_live_trading = Column(Boolean, default=False, nullable=False)
     # Live vs Paper trading tracking - End
     
+    # State Management Integration - Begin
+    is_open = Column(Boolean, default=True)  # Track if position is still open
+    # State Management Integration - End
+
     # Relationship
     planned_order = relationship("PlannedOrderDB", back_populates="executed_orders")
     
