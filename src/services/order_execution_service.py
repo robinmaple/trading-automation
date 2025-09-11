@@ -39,11 +39,41 @@ class OrderExecutionService:
             planned_order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading
         )
 
+    # Add margin validation before order execution - Begin
+    def _validate_order_margin(self, order, quantity, total_capital) -> tuple:
+        """Validate if order has sufficient margin before execution"""
+        try:
+            is_valid, message = self.order_persistence.validate_sufficient_margin(
+                order.symbol, quantity, order.entry_price
+            )
+            
+            if not is_valid:
+                print(f"❌ Order rejected due to margin: {message}")
+                return False, message
+            
+            return True, "Margin validation passed"
+            
+        except Exception as e:
+            return False, f"Margin validation error: {e}"
+    # Add margin validation before order execution - End
+
     def execute_single_order(self, order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading):
         """
         Core order execution logic - extracted from TradingManager.
         This method contains the actual order placement implementation.
         """
+        # Validate margin before order execution - Begin
+        margin_valid, margin_message = self._validate_order_margin(order, quantity, total_capital)
+        if not margin_valid:
+            # Mark order as CANCELED due to insufficient margin
+            db_id = self._trading_manager._find_planned_order_db_id(order)
+            if db_id:
+                self.order_persistence.handle_order_rejection(db_id, margin_message)
+            else:
+                print(f"❌ Cannot mark order as canceled: Database ID not found for {order.symbol}")
+            return False
+        # Validate margin before order execution - End
+
         # Real order execution if executor is available and connected
         ibkr_connected = self._ibkr_client and self._ibkr_client.connected
         if ibkr_connected:
@@ -104,7 +134,15 @@ class OrderExecutionService:
                     print("⚠️  Could not create ActiveOrder - database ID not found")
                 
             else:
+                # Add order rejection handling when IBKR fails - Begin
                 print("❌ Failed to place real order through IBKR")
+                rejection_reason = "IBKR order placement failed - no order IDs returned"
+                db_id = self._trading_manager._find_planned_order_db_id(order)
+                if db_id:
+                    self.order_persistence.handle_order_rejection(db_id, rejection_reason)
+                else:
+                    print(f"❌ Cannot mark order as canceled: Database ID not found for {order.symbol}")
+                # Add order rejection handling when IBKR fails - End
                 
         else:
             print("   Taking SIMULATION order execution path...")
@@ -120,7 +158,7 @@ class OrderExecutionService:
                 order, 
                 order.entry_price, 
                 quantity, 
-                0.0, 
+                 0.0, 
                 'FILLED', 
                 is_live_trading
             )

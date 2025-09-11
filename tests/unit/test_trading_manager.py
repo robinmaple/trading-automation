@@ -147,14 +147,17 @@ class TestTradingManager:
         mock_data_feed.is_connected.return_value = True
         tm._initialize()
 
-        # Execute order in simulation mode
-        with patch('builtins.print'):
-            tm._execute_order(sample_planned_order, 0.95)
+        # ==================== ALTERNATIVE FIX - BEGIN ====================
+        # Mock the execution service's margin validation method directly
+        with patch.object(tm.execution_service, '_validate_order_margin', return_value=(True, "Validation passed")):
+        # ==================== ALTERNATIVE FIX - END ====================
+            # Execute order in simulation mode
+            with patch('builtins.print'):
+                tm._execute_order(sample_planned_order, 0.95)
 
-        # ==================== TEST FIX - BEGIN ====================
         # Verify the PERSISTENCE SERVICE was called directly by OrderExecutionService
         mock_persistence.update_order_status.assert_called_once_with(sample_planned_order, 'FILLED')
-        # ==================== TEST FIX - END ====================
+
 
     @patch('src.core.trading_manager.get_db_session')
     def test_load_planned_orders(self, mock_get_session, mock_data_feed):
