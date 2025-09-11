@@ -90,6 +90,20 @@ class MockFeed(AbstractDataFeed):
             current_delta = -volatility
             
         self.current_prices[symbol] += current_delta
+        
+        # Prevent negative prices - Begin
+        # Set reasonable minimum prices based on symbol type
+        if symbol in ['EUR', 'AUD', 'GBP', 'JPY', 'CAD', 'USD']:  # Forex pairs
+            min_price = 0.0001  # Reasonable minimum for forex
+        else:  # Stocks, indices, etc.
+            min_price = 0.01  # Reasonable minimum for equities
+            
+        if self.current_prices[symbol] < min_price:
+            self.current_prices[symbol] = min_price
+            # Reverse trend if we hit the floor to simulate bounce
+            if trend == 'down':
+                self.mock_config[symbol]['trend'] = 'up'
+        # Prevent negative prices - End
         # Phase 2 - Per-Symbol Configuration - 2025-09-07 12:00 - End
                 
         # Create the return data structure

@@ -2,6 +2,9 @@
 plan.xlsx
 ~$plan.xlsx
 trading_automation.db
+add_column.py
+analyze_tm.py
+sql_script.py
 __pycache__/
 *.py[cod]
 *$py.class

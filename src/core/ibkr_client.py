@@ -5,7 +5,7 @@ from typing import List, Optional, Any
 import threading
 import datetime
 
-from core.ibkr_types import IbkrOrder, IbkrPosition
+from src.core.ibkr_types import IbkrOrder, IbkrPosition
 
 class IbkrClient(EClient, EWrapper):
     """
