@@ -359,107 +359,66 @@ class TestTradingManager:
         assert not hasattr(db_model, 'mock_trend')
         assert not hasattr(db_model, 'mock_volatility')
         
-    # Phase 2 - Remove Mock Config from DB Tests - 2025-09-07 13:26 - Begin
     @patch('src.core.trading_manager.get_db_session')
-    def test_update_order_status(self, mock_get_session, mock_data_feed, db_session):
-        """Test updating order status in database"""
+    def test_get_trading_mode_live(self, mock_get_session, mock_data_feed, mock_ibkr_client):
+        """Test trading mode detection for live trading"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx", mock_ibkr_client)
+        mock_ibkr_client.connected = True
+        mock_ibkr_client.is_paper_account = False
+        mock_ibkr_client.account_number = "U1234567"
+        
+        is_live = tm._get_trading_mode()
+        assert is_live == True
+
+    @patch('src.core.trading_manager.get_db_session')
+    def test_get_trading_mode_paper(self, mock_get_session, mock_data_feed, mock_ibkr_client):
+        """Test trading mode detection for paper trading"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx", mock_ibkr_client)
+        mock_ibkr_client.connected = True
+        mock_ibkr_client.is_paper_account = True
+        mock_ibkr_client.account_number = "DU1234567"
+        
+        is_live = tm._get_trading_mode()
+        assert is_live == False
+
+    @patch('src.core.trading_manager.get_db_session')
+    def test_get_trading_mode_simulation(self, mock_get_session, mock_data_feed):
+        """Test trading mode detection for simulation (no IBKR client)"""
+        # Mock the database session
+        mock_session = Mock()
+        mock_get_session.return_value = mock_session
+        
+        tm = TradingManager(mock_data_feed, "test.xlsx")
+        
+        is_live = tm._get_trading_mode()
+        assert is_live == False
+
+
+    @patch('src.core.trading_manager.get_db_session')
+    def test_stop_monitoring_closes_db_session(self, mock_get_session, mock_data_feed, db_session):
+        """Test that stop_monitoring closes database session"""
         # Mock the database session to return our test session
         mock_get_session.return_value = db_session
         
         tm = TradingManager(mock_data_feed, "test.xlsx")
+        tm.monitoring = True
+        tm.monitor_thread = Mock()
+        tm.monitor_thread.join.return_value = None
         
-        # Create and add a test order to database
-        from src.core.models import PlannedOrderDB, PositionStrategy
-        position_strategy = db_session.query(PositionStrategy).filter_by(name="DAY").first()
-        
-        test_order = PlannedOrderDB(
-            symbol="EUR",
-            security_type="CASH",
-            action="BUY",
-            order_type="LMT",
-            entry_price=1.1000,
-            stop_loss=1.0950,
-            risk_per_trade=0.001,
-            risk_reward_ratio=2.0,
-            position_strategy_id=position_strategy.id,
-            status="PENDING",
-            priority=3
-        )
-        db_session.add(test_order)
-        db_session.commit()
-        
-        # Create a mock planned order for the update
-        mock_order = Mock()
-        mock_order.symbol = "EUR"
-        mock_order.entry_price = 1.1000
-        mock_order.stop_loss = 1.0950
-        
-        # FIX: Use correct enum value 'LIVE_WORKING' instead of 'LIVE'
-        tm._update_order_status(mock_order, "LIVE_WORKING", [123, 456])
-        
-        # Verify update
-        updated_order = db_session.query(PlannedOrderDB).filter_by(symbol="EUR").first()
-        assert updated_order.status == "LIVE_WORKING"        
-        @patch('src.core.trading_manager.get_db_session')
-        def test_get_trading_mode_live(self, mock_get_session, mock_data_feed, mock_ibkr_client):
-            """Test trading mode detection for live trading"""
-            # Mock the database session
-            mock_session = Mock()
-            mock_get_session.return_value = mock_session
+        # Mock the session close method
+        with patch.object(db_session, 'close') as mock_close:
+            tm.stop_monitoring()
             
-            tm = TradingManager(mock_data_feed, "test.xlsx", mock_ibkr_client)
-            mock_ibkr_client.connected = True
-            mock_ibkr_client.is_paper_account = False
-            mock_ibkr_client.account_number = "U1234567"
-            
-            is_live = tm._get_trading_mode()
-            assert is_live == True
-
-        @patch('src.core.trading_manager.get_db_session')
-        def test_get_trading_mode_paper(self, mock_get_session, mock_data_feed, mock_ibkr_client):
-            """Test trading mode detection for paper trading"""
-            # Mock the database session
-            mock_session = Mock()
-            mock_get_session.return_value = mock_session
-            
-            tm = TradingManager(mock_data_feed, "test.xlsx", mock_ibkr_client)
-            mock_ibkr_client.connected = True
-            mock_ibkr_client.is_paper_account = True
-            mock_ibkr_client.account_number = "DU1234567"
-            
-            is_live = tm._get_trading_mode()
-            assert is_live == False
-
-        @patch('src.core.trading_manager.get_db_session')
-        def test_get_trading_mode_simulation(self, mock_get_session, mock_data_feed):
-            """Test trading mode detection for simulation (no IBKR client)"""
-            # Mock the database session
-            mock_session = Mock()
-            mock_get_session.return_value = mock_session
-            
-            tm = TradingManager(mock_data_feed, "test.xlsx")
-            
-            is_live = tm._get_trading_mode()
-            assert is_live == False
-
-
-        @patch('src.core.trading_manager.get_db_session')
-        def test_stop_monitoring_closes_db_session(self, mock_get_session, mock_data_feed, db_session):
-            """Test that stop_monitoring closes database session"""
-            # Mock the database session to return our test session
-            mock_get_session.return_value = db_session
-            
-            tm = TradingManager(mock_data_feed, "test.xlsx")
-            tm.monitoring = True
-            tm.monitor_thread = Mock()
-            tm.monitor_thread.join.return_value = None
-            
-            # Mock the session close method
-            with patch.object(db_session, 'close') as mock_close:
-                tm.stop_monitoring()
-                
-                # Verify session was closed
-                mock_close.assert_called_once()
+            # Verify session was closed
+            mock_close.assert_called_once()
     # Database Persistence Tests - End
 
     # Add this fixture to the TestTradingManager class or in conftest.py

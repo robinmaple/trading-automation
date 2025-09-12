@@ -129,99 +129,6 @@ class TradingManager:
             print(f"❌ Order {event.order_id} was cancelled")
     # ==================== STATE EVENT HANDLER - END ====================
 
-    # Add database state update before execution - Begin
-    def _execute_order(self, order, fill_probability):
-        """
-        Execute a single order - now creates ActiveOrder objects
-        """
-        try:
-            # ==================== PRE-EXECUTION STATE UPDATE - BEGIN ====================
-            # Mark order as LIVE in database immediately to prevent re-execution
-            success = self.order_persistence_service.update_order_status(
-                order, 'LIVE', f"Executing with {fill_probability:.2%} probability"
-            )
-            if not success:
-                print(f"❌ Failed to update order status to LIVE for {order.symbol} - aborting execution")
-                return
-            # ==================== PRE-EXECUTION STATE UPDATE - END ====================
-
-            # Get actual account value from IBKR
-            if self.ibkr_client and self.ibkr_client.connected:
-                total_capital = self.ibkr_client.get_account_value()
-            else:
-                total_capital = self.total_capital
-            
-            # Live/Paper trading tracking
-            is_live_trading = self._get_trading_mode()
-            mode_str = "LIVE" if is_live_trading else "PAPER"
-            
-            print(f"🎯 EXECUTING ({mode_str}): {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
-            print(f"   Account Value: ${total_capital:,.2f}")
-            print(f"   Fill Probability: {fill_probability:.2%}")
-            print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
-            
-            # ==================== SERVICE INTEGRATION - BEGIN ====================
-            # Phase 0: Delegate quantity calculation to the sizing service.
-            quantity = self.sizing_service.calculate_order_quantity(
-                order,
-                total_capital
-            )
-            # ==================== SERVICE INTEGRATION - END ====================
-            capital_commitment = order.entry_price * quantity
-            print(f"   Quantity: {quantity}, Capital Commitment: ${capital_commitment:,.2f}")
-            
-            # ==================== EXECUTION PATH DEBUGGING - BEGIN ====================
-            # Debug: Show which execution path we're taking
-            ibkr_connected = self.ibkr_client and self.ibkr_client.connected
-            print(f"   IBKR Connected: {ibkr_connected}, Live Trading: {is_live_trading}")
-            # ==================== EXECUTION PATH DEBUGGING - END ====================
-
-            # ==================== STATE UPDATE - BEGIN ====================
-            # Update order status to LIVE_WORKING before execution (additional granularity)
-            self._update_order_status(order, OrderState.LIVE_WORKING)
-            # ==================== STATE UPDATE - END ====================
-
-            # ==================== SERVICE INTEGRATION - BEGIN ====================
-            # Phase 0: Delegate order execution to the dedicated service.
-            # The service will call the original _execute_order logic internally.
-            self.execution_service.place_order(order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading)
-            # ==================== SERVICE INTEGRATION - END ====================
-            
-        except Exception as e:
-            print(f"❌ Failed to execute order for {order.symbol}: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # ==================== ERROR STATE UPDATE - BEGIN ====================
-            # On failure, mark order as PENDING again to allow retry
-            self.order_persistence_service.update_order_status(
-                order, 'PENDING', f"Execution failed: {str(e)}"
-            )
-            # ==================== ERROR STATE UPDATE - END ====================
-    # Add database state update before execution - End
-
-    def _update_order_status(self, order, status, order_ids=None):
-        """Update order status in database"""
-        try:
-            
-            # Find the order in database
-            db_order = self.db_session.query(PlannedOrderDB).filter_by(
-                symbol=order.symbol,
-                entry_price=order.entry_price,
-                stop_loss=order.stop_loss
-            ).first()
-            
-            if db_order:
-                db_order.status = status
-                if order_ids:
-                    db_order.ibkr_order_ids = str(order_ids)
-                self.db_session.commit()
-                print(f"✅ Updated order status to {status} in database")
-                
-        except Exception as e:
-            self.db_session.rollback()
-            print(f"❌ Failed to update order status: {e}")
-
     def _execute_single_order(self, order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading):
         """
         Core order execution logic - now delegated to the execution service.
@@ -463,11 +370,12 @@ class TradingManager:
         print("-" * 50)
     # Enhanced duplicate prevention with exact order matching - End
 
+    # CORRECT: Backward-compatible mock feed configuration - Begin
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persist only valid ones to database"""
         valid_orders = self.loading_service.load_and_validate_orders(self.excel_path)
         
-        # Persist valid orders to database
+        # Persist valid orders to database (KEEP EXISTING FUNCTIONALITY)
         for order in valid_orders:
             try:
                 db_order = self.order_persistence_service.convert_to_db_model(order)
@@ -478,7 +386,15 @@ class TradingManager:
         
         self.db_session.commit()
         self.planned_orders = valid_orders
+        
+        # NEW: Configure intelligent mock feed if available (ADDITIONAL FUNCTIONALITY)
+        if hasattr(self.data_feed, 'configure_intelligence'):
+            # Set aggressive movement for testing (90% toward orders)
+            self.data_feed.configure_intelligence(trend_strength=0.9, volatility_chance=0.1)
+            print("🤖 Intelligent mock feed configured for fast order testing")
+        
         return valid_orders
+    # CORRECT: Backward-compatible mock feed configuration - End
 
     # ==================== DUPLICATE DETECTION HELPER - BEGIN ====================
     def _find_existing_planned_order(self, order: PlannedOrder) -> Optional[PlannedOrderDB]:
@@ -536,16 +452,6 @@ class TradingManager:
         Execute a single order - now creates ActiveOrder objects
         """
         try:
-            # ==================== PRE-EXECUTION STATE UPDATE - BEGIN ====================
-            # Mark order as LIVE in database immediately to prevent re-execution
-            success = self.order_persistence_service.update_order_status(
-                order, 'LIVE', f"Executing with {fill_probability:.2%} probability"
-            )
-            if not success:
-                print(f"❌ Failed to update order status to LIVE for {order.symbol} - aborting execution")
-                return
-            # ==================== PRE-EXECUTION STATE UPDATE - END ====================
-
             # Get actual account value from IBKR
             if self.ibkr_client and self.ibkr_client.connected:
                 total_capital = self.ibkr_client.get_account_value()
@@ -576,11 +482,6 @@ class TradingManager:
             ibkr_connected = self.ibkr_client and self.ibkr_client.connected
             print(f"   IBKR Connected: {ibkr_connected}, Live Trading: {is_live_trading}")
             # ==================== EXECUTION PATH DEBUGGING - END ====================
-
-            # ==================== STATE UPDATE - BEGIN ====================
-            # Update order status to LIVE_WORKING before execution (additional granularity)
-            self._update_order_status(order, OrderState.LIVE_WORKING)
-            # ==================== STATE UPDATE - END ====================
 
             # ==================== SERVICE INTEGRATION - BEGIN ====================
             # Phase 0: Delegate order execution to the dedicated service.
