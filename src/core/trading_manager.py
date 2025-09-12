@@ -95,6 +95,11 @@ class TradingManager:
             
         self.probability_engine = FillProbabilityEngine(self.data_feed)
       
+        # ==================== VALIDATE DATA SOURCE - BEGIN ====================
+        # Call validation after data feed is connected but before services are initialized
+        self._validate_ibkr_connection()
+        # ==================== VALIDATE DATA SOURCE - END ====================
+
         # ==================== SERVICE DEPENDENCY SETUP - BEGIN ====================
         # Initialize complex services that need probability_engine
         self.eligibility_service = OrderEligibilityService(self.planned_orders, self.probability_engine)
@@ -104,7 +109,12 @@ class TradingManager:
 
         self._initialized = True
         print("✅ Trading manager initialized")
-        
+
+        # ==================== QUICK DATA SOURCE VALIDATION - BEGIN ====================
+        # Additional quick validation after full initialization
+        self.validate_data_source()
+        # ==================== QUICK DATA SOURCE VALIDATION - END ====================
+
         if self.ibkr_client and self.ibkr_client.connected:
             print("✅ Real order execution enabled (IBKR connected)")
         elif self.ibkr_client:
@@ -386,13 +396,7 @@ class TradingManager:
         
         self.db_session.commit()
         self.planned_orders = valid_orders
-        
-        # NEW: Configure intelligent mock feed if available (ADDITIONAL FUNCTIONALITY)
-        if hasattr(self.data_feed, 'configure_intelligence'):
-            # Set aggressive movement for testing (90% toward orders)
-            self.data_feed.configure_intelligence(trend_strength=0.9, volatility_chance=0.1)
-            print("🤖 Intelligent mock feed configured for fast order testing")
-        
+      
         return valid_orders
     # CORRECT: Backward-compatible mock feed configuration - End
 
@@ -692,3 +696,61 @@ class TradingManager:
         
         return worst_order
     # Phase 2 - Worst Active Order Method - End
+
+    # Add this to your trading manager after connection
+    def _validate_ibkr_connection(self):
+        """Validate that we're using real IBKR data"""
+        if not self.data_feed.is_connected():
+            print("❌ Data feed not connected")
+            return False
+        
+        # Check if it's actually IBKRDataFeed
+        from src.data_feeds.ibkr_data_feed import IBKRDataFeed
+        if not isinstance(self.data_feed, IBKRDataFeed):
+            print(f"❌ Wrong data feed type: {type(self.data_feed)}")
+            return False
+        
+        print("✅ Using IBKRDataFeed")
+        
+        # Test getting actual market data
+        test_symbol = "SPY"  # Use a highly liquid symbol
+        price_data = self.data_feed.get_current_price(test_symbol)
+        
+        if price_data and price_data.get('price') not in [0, None]:
+            print(f"✅ Live data received for {test_symbol}: ${price_data['price']:.2f}")
+            print(f"   Data type: {price_data.get('data_type', 'UNKNOWN')}")
+            print(f"   Timestamp: {price_data.get('timestamp')}")
+            return True
+        else:
+            print("❌ No market data received")
+            return False
+        
+    def validate_data_source(self):
+        """Quick validation of data source"""
+        print("\n" + "="*60)
+        print("DATA SOURCE VALIDATION")
+        print("="*60)
+        
+        # Check data feed type
+        from src.data_feeds.ibkr_data_feed import IBKRDataFeed
+        if isinstance(self.data_feed, IBKRDataFeed):
+            print("✅ Data Feed: IBKRDataFeed (Real IBKR API)")
+        else:
+            print(f"❌ Data Feed: {type(self.data_feed)} (Unexpected)")
+        
+        # Check connection status
+        if self.data_feed.is_connected():
+            print("✅ Connection: Connected to IBKR")
+        else:
+            print("❌ Connection: Not connected to IBKR")
+        
+        # Test data retrieval
+        if self.planned_orders:
+            test_symbol = self.planned_orders[0].symbol
+            price_data = self.data_feed.get_current_price(test_symbol)
+            if price_data and price_data.get('price'):
+                print(f"✅ Market Data: Live price for {test_symbol}: ${price_data['price']:.2f}")
+            else:
+                print(f"❌ Market Data: No data for {test_symbol}")
+        
+        print("="*60)

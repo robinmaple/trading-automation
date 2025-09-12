@@ -22,7 +22,7 @@ class IBKRDataFeed(AbstractDataFeed):
         """
         self.ibkr_client = ibkr_client  # CHANGED: Store the client
         # MarketDataManager still needs the low-level OrderExecutor
-        self.market_data = MarketDataManager(ibkr_client.order_executor)
+        self.market_data = MarketDataManager(ibkr_client)
         self._connected = False
         
     def connect(self, host='127.0.0.1', port=7497, client_id=0) -> bool:
@@ -78,3 +78,10 @@ class IBKRDataFeed(AbstractDataFeed):
                 result[key] = value
                 
         return result
+    
+    def disconnect(self):
+        """Disconnect from IBKR"""
+        if self.ibkr_client and hasattr(self.ibkr_client, 'disconnect'):
+            self.ibkr_client.disconnect()
+            self._connected = False
+            print("✅ Disconnected from IBKR")
