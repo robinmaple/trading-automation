@@ -57,7 +57,7 @@ class PlannedOrderDB(Base):
 
     # Status tracking - Updated to use OrderState enum without circular import
     # State Management Integration - Begin
-    status = Column(Enum('PENDING', 'LIVE_WORKING', 'FILLED', 'CANCELLED', 'EXPIRED', 
+    status = Column(Enum('PENDING', 'LIVE', 'LIVE_WORKING', 'FILLED', 'CANCELLED', 'EXPIRED', 
                         'LIQUIDATED', 'LIQUIDATED_EXTERNALLY', 'REPLACED', 
                         name='order_state_enum', native_enum=False), 
                    default='PENDING')

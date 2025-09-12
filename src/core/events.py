@@ -7,6 +7,7 @@ from typing import Optional
 class OrderState(Enum):
     """Represents the state of a PlannedOrder in the system."""
     PENDING = "PENDING"              # Waiting to be executed
+    LIVE = "LIVE"                    # Order sent to broker, general
     LIVE_WORKING = "LIVE_WORKING"    # Sent to broker, working
     FILLED = "FILLED"                # Successfully executed (position open)
     CANCELLED = "CANCELLED"          # Cancelled by our system
