@@ -1,47 +1,39 @@
+"""
+Service responsible for determining if a PlannedOrder is eligible for execution.
+Evaluates criteria such as duplicates, expiration, risk limits, and market conditions
+via the ProbabilityEngine to decide if an order should be executed.
+"""
+
 import datetime
 
 
 class OrderEligibilityService:
-    """
-    Service responsible for determining if a PlannedOrder is eligible for execution.
-    Checks for duplicates, expiration, and (in the future) risk limits.
-    """
+    """Evaluates and filters planned orders to find those eligible for execution."""
 
     def __init__(self, planned_orders, probability_engine):
-        # Phase 1: Receive dependencies directly via constructor
+        """Initialize the service with the list of planned orders and the probability engine."""
         self.planned_orders = planned_orders
         self.probability_engine = probability_engine
 
-    def can_trade(self, planned_order):
+    def can_trade(self, planned_order) -> bool:
         """
-        Main method to check if an order is eligible to be traded.
-        Args:
-            planned_order (PlannedOrder): The order to check.
-
-        Returns:
-            bool: True if the order is eligible, False otherwise.
+        Check if a single order is eligible to be traded based on basic constraints.
+        Placeholder for future logic checking duplicates, expiration, risk limits, etc.
         """
-        # TODO: Implement actual eligibility checks
-        # For now, return True as placeholder - this should be replaced with real logic
-        # that checks for duplicates, expiration, risk limits, etc.
+        # TODO: Implement actual eligibility checks (duplicates, expiration, risk limits, etc.)
+        # For now, return True as a placeholder - this should be replaced with real logic.
         return True
 
-    def find_executable_orders(self):
-        """
-        Finds all orders that meet execution criteria based on market conditions.
-        Returns: List of executable orders with their fill probability.
-        """
+    def find_executable_orders(self) -> list:
+        """Find all orders that meet execution criteria based on market conditions and basic constraints."""
         executable = []
-        
+
         for order in self.planned_orders:
-            # Check basic constraints - TODO: Replace with actual can_trade implementation
             if not self.can_trade(order):
                 print(f"   ⚠️  {order.symbol}: Cannot place order (basic constraints failed)")
                 continue
-            
-            # Check intelligent execution criteria
+
             should_execute, fill_prob = self.probability_engine.should_execute_order(order)
-            
             print(f"   Checking {order.action.value} {order.symbol}: should_execute={should_execute}, fill_prob={fill_prob:.3f}")
 
             if should_execute:
@@ -50,5 +42,5 @@ class OrderEligibilityService:
                     'fill_probability': fill_prob,
                     'timestamp': datetime.datetime.now()
                 })
-        
+
         return executable

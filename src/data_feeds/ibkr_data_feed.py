@@ -1,34 +1,30 @@
+"""
+Live data feed implementation using the Interactive Brokers API.
+Adapts the existing IbkrClient and MarketDataManager to the AbstractDataFeed interface.
+"""
+
 import threading
+import datetime
+from typing import Dict, Any, Optional
+from ibapi.contract import Contract
+
 from src.core.abstract_data_feed import AbstractDataFeed
 from src.core.market_data_manager import MarketDataManager
-from src.core.ibkr_client import IbkrClient  # CHANGED: Import IbkrClient instead
-from ibapi.contract import Contract
-from typing import Dict, Any, Optional
-import datetime
+from src.core.ibkr_client import IbkrClient
+
 
 class IBKRDataFeed(AbstractDataFeed):
-    """
-    Live data feed implementation using Interactive Brokers API.
-    This class adapts the existing OrderExecutor and MarketDataManager
-    to the AbstractDataFeed interface.
-    """
-    
-    def __init__(self, ibkr_client: IbkrClient):  # CHANGED: Parameter type
-        """
-        Initialize the IBKR data feed.
-        
-        Args:
-            ibkr_client: The IbkrClient instance
-        """
-        self.ibkr_client = ibkr_client  # CHANGED: Store the client
-        # MarketDataManager still needs the low-level OrderExecutor
+    """Concrete data feed implementation for Interactive Brokers market data."""
+
+    def __init__(self, ibkr_client: IbkrClient):
+        """Initialize the data feed with an existing IbkrClient instance."""
+        self.ibkr_client = ibkr_client
         self.market_data = MarketDataManager(ibkr_client)
         self._connected = False
-        
+
     def connect(self, host='127.0.0.1', port=7497, client_id=0) -> bool:
-        """Establish connection to IB Gateway/TWS. Returns success status."""
+        """Establish a connection to IB Gateway/TWS. Returns success status."""
         try:
-            # FIXED: Use the ibkr_client's connect method instead of recursive call
             success = self.ibkr_client.connect(host, port, client_id)
             if success:
                 self._connected = True
@@ -36,51 +32,41 @@ class IBKRDataFeed(AbstractDataFeed):
         except Exception as e:
             print(f"Connection failed: {e}")
             return False
-                    
+
     def is_connected(self) -> bool:
-        """
-        Check if connected to IBKR and market data is available.
-        """
-        return self._connected and self.ibkr_client.connected  # CHANGED: Use client's connection state
-    
+        """Check if the data feed is connected to IBKR and market data is available."""
+        return self._connected and self.ibkr_client.connected
+
     def subscribe(self, symbol: str, contract: Contract) -> bool:
-        """
-        Subscribe to market data for a symbol using the existing MarketDataManager.
-        """
+        """Subscribe to market data for a specific symbol using the MarketDataManager."""
         try:
-            # Use the existing market data manager's subscription logic
             self.market_data.subscribe(symbol, contract)
             return True
         except Exception as e:
             print(f"Failed to subscribe to {symbol}: {e}")
             return False
-    
+
     def get_current_price(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        Get current price data from the existing MarketDataManager.
-        Maintains backward compatibility with the expected data format.
-        """
+        """Get current price data for a symbol, formatted for backward compatibility."""
         price_data = self.market_data.get_current_price(symbol)
         if not price_data:
             return None
-            
-        # Ensure the returned data has the expected structure
+
         result = {
             'price': price_data.get('price', 0.0),
             'timestamp': price_data.get('timestamp', datetime.datetime.now()),
             'data_type': price_data.get('type', 'UNKNOWN'),
             'updates': price_data.get('updates', 0)
         }
-        
-        # Preserve any additional fields for backward compatibility
+
         for key, value in price_data.items():
             if key not in result:
                 result[key] = value
-                
+
         return result
-    
-    def disconnect(self):
-        """Disconnect from IBKR"""
+
+    def disconnect(self) -> None:
+        """Disconnect from the IBKR API and clean up resources."""
         if self.ibkr_client and hasattr(self.ibkr_client, 'disconnect'):
             self.ibkr_client.disconnect()
             self._connected = False
