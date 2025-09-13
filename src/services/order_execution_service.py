@@ -11,7 +11,6 @@ from ibapi.order import Order
 
 from src.core.planned_order import ActiveOrder
 
-
 class OrderExecutionService:
     """Encapsulates all logic for executing orders and interacting with the broker."""
 
@@ -27,12 +26,26 @@ class OrderExecutionService:
         self.order_persistence = order_persistence
         self.active_orders = active_orders
 
-    def place_order(self, planned_order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading) -> bool:
-        """Place an order for the given PlannedOrder by delegating to the core execution method."""
+    def place_order(
+        self,
+        planned_order,
+        fill_probability=0.0,
+        effective_priority=0.0,
+        total_capital=None,
+        quantity=None,
+        capital_commitment=None,
+        is_live_trading=False
+    ) -> bool:
+        """Place an order for the given PlannedOrder using the provided fill probability."""
         return self.execute_single_order(
-            planned_order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading
-        )
-
+            planned_order,
+            fill_probability,
+            effective_priority,
+            total_capital,
+            quantity,
+            capital_commitment,
+            is_live_trading
+    )
     def _validate_order_margin(self, order, quantity, total_capital) -> tuple[bool, str]:
         """Validate if the order has sufficient margin before execution."""
         try:
@@ -46,8 +59,17 @@ class OrderExecutionService:
         except Exception as e:
             return False, f"Margin validation error: {e}"
 
-    def execute_single_order(self, order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading) -> bool:
-        """Execute the core logic for placing a single order, handling both live and simulation modes."""
+    def execute_single_order(
+        self,
+        order,
+        fill_probability=0.0,
+        effective_priority=0.0,
+        total_capital=None,
+        quantity=None,
+        capital_commitment=None,
+        is_live_trading=False
+    ) -> bool:
+        """Execute a single order while incorporating fill probability into ActiveOrder tracking."""
         margin_valid, margin_message = self._validate_order_margin(order, quantity, total_capital)
         if not margin_valid:
             db_id = self._trading_manager._find_planned_order_db_id(order)
@@ -59,7 +81,7 @@ class OrderExecutionService:
 
         ibkr_connected = self._ibkr_client and self._ibkr_client.connected
         if ibkr_connected:
-            print("   Taking LIVE order execution path...")
+            print(f"   Taking LIVE order execution path... FillProb={fill_probability:.3f}")
             contract = order.to_ib_contract()
             order_ids = self._ibkr_client.place_bracket_order(
                 contract,
@@ -87,11 +109,6 @@ class OrderExecutionService:
                     is_live_trading
                 )
 
-                if execution_id:
-                    print(f"✅ Execution recorded for live order: ID {execution_id}")
-                else:
-                    print("❌ FAILED to record execution for live order")
-
                 db_id = self._trading_manager._find_planned_order_db_id(order)
                 if db_id:
                     active_order = ActiveOrder(
@@ -102,7 +119,7 @@ class OrderExecutionService:
                         capital_commitment=capital_commitment,
                         timestamp=datetime.datetime.now(),
                         is_live_trading=is_live_trading,
-                        fill_probability=fill_probability
+                        fill_probability=fill_probability  # <-- track fill probability
                     )
                     self.active_orders[order_ids[0]] = active_order
                 else:
@@ -114,15 +131,10 @@ class OrderExecutionService:
                 db_id = self._trading_manager._find_planned_order_db_id(order)
                 if db_id:
                     self.order_persistence.handle_order_rejection(db_id, rejection_reason)
-                else:
-                    print(f"❌ Cannot mark order as canceled: Database ID not found for {order.symbol}")
                 return False
         else:
-            print("   Taking SIMULATION order execution path...")
-            print(f"✅ SIMULATION: Order for {order.symbol} executed successfully")
+            print(f"   Taking SIMULATION order execution path... FillProb={fill_probability:.3f}")
             update_success = self.order_persistence.update_order_status(order, 'FILLED')
-            print(f"   Order status update success: {update_success}")
-
             execution_id = self.order_persistence.record_order_execution(
                 order,
                 order.entry_price,
@@ -132,12 +144,21 @@ class OrderExecutionService:
                 is_live_trading
             )
 
-            if execution_id:
-                print(f"✅ Simulation execution recorded: ID {execution_id}")
-            else:
-                print("❌ FAILED to record simulation execution")
+            db_id = self._trading_manager._find_planned_order_db_id(order)
+            if db_id:
+                active_order = ActiveOrder(
+                    planned_order=order,
+                    order_ids=[f"SIM-{db_id}"],
+                    db_id=db_id,
+                    status='FILLED',
+                    capital_commitment=capital_commitment,
+                    timestamp=datetime.datetime.now(),
+                    is_live_trading=is_live_trading,
+                    fill_probability=fill_probability  # <-- track fill probability
+                )
+                self.active_orders[active_order.order_ids[0]] = active_order
             return True
-
+    
     def cancel_order(self, order_id) -> bool:
         """Cancel a working order by delegating to the trading manager's existing logic."""
         return self._trading_manager._cancel_single_order(order_id)

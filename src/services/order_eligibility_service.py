@@ -25,7 +25,7 @@ class OrderEligibilityService:
         return True
 
     def find_executable_orders(self) -> list:
-        """Find all orders that meet execution criteria based on market conditions and basic constraints."""
+        """Find all orders eligible for execution, enriched with probability scores and effective priority."""
         executable = []
 
         for order in self.planned_orders:
@@ -33,14 +33,25 @@ class OrderEligibilityService:
                 print(f"   ⚠️  {order.symbol}: Cannot place order (basic constraints failed)")
                 continue
 
-            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
-            print(f"   Checking {order.action.value} {order.symbol}: should_execute={should_execute}, fill_prob={fill_prob:.3f}")
+            # Phase A: compute probability score
+            fill_prob = self.probability_engine.score_fill(order)
 
-            if should_execute:
-                executable.append({
-                    'order': order,
-                    'fill_probability': fill_prob,
-                    'timestamp': datetime.datetime.now()
-                })
+            # Priority is manually supplied in template (default=1 if missing)
+            base_priority = getattr(order, "priority", 1)
+            effective_priority = base_priority * fill_prob
 
+            print(f"   {order.action.value} {order.symbol}: "
+                  f"Priority={base_priority}, FillProb={fill_prob:.3f}, "
+                  f"EffectivePriority={effective_priority:.3f}")
+
+            executable.append({
+                'order': order,
+                'fill_probability': fill_prob,
+                'priority': base_priority,
+                'effective_priority': effective_priority,
+                'timestamp': datetime.datetime.now()
+            })
+
+        # Sort so that higher effective priority comes first
+        executable.sort(key=lambda x: x['effective_priority'], reverse=True)
         return executable

@@ -17,20 +17,20 @@ class TestOrderExecutionService:
         self.order_persistence = Mock()
         self.active_orders = {}
         self.service.set_dependencies(self.order_persistence, self.active_orders)
-    
+        
     def test_place_order_calls_execute_single_order(self):
         """Test that place_order properly calls execute_single_order"""
         test_order = Mock()
         
         with patch.object(self.service, 'execute_single_order') as mock_execute:
             self.service.place_order(
-                test_order, 0.85, 100000, 100, 10000, False
+                test_order, 0.85, 0.0, 100000, 100, 10000, False
             )
             
             mock_execute.assert_called_once_with(
-                test_order, 0.85, 100000, 100, 10000, False
+                test_order, 0.85, 0.0, 100000, 100, 10000, False
             )
-    
+
     @patch('src.services.order_execution_service.OrderExecutionService._validate_order_margin')
     def test_execute_single_order_simulation_mode(self, mock_validate_margin):
         """Test order execution in simulation mode"""

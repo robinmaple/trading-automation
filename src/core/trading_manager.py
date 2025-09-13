@@ -187,22 +187,32 @@ class TradingManager:
         return True
 
     def _monitoring_loop(self, interval_seconds: int) -> None:
-        """Main monitoring loop with error handling and recovery."""
+        """Main monitoring loop for Phase A with error handling and recovery."""
         error_count = 0
         max_errors = 10
+
+        # Subscribe to all symbols in planned orders
         self._subscribe_to_all_symbols()
 
         while self.monitoring and error_count < max_errors:
             try:
+                # Phase A: Check and execute eligible orders
                 self._check_and_execute_orders()
+
+                # Check market close actions (if any)
                 self._check_market_close_actions()
+
+                # Reset error counter and sleep
                 error_count = 0
                 time.sleep(interval_seconds)
+
             except Exception as e:
                 error_count += 1
                 print(f"Monitoring error ({error_count}/{max_errors}): {e}")
                 import traceback
                 traceback.print_exc()
+
+                # Backoff on repeated errors
                 backoff_time = min(60 * error_count, 300)
                 time.sleep(backoff_time)
 
@@ -237,7 +247,7 @@ class TradingManager:
         print("="*60)
 
     def _check_and_execute_orders(self) -> None:
-        """Check market conditions and execute orders that meet the criteria."""
+        """Check market conditions and execute orders that meet the criteria (Phase A)."""
         if not self.planned_orders:
             print("No planned orders to monitor")
             return
@@ -245,6 +255,7 @@ class TradingManager:
         print(f"\n📊 PLANNED ORDERS SUMMARY ({len(self.planned_orders)} orders)")
         print("-" * 50)
 
+        # Display planned orders with market prices
         for i, order in enumerate(self.planned_orders):
             price_data = self.data_feed.get_current_price(order.symbol)
             current_price = price_data['price'] if price_data and price_data.get('price') else None
@@ -254,41 +265,94 @@ class TradingManager:
                 price_diff = current_price - order.entry_price
                 percent_diff = (price_diff / order.entry_price * 100)
                 print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
-                      f"Current: ${current_price:8.4f} | Entry: {entry_display} | "
-                      f"Diff: {percent_diff:6.2f}%")
+                    f"Current: ${current_price:8.4f} | Entry: {entry_display} | "
+                    f"Diff: {percent_diff:6.2f}%")
             else:
                 print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
-                      f"No market data yet | Entry: {entry_display}")
+                    f"No market data yet | Entry: {entry_display}")
 
+        # Get executable orders from the eligibility service
         executable_orders = self.eligibility_service.find_executable_orders()
 
-        if executable_orders:
-            print(f"🎯 Found {len(executable_orders)} executable orders")
-            for executable in executable_orders:
-                order = executable['order']
-                fill_prob = executable['fill_probability']
-                if self.state_service.has_open_position(order.symbol):
-                    print(f"⏩ Skipping {order.symbol} - open position exists")
-                    continue
-
-                db_order = self._find_existing_planned_order(order)
-                if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
-                    same_action = db_order.action == order.action.value
-                    same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
-                    same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
-                    if same_action and same_entry and same_stop:
-                        print(f"⏩ Skipping {order.symbol} {order.action.value} @ {order.entry_price:.4f} - "
-                              f"already in state: {db_order.status}")
-                        continue
-                    else:
-                        print(f"ℹ️  Different order for {order.symbol} found in DB: "
-                              f"DB={db_order.action}@{db_order.entry_price:.4f}, "
-                              f"Current={order.action.value}@{order.entry_price:.4f}")
-
-                self._execute_order(order, fill_prob)
-        else:
+        if not executable_orders:
             print("💡 No executable orders found at this time")
+            print("-" * 50)
+            return
+
+        print(f"🎯 Found {len(executable_orders)} executable orders")
+
+        for executable in executable_orders:
+            order = executable['order']
+            fill_prob = executable['fill_probability']
+
+            # Skip if there is an open position
+            if self.state_service.has_open_position(order.symbol):
+                print(f"⏩ Skipping {order.symbol} - open position exists")
+                continue
+
+            # Skip duplicates or already filled orders
+            db_order = self._find_existing_planned_order(order)
+            if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
+                same_action = db_order.action == order.action.value
+                same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
+                same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
+                if same_action and same_entry and same_stop:
+                    print(f"⏩ Skipping {order.symbol} {order.action.value} @ {order.entry_price:.4f} - "
+                        f"already in state: {db_order.status}")
+                    continue
+                else:
+                    print(f"ℹ️  Different order for {order.symbol} found in DB: "
+                        f"DB={db_order.action}@{db_order.entry_price:.4f}, "
+                        f"Current={order.action.value}@{order.entry_price:.4f}")
+
+            # Execute the order via _execute_order
+            self._execute_order(order, fill_prob)
+
         print("-" * 50)
+
+    def _process_executable_orders_phase_a(self) -> None:
+        """
+        Phase A order orchestration:
+        1. Compute fill probability for planned orders.
+        2. Calculate effective priority (priority * fill_probability).
+        3. Sort eligible orders by effective priority.
+        4. Execute orders while respecting capital and active order limits.
+        """
+        if not self.planned_orders:
+            print("No planned orders to process")
+            return
+
+        print(f"\n🎯 Phase A: Processing {len(self.planned_orders)} planned orders")
+
+        eligible_orders = []
+        for order in self.planned_orders:
+            if not self._can_place_order(order):
+                continue
+
+            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
+            if should_execute:
+                effective_priority = order.priority * fill_prob
+                eligible_orders.append({
+                    'order': order,
+                    'fill_probability': fill_prob,
+                    'effective_priority': effective_priority
+                })
+
+        # Sort by effective_priority descending
+        eligible_orders.sort(key=lambda x: x['effective_priority'], reverse=True)
+
+        for item in eligible_orders:
+            order = item['order']
+            fill_prob = item['fill_probability']
+            effective_priority = item['effective_priority']
+
+            # Skip if we already have a position
+            if self.state_service.has_open_position(order.symbol):
+                print(f"⏩ Skipping {order.symbol} - open position exists")
+                continue
+
+            print(f"✅ Executing {order.symbol} with effective_priority={effective_priority:.3f}, fill_probability={fill_prob:.2%}")
+            self._execute_order(order, fill_prob)
 
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persisting valid ones to the database."""
@@ -335,31 +399,54 @@ class TradingManager:
         return True
 
     def _execute_order(self, order, fill_probability) -> None:
-        """Orchestrate the execution of a single order, including capital calculation and persistence."""
+        """Orchestrate the execution of a single order, including capital calculation and persistence.
+
+        Phase A: Adds compute-only processing and intermediate logging for ML readiness.
+        """
         try:
-            total_capital = self.ibkr_client.get_account_value() if self.ibkr_client and self.ibkr_client.connected else self.total_capital
+            # Determine total capital based on live account or simulation
+            total_capital = (
+                self.ibkr_client.get_account_value()
+                if self.ibkr_client and self.ibkr_client.connected
+                else self.total_capital
+            )
+
+            # Determine trading mode
             is_live_trading = self._get_trading_mode()
             mode_str = "LIVE" if is_live_trading else "PAPER"
 
-            print(f"🎯 EXECUTING ({mode_str}): {order.action.value} {order.symbol} {order.order_type.value} @ {order.entry_price}")
+            # Compute position size and capital commitment
+            quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
+            capital_commitment = order.entry_price * quantity
+
+            # Log Phase A details (compute-only)
+            print(f"🎯 Phase A: Processing {order.symbol} ({order.action.value} {order.order_type.value})")
+            print(f"   Mode: {mode_str}")
             print(f"   Account Value: ${total_capital:,.2f}")
             print(f"   Fill Probability: {fill_probability:.2%}")
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
-
-            quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
-            capital_commitment = order.entry_price * quantity
             print(f"   Quantity: {quantity}, Capital Commitment: ${capital_commitment:,.2f}")
 
-            ibkr_connected = self.ibkr_client and self.ibkr_client.connected
-            print(f"   IBKR Connected: {ibkr_connected}, Live Trading: {is_live_trading}")
+            # Decide if order would execute in Phase A
+            execute_phase_a = fill_probability >= self.execution_threshold
+            if execute_phase_a:
+                print(f"✅ Order eligible to execute (Phase A simulation)")
+            else:
+                print(f"⚠️  Order skipped due to low fill probability")
 
-            self.execution_service.place_order(order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading)
+            # Proceed with actual execution only if live/paper order execution is enabled
+            if self.execution_service:
+                self.execution_service.place_order(
+                    order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading
+                )
 
         except Exception as e:
             print(f"❌ Failed to execute order for {order.symbol}: {e}")
             import traceback
             traceback.print_exc()
-            self.order_persistence_service.update_order_status(order, 'PENDING', f"Execution failed: {str(e)}")
+            self.order_persistence_service.update_order_status(
+                order, 'PENDING', f"Execution failed: {str(e)}"
+            )
 
     def _find_executable_orders(self) -> List[Dict]:
         """Find orders that meet execution criteria by delegating to the eligibility service."""

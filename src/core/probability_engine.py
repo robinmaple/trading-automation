@@ -15,23 +15,6 @@ class FillProbabilityEngine:
         self.data_feed = data_feed
         self.execution_threshold = 0.7
 
-    def should_execute_order(self, order) -> tuple[bool, float]:
-        """Determine if an order should be executed based on its calculated fill probability."""
-        current_data = self.data_feed.get_current_price(order.symbol)
-        if not current_data:
-            return False, 0.0
-
-        current_price = current_data['price']
-        price_history = current_data.get('history', [])
-        volatility = self.estimate_volatility(order.symbol, price_history, order)
-        fill_prob = self.calculate_fill_probability(order, current_price, volatility)
-
-        print(f"🔍 {order.symbol}: Current={current_price:.5f}, Entry={order.entry_price:.5f}, "
-              f"FillProb={fill_prob:.3f}, Threshold={self.execution_threshold:.3f}, "
-              f"Execute={fill_prob >= self.execution_threshold}")
-
-        return fill_prob >= self.execution_threshold, fill_prob
-
     def estimate_volatility(self, symbol, price_history, order) -> float:
         """Placeholder for volatility estimation. Returns a fixed low value for testing."""
         return 0.001
@@ -51,3 +34,45 @@ class FillProbabilityEngine:
                     return 0.1
 
         return 0.5
+    
+    def score_fill(self, order) -> float:
+        """Compute fill probability score (0..1) based on rules and current market data."""
+        current_data = self.data_feed.get_current_price(order.symbol)
+        if not current_data:
+            return 0.5  # neutral if no data
+
+        current_price = current_data['price']
+        price_history = current_data.get('history', [])
+        volatility = self.estimate_volatility(order.symbol, price_history, order)
+
+        # Heuristic scoring rules
+        score = 0.5  # baseline
+        if order.order_type.value == 'LMT':
+            if order.action.value == 'BUY':
+                # Closer current price to entry → higher score
+                if current_price <= order.entry_price:
+                    score = 0.9
+                else:
+                    score = max(0.1, 1.0 - (current_price - order.entry_price) / (order.entry_price * (1 + volatility)))
+            elif order.action.value == 'SELL':
+                if current_price >= order.entry_price:
+                    score = 0.9
+                else:
+                    score = max(0.1, 1.0 - (order.entry_price - current_price) / (order.entry_price * (1 + volatility)))
+
+        return max(0.0, min(1.0, score))
+
+    def should_execute_order(self, order) -> tuple[bool, float]:
+        """Compatibility wrapper — decide based on threshold."""
+        fill_prob = self.score_fill(order)
+        execute = fill_prob >= self.execution_threshold
+
+        print(f"🔍 {order.symbol}: Entry={order.entry_price:.5f}, "
+              f"FillProb={fill_prob:.3f}, Threshold={self.execution_threshold:.3f}, "
+              f"Execute={execute}")
+
+        return execute, fill_prob
+
+    def score_outcome_stub(self, order):
+        """Stub for outcome probability scoring — to be implemented in Phase B."""
+        return None
