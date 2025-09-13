@@ -22,9 +22,10 @@ class IbkrClient(EClient, EWrapper):
         self.order_history = []
         self.account_number = None
         self.is_paper_account = False
+        self.account_ready_event = threading.Event()  # NEW
         self.displayed_errors = set()
 
-            # Phase 2: Reconciliation data tracking
+        # Phase 2: Reconciliation data tracking
         self.open_orders: List[IbkrOrder] = []
         self.positions: List[IbkrPosition] = []
         self.orders_received_event = threading.Event()
@@ -294,10 +295,11 @@ class IbkrClient(EClient, EWrapper):
         print(f"Managed accounts: {accountsList}")
 
         if accountsList:
-            self.account_number = accountsList.split(',')[0]
+            self.account_number = accountsList.split(',')[0].strip()
             self.is_paper_account = self.account_number.startswith('DU')
             env = "PAPER" if self.is_paper_account else "PRODUCTION"
             print(f"🎯 Auto-detected environment: {env} (Account: {self.account_number})")
+            self.account_ready_event.set()   # signal it's ready
 
     def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
         """Callback: Order status updates"""

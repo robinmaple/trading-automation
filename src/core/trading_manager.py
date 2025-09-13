@@ -30,6 +30,10 @@ from src.core.events import OrderEvent, OrderState
 from src.core.reconciliation_engine import ReconciliationEngine
 # Reconciliation Engine Integration - End
 
+# Market Hours Service Import - Begin
+from src.services.market_hours_service import MarketHoursService
+# Market Hours Service Import - End
+
 class TradingManager:
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx", 
                  ibkr_client: Optional[IbkrClient] = None,
@@ -83,6 +87,11 @@ class TradingManager:
         self.loading_service = OrderLoadingService(self, self.db_session)
         self.eligibility_service = None
         # ==================== SERVICE LAYER INTEGRATION - END ====================
+
+        # Market Hours Service Initialization - Begin
+        self.market_hours = MarketHoursService()
+        self.last_position_close_check = None
+        # Market Hours Service Initialization - End
 
     def _initialize(self):
         """Internal initialization - called automatically when needed"""
@@ -257,6 +266,11 @@ class TradingManager:
         while self.monitoring and error_count < max_errors:
             try:
                 self._check_and_execute_orders()
+
+                # Market Close Position Checking - Begin
+                self._check_market_close_actions()
+                # Market Close Position Checking - End
+
                 error_count = 0  # Reset error count on success
                 time.sleep(interval_seconds)
                 
@@ -754,3 +768,43 @@ class TradingManager:
                 print(f"❌ Market Data: No data for {test_symbol}")
         
         print("="*60)
+
+    # Simplified Position Closing Orchestration - Begin
+    def _close_single_position(self, position):
+        """Orchestrate position closing through execution service only"""
+        try:
+            print(f"🔚 Closing position: {position.symbol} ({position.action} {position.quantity})")
+            
+            # 1. Cancel existing bracket orders first
+            print(f"   Cancelling existing orders for {position.symbol}...")
+            cancel_success = self.execution_service.cancel_orders_for_symbol(position.symbol)
+            
+            if not cancel_success:
+                print(f"⚠️  Order cancellation failed for {position.symbol}, proceeding anyway")
+            
+            # 2. Determine closing action (opposite of current position)
+            close_action = 'SELL' if position.action == 'BUY' else 'BUY'
+            print(f"   Closing action: {close_action} (was {position.action})")
+            
+            # 3. Close position through execution service
+            order_id = self.execution_service.close_position({
+                'symbol': position.symbol,
+                'action': close_action,
+                'quantity': position.quantity,
+                'security_type': position.security_type,
+                'exchange': position.exchange,
+                'currency': position.currency
+            })
+            
+            # 4. Update database state
+            if order_id is not None:
+                position.status = 'CLOSING'
+                self.db_session.commit()
+                print(f"✅ Position closing initiated for {position.symbol} (Order ID: {order_id})")
+            else:
+                print(f"✅ Simulation: Position would be closed for {position.symbol}")
+                
+        except Exception as e:
+            print(f"❌ Failed to close position {position.symbol}: {e}")
+            import traceback
+            traceback.print_exc()

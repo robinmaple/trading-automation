@@ -54,6 +54,13 @@ class OrderPersistenceService:
                 is_live_trading=is_live_trading
             )
             
+            # Add expiration date for HYBRID strategy orders - Begin
+            if planned_order.position_strategy.value == 'HYBRID':
+                expiration_date = datetime.datetime.now() + datetime.timedelta(days=10)
+                executed_order.expiration_date = expiration_date
+                print(f"📅 HYBRID order expiration set: {expiration_date.strftime('%Y-%m-%d %H:%M')}")
+            # Add expiration date for HYBRID strategy orders - End
+
             # Add to database and commit
             self.db_session.add(executed_order)
             self.db_session.commit()

@@ -36,7 +36,7 @@ class OrderType(Enum):
 class PositionStrategy(Enum):
     DAY = "DAY"           # Close before market close
     CORE = "CORE"         # Good till cancel  
-    HYBRID = "HYBRID"     # Partial day, partial core
+    HYBRID = "HYBRID"     # 10-day expiration
     
     @classmethod
     def _missing_(cls, value):
@@ -50,7 +50,21 @@ class PositionStrategy(Enum):
             if value_str.startswith(member.value.upper()):
                 return member
         raise ValueError(f"Invalid PositionStrategy: {value}")
+
+    def get_expiration_days(self) -> Optional[int]:
+        """Return expiration days for each strategy"""
+        if self == PositionStrategy.DAY:
+            return 0  # Expires same day
+        elif self == PositionStrategy.CORE:
+            return None  # Never expires
+        elif self == PositionStrategy.HYBRID:
+            return 10  # 10-day expiration
+        return None
     
+    def requires_market_close_action(self) -> bool:
+        """Check if this strategy requires closing at market close"""
+        return self in [PositionStrategy.DAY, PositionStrategy.HYBRID]
+
 @dataclass
 class PlannedOrder:
     # Required fields from Excel
@@ -68,11 +82,9 @@ class PlannedOrder:
     # Phase 1 - Priority Field - Begin
     priority: int = 3  # Default to medium priority (scale 1-5)
     # Phase 1 - Priority Field - End
-    
-    # NEW: Mock data configuration fields
-    mock_anchor_price: Optional[float] = None
-    mock_trend: str = 'random'  # 'up', 'down', 'random'
-    mock_volatility: float = 0.001  # Base price movement per tick
+
+    # NEW: Expiration tracking
+    expiration_date: Optional[datetime.datetime] = None    
 
     # Calculated fields (no need to store in Excel)
     _quantity: Optional[float] = None
@@ -80,6 +92,7 @@ class PlannedOrder:
     
     def __post_init__(self):
         self.validate()
+        self._set_expiration_date()
         
     def validate(self):
         """Validate the order parameters"""
@@ -91,15 +104,17 @@ class PlannedOrder:
             raise ValueError("Priority must be between 1 and 5")
         # Phase 1 - Priority Validation - End
 
-        # NEW: Mock trend validation
-        if self.mock_trend not in ['up', 'down', 'random']:
-            raise ValueError("Mock trend must be 'up', 'down', or 'random'")
-                
         if self.entry_price is not None and self.stop_loss is not None:
             if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
                (self.action == Action.SELL and self.stop_loss <= self.entry_price):
                 raise ValueError("Stop loss must be protective")
     
+    def _set_expiration_date(self):
+        """Set expiration date based on position strategy"""
+        expiration_days = self.position_strategy.get_expiration_days()
+        if expiration_days is not None:
+            self.expiration_date = datetime.datetime.now() + datetime.timedelta(days=expiration_days)
+
     def calculate_quantity(self, total_capital: float) -> float:
         """Calculate position size based on risk management"""
         if self.entry_price is None or self.stop_loss is None:
@@ -239,20 +254,6 @@ class PlannedOrderManager:
                     print(f"Priority: {priority}")
                     # Phase 1 - Priority Parsing - End    
 
-                    # NEW: Mock configuration parsing
-                    mock_anchor_price = None
-                    if pd.notna(row.get('Mock Anchor Price')):
-                        mock_anchor_price = float(row['Mock Anchor Price'])
-                    print(f"Mock Anchor Price: {mock_anchor_price}")
-                    
-                    mock_trend = str(row.get('Mock Trend', 'random')).strip().lower()
-                    if mock_trend not in ['up', 'down', 'random']:
-                        mock_trend = 'random'  # Default to random if invalid
-                    print(f"Mock Trend: {mock_trend}")
-                    
-                    mock_volatility = float(row.get('Mock Volatility', 0.001))
-                    print(f"Mock Volatility: {mock_volatility}")
-
                     # Create the order
                     order = PlannedOrder(
                         security_type=security_type,
@@ -269,10 +270,6 @@ class PlannedOrderManager:
                         # Phase 1 - Priority Assignment - Begin
                         priority=priority,
                         # Phase 1 - Priority Assignment - End
-                        # NEW: Mock configuration assignment
-                        mock_anchor_price=mock_anchor_price,
-                        mock_trend=mock_trend,
-                        mock_volatility=mock_volatility
                     )
                     
                     orders.append(order)

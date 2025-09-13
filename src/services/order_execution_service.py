@@ -1,6 +1,10 @@
 import datetime
 from src.core.planned_order import ActiveOrder
-
+# Add necessary imports - Begin
+from ibapi.contract import Contract
+from ibapi.order import Order
+from typing import Any, Dict, Optional, List
+# Add necessary imports - End
 
 class OrderExecutionService:
     """
@@ -178,3 +182,95 @@ class OrderExecutionService:
         """
         # Phase 1: Delegate to existing logic. This will be refactored later.
         return self._trading_manager._cancel_single_order(order_id)
+    
+    # Consolidated Position Closing Business Logic - Begin
+    def close_position(self, position_data: Dict) -> Optional[int]:
+        """
+        Close a position with proper business logic.
+        Returns order ID if successful, None otherwise.
+        """
+        if not self._ibkr_client or not self._ibkr_client.connected:
+            print(f"✅ Simulation: Would close {position_data['symbol']} position")
+            return None
+            
+        try:
+            # Create contract
+            contract = Contract()
+            contract.symbol = position_data['symbol']
+            contract.secType = position_data['security_type']
+            contract.exchange = position_data.get('exchange', 'SMART')
+            contract.currency = position_data.get('currency', 'USD')
+            
+            # Create market order
+            order = Order()
+            order.action = position_data['action']
+            order.orderType = "MKT"
+            order.totalQuantity = position_data['quantity']
+            order.tif = "DAY"
+            
+            # Place order through IBKR client
+            order_id = self._ibkr_client.next_valid_id
+            self._ibkr_client.placeOrder(order_id, contract, order)
+            self._ibkr_client.next_valid_id += 1
+            
+            print(f"✅ Closing market order placed for {position_data['symbol']} (ID: {order_id})")
+            return order_id
+            
+        except Exception as e:
+            print(f"❌ Failed to close position {position_data['symbol']}: {e}")
+            return None
+
+    def cancel_orders_for_symbol(self, symbol: str) -> bool:
+        """
+        Cancel all open orders for a specific symbol.
+        Returns True if successful, False otherwise.
+        """
+        if not self._ibkr_client or not self._ibkr_client.connected:
+            print(f"✅ Simulation: Would cancel orders for {symbol}")
+            return True
+            
+        try:
+            # Get open orders from IBKR
+            orders = self._ibkr_client.get_open_orders()
+            
+            # Business logic: only cancel orders that are still active
+            symbol_orders = [
+                o for o in orders 
+                if o.symbol == symbol 
+                and o.status in ['Submitted', 'PreSubmitted', 'PendingSubmit']
+            ]
+            
+            if not symbol_orders:
+                print(f"ℹ️  No active orders found to cancel for {symbol}")
+                return True
+                
+            success = True
+            for order in symbol_orders:
+                print(f"❌ Cancelling order {order.order_id} for {symbol}")
+                if not self._ibkr_client.cancel_order(order.order_id):
+                    success = False
+                    print(f"⚠️  Failed to cancel order {order.order_id}")
+                    
+            return success
+            
+        except Exception as e:
+            print(f"❌ Error cancelling orders for {symbol}: {e}")
+            return False
+
+    def find_orders_by_symbol(self, symbol: str) -> List[Any]:
+        """
+        Find all open orders for a specific symbol.
+        Returns list of order objects.
+        """
+        if not self._ibkr_client or not self._ibkr_client.connected:
+            print(f"✅ Simulation: Would find orders for {symbol}")
+            return []
+            
+        try:
+            orders = self._ibkr_client.get_open_orders()
+            return [o for o in orders if o.symbol == symbol]
+            
+        except Exception as e:
+            print(f"❌ Error finding orders for {symbol}: {e}")
+            return []
+    # Consolidated Position Closing Business Logic - End
