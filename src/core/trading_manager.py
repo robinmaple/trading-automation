@@ -11,6 +11,7 @@ import threading
 import time
 import pandas as pd
 
+from services.prioritization_service import PrioritizationService
 from src.core.ibkr_client import IbkrClient
 from src.core.planned_order import PlannedOrder, ActiveOrder
 from src.core.probability_engine import FillProbabilityEngine
@@ -68,6 +69,15 @@ class TradingManager:
         self.market_hours = MarketHoursService()
         self.last_position_close_check = None
 
+        # Service layer initialization
+        self.execution_service = OrderExecutionService(self, self.ibkr_client)
+        self.sizing_service = PositionSizingService(self)
+        self.loading_service = OrderLoadingService(self, self.db_session)
+        self.eligibility_service = None
+        # Phase B Additions - Begin
+        self.prioritization_service = None
+        # Phase B Additions - End
+
     def _initialize(self) -> bool:
         """Complete initialization that requires a connected data feed."""
         if self._initialized:
@@ -95,6 +105,13 @@ class TradingManager:
             print("⚠️  Order executor provided but not connected to IBKR - will use simulation")
         else:
             print("ℹ️  No order executor provided - using simulation mode")
+
+        # Initialize services with complex dependencies
+        self.eligibility_service = OrderEligibilityService(self.planned_orders, self.probability_engine, self.db_session)
+        self.execution_service.set_dependencies(self.order_persistence_service, self.active_orders)
+        # Phase B Additions - Begin
+        self.prioritization_service = PrioritizationService(self.sizing_service)
+        # Phase B Additions - End
 
         return True
 
@@ -307,6 +324,13 @@ class TradingManager:
 
             # Execute the order via _execute_order
             self._execute_order(order, fill_prob)
+
+        print(f"🎯 Found {len(executable_orders)} executable orders")
+
+        # Phase B Additions - Begin
+        # Use prioritization service instead of simple execution
+        self._execute_prioritized_orders(executable_orders)
+        # Phase B Additions - End
 
         print("-" * 50)
 
@@ -651,3 +675,73 @@ class TradingManager:
         """Check if any positions need to be closed due to market close strategies."""
         # Implementation would go here
         pass
+
+    # Phase B Additions - Begin
+    def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
+        """Execute orders using Phase B prioritization and capital allocation."""
+        # Determine total capital
+        total_capital = (
+            self.ibkr_client.get_account_value()
+            if self.ibkr_client and self.ibkr_client.connected
+            else self.total_capital
+        )
+
+        # Convert active orders to format expected by prioritization service
+        working_orders = []
+        for active_order in self.active_orders.values():
+            if active_order.is_working():
+                working_orders.append({
+                    'capital_commitment': active_order.capital_commitment
+                })
+
+        # Prioritize orders using Phase B service
+        prioritized_orders = self.prioritization_service.prioritize_orders(
+            executable_orders, total_capital, working_orders
+        )
+
+        # Get summary for logging
+        summary = self.prioritization_service.get_prioritization_summary(prioritized_orders)
+
+        print(f"📈 Phase B Prioritization Results:")
+        print(f"   Allocated: {summary['total_allocated']}, Rejected: {summary['total_rejected']}")
+        print(f"   Capital Commitment: ${summary['total_capital_commitment']:,.2f}")
+        print(f"   Average Score: {summary['average_score']:.3f}")
+
+        # Log rejection reasons
+        if summary['allocation_reasons']:
+            print(f"   Rejection Reasons: {summary['allocation_reasons']}")
+
+        # Execute allocated orders
+        executed_count = 0
+        for order_data in prioritized_orders:
+            if not order_data['allocated']:
+                continue
+
+            order = order_data['order']
+            fill_prob = order_data['fill_probability']
+
+            # Skip if there is an open position
+            if self.state_service.has_open_position(order.symbol):
+                print(f"⏩ Skipping {order.symbol} - open position exists")
+                continue
+
+            # Skip duplicates or already filled orders
+            db_order = self._find_existing_planned_order(order)
+            if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
+                same_action = db_order.action == order.action.value
+                same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
+                same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
+                if same_action and same_entry and same_stop:
+                    print(f"⏩ Skipping {order.symbol} {order.action.value} @ {order.entry_price:.4f} - "
+                        f"already in state: {db_order.status}")
+                    continue
+
+            # Execute the prioritized order
+            print(f"✅ Executing {order.symbol} with score={order_data['deterministic_score']:.3f}, "
+                f"fill_prob={fill_prob:.2%}, capital=${order_data['capital_commitment']:,.2f}")
+            self._execute_order(order, fill_prob)
+            executed_count += 1
+
+        if executed_count == 0:
+            print("💡 No orders executed after prioritization filtering")
+    # Phase B Additions - End
