@@ -3,7 +3,7 @@ SQLAlchemy ORM models defining the database schema for the trading system.
 Contains tables for trading strategies, planned orders, executed orders, and their relationships.
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Enum
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Enum, JSON
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 import datetime
@@ -97,3 +97,74 @@ class ExecutedOrderDB(Base):
 
     def __repr__(self):
         return f"<ExecutedOrderDB(id={self.id}, pnl={self.pnl}, status='{self.status}')>"
+
+class ProbabilityScoreDB(Base):
+    """Stores Phase A fill probabilities and feature snapshots for Phase B/ML."""
+    __tablename__ = 'probability_scores'
+
+    id = Column(Integer, primary_key=True)
+    planned_order_id = Column(Integer, ForeignKey('planned_orders.id'), nullable=True)
+    symbol = Column(String(20), nullable=False)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+    fill_probability = Column(Float, nullable=False)
+    features = Column(JSON, nullable=True)
+    score = Column(Float, nullable=True)
+    engine_version = Column(String(50), nullable=True)
+    source = Column(String(50), nullable=True)
+
+    planned_order = relationship("PlannedOrderDB", backref="probability_scores")
+
+class OrderAttemptDB(Base):
+    """Tracks every attempt to place, cancel, or replace an order."""
+    __tablename__ = 'order_attempts'
+
+    id = Column(Integer, primary_key=True)
+    planned_order_id = Column(Integer, ForeignKey('planned_orders.id'), nullable=False)
+    attempt_ts = Column(DateTime, default=datetime.datetime.now)
+    attempt_type = Column(Enum('PLACEMENT','CANCELLATION','REPLACEMENT', name='attempt_type_enum', native_enum=False))
+    fill_probability = Column(Float, nullable=True)
+    effective_priority = Column(Float, nullable=True)
+    capital_commitment = Column(Float, nullable=True)
+    quantity = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=True)
+    ib_order_ids = Column(JSON, nullable=True)
+    details = Column(JSON, nullable=True)
+
+    planned_order = relationship("PlannedOrderDB", backref="order_attempts")
+
+class OrderLabelDB(Base):
+    """Derived labels for ML training (immutable once computed)."""
+    __tablename__ = 'order_labels'
+
+    id = Column(Integer, primary_key=True)
+    planned_order_id = Column(Integer, ForeignKey('planned_orders.id'), nullable=False)
+    label_type = Column(Enum('filled_binary','time_to_fill','profitability','target_hit','stop_hit',
+                             name='label_type_enum', native_enum=False))
+    label_value = Column(Float, nullable=False)
+    computed_at = Column(DateTime, default=datetime.datetime.now)
+    notes = Column(Text, nullable=True)
+
+    planned_order = relationship("PlannedOrderDB", backref="order_labels")
+
+class MarketSnapshotDB(Base):
+    """Optional low-latency snapshot of market data for ML reconstruction."""
+    __tablename__ = 'market_snapshots'
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), nullable=False)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+    bid = Column(Float, nullable=True)
+    ask = Column(Float, nullable=True)
+    bid_size = Column(Float, nullable=True)
+    ask_size = Column(Float, nullable=True)
+    last = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+    vwap = Column(Float, nullable=True)
+    level2_snapshot = Column(JSON, nullable=True)
+
+# Extend PlannedOrderDB - Begin
+PlannedOrderDB.core_timeframe = Column(String(50), nullable=True)
+PlannedOrderDB.priority_manual = Column(Integer, nullable=False, default=3)
+# Extend PlannedOrderDB - End
+
+# Phase B Additions - End
