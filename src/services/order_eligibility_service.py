@@ -53,7 +53,7 @@ class OrderEligibilityService:
                     "symbol": order.symbol,
                     "entry_price": getattr(order, "entry_price", None),
                     "stop_loss": getattr(order, "stop_loss", None),
-                    "priority_manual": base_priority,
+                    "priority": base_priority,
                     "timestamp": datetime.datetime.now().isoformat(),
                 }
                 prob_score = ProbabilityScoreDB(

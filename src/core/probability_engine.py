@@ -5,6 +5,7 @@ This is a placeholder implementation for a future, more sophisticated model.
 """
 
 from src.core.abstract_data_feed import AbstractDataFeed
+import datetime
 
 
 class FillProbabilityEngine:
@@ -34,12 +35,66 @@ class FillProbabilityEngine:
                     return 0.1
 
         return 0.5
+
+    def extract_features(self, order, current_data) -> dict:
+        """
+        Extract comprehensive features for Phase B ML foundation.
+        Returns a dictionary of features for persistence and analysis.
+        """
+        if not current_data:
+            return {}
+        
+        current_price = current_data['price']
+        current_time = datetime.datetime.now()
+        
+        features = {
+            # Time-based features
+            'timestamp': current_time.isoformat(),
+            'time_of_day_seconds': current_time.hour * 3600 + current_time.minute * 60 + current_time.second,
+            'day_of_week': current_time.weekday(),  # Monday=0, Sunday=6
+            'seconds_since_midnight': current_time.hour * 3600 + current_time.minute * 60 + current_time.second,
+            
+            # Market data features
+            'current_price': current_price,
+            'bid': current_data.get('bid'),
+            'ask': current_data.get('ask'),
+            'bid_size': current_data.get('bid_size'),
+            'ask_size': current_data.get('ask_size'),
+            'last_price': current_data.get('last'),
+            'volume': current_data.get('volume'),
+            
+            # Spread analysis
+            'spread_absolute': current_data.get('ask', 0) - current_data.get('bid', 0) if current_data.get('ask') and current_data.get('bid') else None,
+            'spread_relative': (current_data.get('ask', 0) - current_data.get('bid', 0)) / current_price if current_data.get('ask') and current_data.get('bid') and current_price else None,
+            
+            # Order context features
+            'symbol': order.symbol,
+            'order_side': order.action.value,
+            'order_type': order.order_type.value,
+            'entry_price': order.entry_price,
+            'stop_loss': order.stop_loss,
+            'priority_manual': getattr(order, 'priority', 3),
+            'trading_setup': getattr(order, 'trading_setup', None),
+            'core_timeframe': getattr(order, 'core_timeframe', None),
+            
+            # Price proximity features
+            'price_diff_absolute': current_price - order.entry_price if order.entry_price else None,
+            'price_diff_relative': (current_price - order.entry_price) / order.entry_price if order.entry_price else None,
+            
+            # Volatility placeholder (to be enhanced)
+            'volatility_estimate': self.estimate_volatility(order.symbol, current_data.get('history', []), order)
+        }
+        
+        return features
     
-    def score_fill(self, order) -> float:
-        """Compute fill probability score (0..1) based on rules and current market data."""
+    def score_fill(self, order, return_features=False) -> float:
+        """
+        Compute fill probability score (0..1) based on rules and current market data.
+        Phase B enhancement: optionally returns features dictionary for persistence.
+        """
         current_data = self.data_feed.get_current_price(order.symbol)
         if not current_data:
-            return 0.5  # neutral if no data
+            return 0.5 if not return_features else (0.5, {})  # neutral if no data
 
         current_price = current_data['price']
         price_history = current_data.get('history', [])
@@ -60,7 +115,13 @@ class FillProbabilityEngine:
                 else:
                     score = max(0.1, 1.0 - (order.entry_price - current_price) / (order.entry_price * (1 + volatility)))
 
-        return max(0.0, min(1.0, score))
+        final_score = max(0.0, min(1.0, score))
+        
+        if return_features:
+            features = self.extract_features(order, current_data)
+            return final_score, features
+        else:
+            return final_score
 
     def should_execute_order(self, order) -> tuple[bool, float]:
         """Compatibility wrapper — decide based on threshold."""

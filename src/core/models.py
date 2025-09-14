@@ -164,7 +164,6 @@ class MarketSnapshotDB(Base):
 
 # Extend PlannedOrderDB - Begin
 PlannedOrderDB.core_timeframe = Column(String(50), nullable=True)
-PlannedOrderDB.priority_manual = Column(Integer, nullable=False, default=3)
 # Extend PlannedOrderDB - End
 
 # Phase B Additions - End
