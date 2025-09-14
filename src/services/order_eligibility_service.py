@@ -40,28 +40,21 @@ class OrderEligibilityService:
                 print(f"   ⚠️  {order.symbol}: Cannot place order (basic constraints failed)")
                 continue
 
-            # Phase A: compute probability score
-            fill_prob = self.probability_engine.score_fill(order)
+            # Phase B: compute probability score WITH comprehensive features
+            fill_prob, features = self.probability_engine.score_fill(order, return_features=True)
 
             # Priority is manually supplied in template (default=1 if missing)
             base_priority = getattr(order, "priority", 1)
             effective_priority = base_priority * fill_prob
 
-            # --- Phase B: persist probability score ---
+            # --- Phase B: persist probability score with comprehensive features ---
             if self.db_session:
-                features_snapshot = {
-                    "symbol": order.symbol,
-                    "entry_price": getattr(order, "entry_price", None),
-                    "stop_loss": getattr(order, "stop_loss", None),
-                    "priority": base_priority,
-                    "timestamp": datetime.datetime.now().isoformat(),
-                }
                 prob_score = ProbabilityScoreDB(
                     planned_order_id=getattr(order, "id", None),
                     symbol=order.symbol,
                     timestamp=datetime.datetime.now(),
                     fill_probability=fill_prob,
-                    features=features_snapshot,
+                    features=features,  # Use comprehensive features from probability engine
                     score=effective_priority,
                     engine_version="phaseB_v1",
                     source="eligibility_service"
@@ -79,7 +72,8 @@ class OrderEligibilityService:
                 'fill_probability': fill_prob,
                 'priority': base_priority,
                 'effective_priority': effective_priority,
-                'timestamp': datetime.datetime.now()
+                'timestamp': datetime.datetime.now(),
+                'features': features  # Include features in executable result
             })
 
         # Sort so that higher effective priority comes first

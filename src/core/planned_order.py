@@ -32,7 +32,7 @@ class SecurityType(Enum):
 class Action(Enum):
     """Supported trade actions."""
     BUY = "BUY"
-    SELL = "SELL"
+    SEL = "SELL"
     SSHORT = "SSHORT"  # Short sell
 
 class OrderType(Enum):
@@ -94,6 +94,10 @@ class PlannedOrder:
     risk_reward_ratio: float = 2.0
     position_strategy: PositionStrategy = PositionStrategy.CORE
     priority: int = 3  # Default to medium priority (scale 1-5)
+    # Phase B Additions - Begin
+    trading_setup: Optional[str] = None  # Trading strategy/setup type
+    core_timeframe: Optional[str] = None  # Core trading timeframe
+    # Phase B Additions - End
     expiration_date: Optional[datetime.datetime] = None
     # Calculated fields (no need to store in Excel)
     _quantity: Optional[float] = None
@@ -110,6 +114,12 @@ class PlannedOrder:
             raise ValueError("Risk per trade cannot exceed 2%")
         if not 1 <= self.priority <= 5:
             raise ValueError("Priority must be between 1 and 5")
+        # Phase B Additions - Begin
+        if self.trading_setup and len(self.trading_setup) > 100:
+            raise ValueError("Trading setup description too long")
+        if self.core_timeframe and len(self.core_timeframe) > 50:
+            raise ValueError("Core timeframe description too long")
+        # Phase B Additions - End
         if self.entry_price is not None and self.stop_loss is not None:
             if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
                (self.action == Action.SELL and self.stop_loss <= self.entry_price):
@@ -276,6 +286,18 @@ class PlannedOrderManager:
                     priority = int(row.get('Priority', 3))
                     print(f"Priority: {priority}")
 
+                    # Phase B Additions - Begin
+                    trading_setup = None
+                    if pd.notna(row.get('Trading Setup')):
+                        trading_setup = str(row['Trading Setup']).strip()
+                    print(f"Trading Setup: '{trading_setup}'")
+
+                    core_timeframe = None
+                    if pd.notna(row.get('Core Timeframe')):
+                        core_timeframe = str(row['Core Timeframe']).strip()
+                    print(f"Core Timeframe: '{core_timeframe}'")
+                    # Phase B Additions - End
+
                     order = PlannedOrder(
                         security_type=security_type,
                         exchange=str(row['Exchange']).strip(),
@@ -289,6 +311,10 @@ class PlannedOrderManager:
                         risk_reward_ratio=risk_reward_ratio,
                         position_strategy=position_strategy,
                         priority=priority,
+                        # Phase B Additions - Begin
+                        trading_setup=trading_setup,
+                        core_timeframe=core_timeframe
+                        # Phase B Additions - End
                     )
                     orders.append(order)
                     print(f"✅ Successfully created order for {order.symbol}")
