@@ -82,7 +82,12 @@ def sample_planned_order():
         entry_price=1.1000,
         stop_loss=1.0950,
         risk_reward_ratio=2.0,
-        position_strategy=PositionStrategy.DAY
+        position_strategy=PositionStrategy.DAY,
+        priority=3,
+        # Phase B Additions - Begin
+        trading_setup="Breakout",
+        core_timeframe="15min"
+        # Phase B Additions - End
     )
 
 # Database Testing - Begin
@@ -146,8 +151,92 @@ def sample_planned_order_db(db_session, position_strategies):
         risk_reward_ratio=2.0,
         position_strategy_id=position_strategies["DAY"].id,
         status="PENDING",
-        is_live_trading=False
+        is_live_trading=False,
+        priority=3,
+        # Phase B Additions - Begin
+        core_timeframe="15min"
+        # trading_setup would be set via relationship if needed
+        # Phase B Additions - End
     )
     db_session.add(planned_order)
     db_session.commit()
     return planned_order
+
+# Phase B Additions - Begin
+@pytest.fixture
+def mock_probability_engine():
+    """Fixture for mocking ProbabilityEngine with Phase B features"""
+    mock_engine = Mock()
+    
+    # Mock the Phase B enhanced score_fill method
+    mock_features = {
+        'timestamp': '2024-01-01T12:00:00',
+        'time_of_day_seconds': 43200,
+        'day_of_week': 0,
+        'current_price': 100.0,
+        'bid': 99.95,
+        'ask': 100.05,
+        'spread_absolute': 0.10,
+        'symbol': 'TEST',
+        'order_side': 'BUY',
+        'priority_manual': 3,
+        'trading_setup': 'Breakout',
+        'core_timeframe': '15min'
+    }
+    mock_engine.score_fill.return_value = (0.85, mock_features)  # (probability, features)
+    mock_engine.should_execute_order.return_value = (True, 0.85)
+    
+    return mock_engine
+
+@pytest.fixture
+def phase_b_test_data():
+    """Fixture providing sample Phase B feature data for testing"""
+    return {
+        'timestamp': '2024-01-01T12:00:00',
+        'time_of_day_seconds': 43200,  # 12:00:00
+        'day_of_week': 0,  # Monday
+        'seconds_since_midnight': 43200,
+        'current_price': 150.25,
+        'bid': 150.20,
+        'ask': 150.30,
+        'bid_size': 1000,
+        'ask_size': 1500,
+        'last_price': 150.25,
+        'volume': 25000,
+        'spread_absolute': 0.10,
+        'spread_relative': 0.000665,
+        'symbol': 'AAPL',
+        'order_side': 'BUY',
+        'order_type': 'LMT',
+        'entry_price': 150.00,
+        'stop_loss': 148.50,
+        'priority_manual': 3,
+        'trading_setup': 'Breakout',
+        'core_timeframe': '15min',
+        'price_diff_absolute': 0.25,
+        'price_diff_relative': 0.001667,
+        'volatility_estimate': 0.001
+    }
+
+@pytest.fixture
+def sample_planned_order_with_phase_b():
+    """Fixture for creating a sample planned order with Phase B fields"""
+    from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
+    
+    return PlannedOrder(
+        security_type=SecurityType.STK,
+        exchange="SMART",
+        currency="USD",
+        action=Action.BUY,
+        symbol="AAPL",
+        order_type=OrderType.LMT,
+        risk_per_trade=0.005,
+        entry_price=150.00,
+        stop_loss=148.50,
+        risk_reward_ratio=2.0,
+        position_strategy=PositionStrategy.CORE,
+        priority=3,
+        trading_setup="Breakout",
+        core_timeframe="15min"
+    )
+# Phase B Additions - End

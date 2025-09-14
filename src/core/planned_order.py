@@ -32,7 +32,7 @@ class SecurityType(Enum):
 class Action(Enum):
     """Supported trade actions."""
     BUY = "BUY"
-    SEL = "SELL"
+    SELL = "SELL"
     SSHORT = "SSHORT"  # Short sell
 
 class OrderType(Enum):

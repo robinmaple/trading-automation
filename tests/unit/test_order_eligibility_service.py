@@ -1,43 +1,98 @@
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 import datetime
+from src.core.planned_order import Action, PlannedOrder, SecurityType
 from src.services.order_eligibility_service import OrderEligibilityService
+from src.core.models import ProbabilityScoreDB
+
 
 class TestOrderEligibilityService:
     """Test suite for OrderEligibilityService"""
-    
-    @patch("src.core.probability_engine.FillProbabilityEngine")
-    def test_find_executable_orders_filters_by_probability(self, mock_fill_engine):
-        mock_order = Mock()
-        mock_order.symbol = "AAPL"
-        mock_order.action.value = "BUY"
-        mock_order.order_type.value = "LMT"
-        mock_order.entry_price = 100
-        mock_order.priority = 1  # numeric
 
-        # Configure patched FillProbabilityEngine to return numeric fill probability
-        mock_fill_engine.return_value.score_fill.return_value = 0.8
+    @pytest.fixture
+    def mock_db_session(self):
+        """Provide a mock database session for testing."""
+        session = Mock()
+        session.add = Mock()
+        session.commit = Mock()
+        return session
 
-        service = OrderEligibilityService([mock_order], mock_fill_engine.return_value)
-        executable_orders = service.find_executable_orders()
-        assert len(executable_orders) == 1
-        assert executable_orders[0]['effective_priority'] == pytest.approx(0.8)
+    @patch("src.services.order_eligibility_service.ProbabilityScoreDB")
+    def test_find_executable_orders_filters_by_probability(self, mock_probability_score_db):
+        # Arrange
+        mock_orders = [
+            PlannedOrder(
+                symbol="AAPL",
+                action=Action.BUY,
+                security_type=SecurityType.STK,
+                exchange="SMART",
+                currency="USD",
+                entry_price=100,
+                stop_loss=95,
+                priority=3
+            ),
+            PlannedOrder(
+                symbol="MSFT",
+                action=Action.SELL,
+                security_type=SecurityType.STK,
+                exchange="SMART",
+                currency="USD",
+                entry_price=200,
+                stop_loss=210,
+                priority=2
+            ),
+        ]
+        
+        # Mock the probability engine to return score and features
+        mock_probability_engine = Mock()
+        mock_probability_engine.score_fill.return_value = (0.8, {"feature": 1.0, "symbol": "TEST"})
 
-    @patch("src.core.probability_engine.FillProbabilityEngine")
-    def test_find_executable_orders_includes_timestamp(self, mock_fill_engine):
-        mock_order = Mock()
-        mock_order.symbol = "AAPL"
-        mock_order.action.value = "BUY"
-        mock_order.order_type.value = "LMT"
-        mock_order.entry_price = 100
-        mock_order.priority = 1
+        service = OrderEligibilityService(mock_orders, mock_probability_engine)
 
-        mock_fill_engine.return_value.score_fill.return_value = 0.9
+        # Act
+        results = service.find_executable_orders()
 
-        service = OrderEligibilityService([mock_order], mock_fill_engine.return_value)
-        executable_orders = service.find_executable_orders()
-        assert 'timestamp' in executable_orders[0]
-    
+        # Assert
+        assert len(results) == 2
+        for result in results:
+            assert "fill_probability" in result
+            assert result["fill_probability"] == 0.8
+            assert "effective_priority" in result
+            assert result["effective_priority"] == result["priority"] * 0.8
+            assert "features" in result  # Phase B: features should be included
+
+    @patch("src.services.order_eligibility_service.ProbabilityScoreDB")
+    def test_find_executable_orders_includes_timestamp(self, mock_probability_score_db):
+        # Arrange
+        mock_orders = [
+            PlannedOrder(
+                symbol="TSLA",
+                action=Action.BUY,
+                security_type=SecurityType.STK,
+                exchange="SMART",
+                currency="USD",
+                entry_price=300,
+                stop_loss=290,
+                priority=4
+            )
+        ]
+        
+        mock_probability_engine = Mock()
+        mock_probability_engine.score_fill.return_value = (0.6, {"feature": 2.0, "symbol": "TSLA"})
+
+        service = OrderEligibilityService(mock_orders, mock_probability_engine)
+
+        # Act
+        results = service.find_executable_orders()
+
+        # Assert
+        assert len(results) == 1
+        result = results[0]
+        assert "timestamp" in result
+        assert isinstance(result["timestamp"], datetime.datetime)
+        assert result["fill_probability"] == 0.6
+        assert "features" in result  # Phase B: features should be included
+
     def test_can_trade_returns_true_by_default(self):
         """Test that can_trade method returns True (placeholder implementation)"""
         mock_orders = []
@@ -61,3 +116,112 @@ class TestOrderEligibilityService:
         
         assert len(executable) == 0
         assert executable == []
+
+    # Phase B Additions - Begin
+    def test_persistence_with_db_session(self, mock_db_session):
+        """Test that probability scores are persisted when DB session is provided."""
+        # Arrange
+        mock_orders = [
+            PlannedOrder(
+                symbol="AAPL",
+                action=Action.BUY,
+                security_type=SecurityType.STK,
+                exchange="SMART",
+                currency="USD",
+                entry_price=100,
+                stop_loss=95,
+                priority=3
+            )
+        ]
+        
+        mock_probability_engine = Mock()
+        mock_features = {
+            "symbol": "AAPL",
+            "current_price": 100.5,
+            "time_of_day_seconds": 34200,  # 9:30 AM
+            "feature": "test_value"
+        }
+        mock_probability_engine.score_fill.return_value = (0.85, mock_features)
+
+        service = OrderEligibilityService(mock_orders, mock_probability_engine, mock_db_session)
+
+        # Act
+        results = service.find_executable_orders()
+
+        # Assert
+        assert len(results) == 1
+        mock_db_session.add.assert_called_once()
+        mock_db_session.commit.assert_called_once()
+        
+        # Verify the added object is a ProbabilityScoreDB with correct data
+        added_score = mock_db_session.add.call_args[0][0]
+        assert isinstance(added_score, ProbabilityScoreDB)
+        assert added_score.symbol == "AAPL"
+        assert added_score.fill_probability == 0.85
+        assert added_score.features == mock_features
+        assert added_score.engine_version == "phaseB_v1"
+        assert added_score.source == "eligibility_service"
+
+    def test_no_persistence_without_db_session(self):
+        """Test that no DB operations occur when no session is provided."""
+        # Arrange
+        mock_orders = [
+            PlannedOrder(
+                symbol="AAPL",
+                action=Action.BUY,
+                security_type=SecurityType.STK,
+                exchange="SMART",
+                currency="USD",
+                entry_price=100,
+                stop_loss=95,
+                priority=3
+            )
+        ]
+        
+        mock_probability_engine = Mock()
+        mock_probability_engine.score_fill.return_value = (0.85, {"feature": "test"})
+
+        service = OrderEligibilityService(mock_orders, mock_probability_engine, None)
+
+        # Act - should not raise any database-related errors
+        results = service.find_executable_orders()
+
+        # Assert
+        assert len(results) == 1
+        # No database operations should occur
+
+    def test_features_included_in_executable_results(self):
+        """Test that features are included in the executable orders results."""
+        # Arrange
+        mock_orders = [
+            PlannedOrder(
+                symbol="GOOGL",
+                action=Action.BUY,
+                security_type=SecurityType.STK,
+                exchange="SMART", 
+                currency="USD",
+                entry_price=150,
+                stop_loss=145,
+                priority=2
+            )
+        ]
+        
+        mock_probability_engine = Mock()
+        expected_features = {
+            "symbol": "GOOGL",
+            "current_price": 151.2,
+            "spread_absolute": 0.15,
+            "time_based_feature": 12345
+        }
+        mock_probability_engine.score_fill.return_value = (0.75, expected_features)
+
+        service = OrderEligibilityService(mock_orders, mock_probability_engine)
+
+        # Act
+        results = service.find_executable_orders()
+
+        # Assert
+        assert len(results) == 1
+        assert results[0]["features"] == expected_features
+        assert "features" in results[0]  # Phase B: features should be present
+    # Phase B Additions - End
