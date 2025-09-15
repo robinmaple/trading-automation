@@ -192,7 +192,7 @@ class TestPrioritizationService:
         # Orders should be sorted by score descending
         scores = [o['deterministic_score'] for o in prioritized_orders]
         assert scores == sorted(scores, reverse=True)
-    
+
     def test_prioritize_orders_with_capital_constraint_returns_all_orders_but_unallocated(self, prioritization_service, sample_buy_order):
         """Test that ALL orders are returned but marked as unallocated when capital is insufficient."""
         executable_orders = [
@@ -203,6 +203,13 @@ class TestPrioritizationService:
                 'timestamp': None
             }
         ]
+
+        # Mock the sizing service to return a LARGE position size that exceeds available capital
+        def mock_calculate_quantity(order, total_capital):
+            # Return a quantity that would require more than 1000 capital
+            return 100  # This will make capital_commitment = 150.0 * 100 = 15000
+        
+        prioritization_service.sizing_service.calculate_order_quantity = mock_calculate_quantity
 
         # Very small capital - should not be able to allocate
         small_capital = 1000  # Too small for the order
@@ -317,12 +324,12 @@ class TestPrioritizationService:
         assert service.config['max_open_orders'] == 3
         assert service.config['max_capital_utilization'] == 0.9
 
-    def test_empty_executable_orders(prioritization_service):
+    def test_empty_executable_orders(self, prioritization_service):
         """Test prioritization with empty executable orders list."""
         prioritized_orders = prioritization_service.prioritize_orders([], 100000)
         assert prioritized_orders == []
 
-    def test_single_order_prioritization(prioritization_service, sample_buy_order):
+    def test_single_order_prioritization(self, prioritization_service, sample_buy_order):
         """Test prioritization with only one executable order."""
         executable_orders = [
             {

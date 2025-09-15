@@ -10,6 +10,9 @@ from ibapi.contract import Contract
 from ibapi.order import Order
 
 from src.core.planned_order import ActiveOrder
+# Phase B Additions - Begin
+from src.core.models import OrderAttemptDB
+# Phase B Additions - End
 
 
 class OrderExecutionService:
@@ -26,6 +29,53 @@ class OrderExecutionService:
         """Inject dependencies for order execution and tracking."""
         self.order_persistence = order_persistence
         self.active_orders = active_orders
+
+    # Phase B Additions - Begin
+    def _record_order_attempt(self, planned_order, attempt_type, fill_probability=None,
+                            effective_priority=None, quantity=None, capital_commitment=None,
+                            status=None, ib_order_ids=None, details=None):
+        """
+        Record an order attempt to the database for Phase B tracking.
+        
+        Args:
+            planned_order: The planned order being attempted
+            attempt_type: Type of attempt ('PLACEMENT', 'CANCELLATION', 'REPLACEMENT')
+            fill_probability: Fill probability at time of attempt
+            effective_priority: Effective priority score
+            quantity: Quantity attempted
+            capital_commitment: Capital commitment for the order
+            status: Status of the attempt
+            ib_order_ids: IBKR order IDs if available
+            details: Additional details or error messages
+        """
+        if not self.order_persistence or not hasattr(self.order_persistence, 'db_session'):
+            return None
+            
+        try:
+            db_id = self._trading_manager._find_planned_order_db_id(planned_order)
+            
+            attempt = OrderAttemptDB(
+                planned_order_id=db_id,
+                attempt_ts=datetime.datetime.now(),
+                attempt_type=attempt_type,
+                fill_probability=fill_probability,
+                effective_priority=effective_priority,
+                quantity=quantity,
+                capital_commitment=capital_commitment,
+                status=status,
+                ib_order_ids=ib_order_ids,
+                details=details
+            )
+            
+            self.order_persistence.db_session.add(attempt)
+            self.order_persistence.db_session.commit()
+            
+            return attempt.id
+            
+        except Exception as e:
+            print(f"❌ Failed to record order attempt: {e}")
+            return None
+    # Phase B Additions - End
 
     def place_order(
         self,
@@ -82,6 +132,14 @@ class OrderExecutionService:
                 self.order_persistence.handle_order_rejection(db_id, margin_message)
             else:
                 print(f"❌ Cannot mark order as canceled: Database ID not found for {order.symbol}")
+            
+            # Phase B Additions - Begin
+            # Record failed attempt due to margin validation
+            self._record_order_attempt(
+                order, 'PLACEMENT', fill_probability, effective_priority,
+                quantity, capital_commitment, 'FAILED', None, margin_message
+            )
+            # Phase B Additions - End
             return False
 
         ibkr_connected = self._ibkr_client and self._ibkr_client.connected
@@ -89,6 +147,15 @@ class OrderExecutionService:
         # === LIVE ORDER PATH ===
         if ibkr_connected:
             print(f"   Taking LIVE order execution path... FillProb={fill_probability:.3f}")
+            
+            # Phase B Additions - Begin
+            # Record placement attempt before execution
+            attempt_id = self._record_order_attempt(
+                order, 'PLACEMENT', fill_probability, effective_priority,
+                quantity, capital_commitment, 'SUBMITTING', None, None
+            )
+            # Phase B Additions - End
+            
             contract = order.to_ib_contract()
             order_ids = self._ibkr_client.place_bracket_order(
                 contract,
@@ -108,6 +175,14 @@ class OrderExecutionService:
                 db_id = self._trading_manager._find_planned_order_db_id(order)
                 if db_id:
                     self.order_persistence.handle_order_rejection(db_id, rejection_reason)
+                
+                # Phase B Additions - Begin
+                # Update attempt with failure
+                self._record_order_attempt(
+                    order, 'PLACEMENT', fill_probability, effective_priority,
+                    quantity, capital_commitment, 'FAILED', None, rejection_reason
+                )
+                # Phase B Additions - End
                 return False
 
             # Phase B: Record execution once, track fill probability
@@ -136,12 +211,30 @@ class OrderExecutionService:
                 self.active_orders[order_ids[0]] = active_order
             else:
                 print("⚠️  Could not create ActiveOrder - database ID not found")
+            
+            # Phase B Additions - Begin
+            # Update attempt with success and order IDs
+            self._record_order_attempt(
+                order, 'PLACEMENT', fill_probability, effective_priority,
+                quantity, capital_commitment, 'SUBMITTED', order_ids, None
+            )
+            # Phase B Additions - End
+            
             print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
             return True
 
         # === SIMULATION PATH ===
         else:
             print(f"   Taking SIMULATION order execution path... FillProb={fill_probability:.3f}")
+            
+            # Phase B Additions - Begin
+            # Record simulation attempt
+            self._record_order_attempt(
+                order, 'PLACEMENT', fill_probability, effective_priority,
+                quantity, capital_commitment, 'SIMULATION', None, None
+            )
+            # Phase B Additions - End
+            
             update_success = self.order_persistence.update_order_status(order, 'FILLED')
             execution_id = self.order_persistence.record_order_execution(
                 order,
@@ -169,7 +262,38 @@ class OrderExecutionService:
 
     def cancel_order(self, order_id) -> bool:
         """Cancel a working order by delegating to the trading manager's logic."""
-        return self._trading_manager._cancel_single_order(order_id)
+        # Phase B Additions - Begin
+        # Find the active order to get details for tracking
+        active_order = None
+        for ao in self.active_orders.values():
+            if order_id in ao.order_ids:
+                active_order = ao
+                break
+        
+        # Record cancellation attempt
+        if active_order:
+            self._record_order_attempt(
+                active_order.planned_order, 'CANCELLATION',
+                active_order.fill_probability, None, None, None,
+                'ATTEMPTING', [order_id], None
+            )
+        # Phase B Additions - End
+        
+        success = self._trading_manager._cancel_single_order(order_id)
+        
+        # Phase B Additions - Begin
+        # Update attempt with result
+        if active_order:
+            status = 'SUCCESS' if success else 'FAILED'
+            details = f"Cancellation {'succeeded' if success else 'failed'}"
+            self._record_order_attempt(
+                active_order.planned_order, 'CANCELLATION',
+                active_order.fill_probability, None, None, None,
+                status, [order_id], details
+            )
+        # Phase B Additions - End
+        
+        return success
 
     def close_position(self, position_data: Dict) -> Optional[int]:
         """Close an open position by placing a market order through IBKR."""

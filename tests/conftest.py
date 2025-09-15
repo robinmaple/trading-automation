@@ -240,3 +240,54 @@ def sample_planned_order_with_phase_b():
         core_timeframe="15min"
     )
 # Phase B Additions - End
+
+# Phase B Additions - Begin (continued)
+@pytest.fixture
+def mock_execution_service():
+    """Fixture for mocking OrderExecutionService with Phase B attempt tracking."""
+    mock_service = Mock()
+    
+    # Mock the Phase B enhanced methods
+    mock_service.execute_single_order.return_value = True
+    mock_service.place_order.return_value = True
+    mock_service.cancel_order.return_value = True
+    
+    # Mock attempt tracking method
+    mock_service._record_order_attempt = Mock()
+    mock_service._record_order_attempt.return_value = 999  # Mock attempt ID
+    
+    return mock_service
+
+@pytest.fixture
+def sample_order_attempt_data():
+    """Fixture providing sample order attempt data for testing."""
+    return {
+        'planned_order_id': 1,
+        'attempt_type': 'PLACEMENT',
+        'fill_probability': 0.85,
+        'effective_priority': 0.75,
+        'quantity': 100,
+        'capital_commitment': 15000.0,
+        'status': 'SUBMITTED',
+        'ib_order_ids': [101, 102, 103],
+        'details': {'message': 'Order placed successfully'}
+    }
+
+@pytest.fixture
+def mock_order_persistence():
+    """Fixture for mocking OrderPersistenceService with Phase B support."""
+    mock_persistence = Mock()
+    
+    # Mock database session for attempt tracking
+    mock_persistence.db_session = Mock()
+    mock_persistence.db_session.add = Mock()
+    mock_persistence.db_session.commit = Mock()
+    
+    # Mock other persistence methods
+    mock_persistence.validate_sufficient_margin.return_value = (True, "Margin OK")
+    mock_persistence.record_order_execution.return_value = 123
+    mock_persistence.update_order_status.return_value = True
+    mock_persistence.handle_order_rejection.return_value = True
+    
+    return mock_persistence
+# Phase B Additions - End

@@ -27,7 +27,10 @@ from src.services.state_service import StateService
 from src.core.events import OrderEvent
 from src.core.reconciliation_engine import ReconciliationEngine
 from src.services.market_hours_service import MarketHoursService
-
+# Phase B Additions - Begin
+from src.services.prioritization_service import PrioritizationService
+from src.services.outcome_labeling_service import OutcomeLabelingService
+# Phase B Additions - End
 
 class TradingManager:
     """Orchestrates the complete trading lifecycle and manages system state."""
@@ -76,6 +79,7 @@ class TradingManager:
         self.eligibility_service = None
         # Phase B Additions - Begin
         self.prioritization_service = None
+        self.outcome_labeling_service = OutcomeLabelingService(self.db_session)
         # Phase B Additions - End
 
     def _initialize(self) -> bool:
@@ -120,6 +124,13 @@ class TradingManager:
         print(f"📢 State Event: {event.symbol} {event.old_state} -> {event.new_state} via {event.source}")
         if event.new_state == 'FILLED':
             print(f"🎉 Order {event.order_id} filled! Details: {event.details}")
+            # Phase B Additions - Begin
+            # Immediately label filled orders for real-time learning
+            try:
+                self.outcome_labeling_service.label_completed_orders(hours_back=1)  # Last hour only
+            except Exception as e:
+                print(f"⚠️  Could not label filled order immediately: {e}")
+            # Phase B Additions - End
         elif event.new_state == 'CANCELLED':
             print(f"❌ Order {event.order_id} was cancelled")
 
@@ -149,19 +160,6 @@ class TradingManager:
         except Exception as e:
             print(f"❌ Error cancelling order {active_order.symbol}: {e}")
             return False
-
-    def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
-                           new_fill_probability: float) -> bool:
-        """Replace a stale active order with a new order."""
-        print(f"🔄 Replacing stale order {old_order.symbol} with new order")
-        if not self.cancel_active_order(old_order):
-            print("❌ Replacement failed - could not cancel old order")
-            return False
-
-        self._execute_order(new_planned_order, new_fill_probability)
-        old_order.update_status('REPLACED')
-        print(f"✅ Successfully replaced order {old_order.symbol}")
-        return True
 
     def cleanup_completed_orders(self) -> None:
         """Remove filled, cancelled, or replaced orders from active tracking."""
@@ -223,6 +221,16 @@ class TradingManager:
                 error_count = 0
                 time.sleep(interval_seconds)
 
+                # Phase B Additions - Begin
+                # Label completed orders periodically (every 10 minutes)
+                current_time = datetime.datetime.now()
+                if (not hasattr(self, 'last_labeling_time') or 
+                    (current_time - self.last_labeling_time).total_seconds() >= 600):  # 10 minutes
+                    
+                    self._label_completed_orders()
+                    self.last_labeling_time = current_time
+                # Phase B Additions - End
+
             except Exception as e:
                 error_count += 1
                 print(f"Monitoring error ({error_count}/{max_errors}): {e}")
@@ -264,7 +272,7 @@ class TradingManager:
         print("="*60)
 
     def _check_and_execute_orders(self) -> None:
-        """Check market conditions and execute orders that meet the criteria (Phase A)."""
+        """Check market conditions and execute orders that meet the criteria (Phase B)."""
         if not self.planned_orders:
             print("No planned orders to monitor")
             return
@@ -272,7 +280,7 @@ class TradingManager:
         print(f"\n📊 PLANNED ORDERS SUMMARY ({len(self.planned_orders)} orders)")
         print("-" * 50)
 
-        # Display planned orders with market prices
+        # Display planned orders with market prices (keep for monitoring)
         for i, order in enumerate(self.planned_orders):
             price_data = self.data_feed.get_current_price(order.symbol)
             current_price = price_data['price'] if price_data and price_data.get('price') else None
@@ -298,85 +306,12 @@ class TradingManager:
 
         print(f"🎯 Found {len(executable_orders)} executable orders")
 
-        for executable in executable_orders:
-            order = executable['order']
-            fill_prob = executable['fill_probability']
-
-            # Skip if there is an open position
-            if self.state_service.has_open_position(order.symbol):
-                print(f"⏩ Skipping {order.symbol} - open position exists")
-                continue
-
-            # Skip duplicates or already filled orders
-            db_order = self._find_existing_planned_order(order)
-            if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
-                same_action = db_order.action == order.action.value
-                same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
-                same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
-                if same_action and same_entry and same_stop:
-                    print(f"⏩ Skipping {order.symbol} {order.action.value} @ {order.entry_price:.4f} - "
-                        f"already in state: {db_order.status}")
-                    continue
-                else:
-                    print(f"ℹ️  Different order for {order.symbol} found in DB: "
-                        f"DB={db_order.action}@{db_order.entry_price:.4f}, "
-                        f"Current={order.action.value}@{order.entry_price:.4f}")
-
-            # Execute the order via _execute_order
-            self._execute_order(order, fill_prob)
-
-        print(f"🎯 Found {len(executable_orders)} executable orders")
-
         # Phase B Additions - Begin
         # Use prioritization service instead of simple execution
         self._execute_prioritized_orders(executable_orders)
         # Phase B Additions - End
 
         print("-" * 50)
-
-    def _process_executable_orders_phase_a(self) -> None:
-        """
-        Phase A order orchestration:
-        1. Compute fill probability for planned orders.
-        2. Calculate effective priority (priority * fill_probability).
-        3. Sort eligible orders by effective priority.
-        4. Execute orders while respecting capital and active order limits.
-        """
-        if not self.planned_orders:
-            print("No planned orders to process")
-            return
-
-        print(f"\n🎯 Phase A: Processing {len(self.planned_orders)} planned orders")
-
-        eligible_orders = []
-        for order in self.planned_orders:
-            if not self._can_place_order(order):
-                continue
-
-            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
-            if should_execute:
-                effective_priority = order.priority * fill_prob
-                eligible_orders.append({
-                    'order': order,
-                    'fill_probability': fill_prob,
-                    'effective_priority': effective_priority
-                })
-
-        # Sort by effective_priority descending
-        eligible_orders.sort(key=lambda x: x['effective_priority'], reverse=True)
-
-        for item in eligible_orders:
-            order = item['order']
-            fill_prob = item['fill_probability']
-            effective_priority = item['effective_priority']
-
-            # Skip if we already have a position
-            if self.state_service.has_open_position(order.symbol):
-                print(f"⏩ Skipping {order.symbol} - open position exists")
-                continue
-
-            print(f"✅ Executing {order.symbol} with effective_priority={effective_priority:.3f}, fill_probability={fill_prob:.2%}")
-            self._execute_order(order, fill_prob)
 
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persisting valid ones to the database."""
@@ -421,56 +356,6 @@ class TradingManager:
         if not 1 <= order.priority <= 5:
             return False
         return True
-
-    def _execute_order(self, order, fill_probability) -> None:
-        """Orchestrate the execution of a single order, including capital calculation and persistence.
-
-        Phase A: Adds compute-only processing and intermediate logging for ML readiness.
-        """
-        try:
-            # Determine total capital based on live account or simulation
-            total_capital = (
-                self.ibkr_client.get_account_value()
-                if self.ibkr_client and self.ibkr_client.connected
-                else self.total_capital
-            )
-
-            # Determine trading mode
-            is_live_trading = self._get_trading_mode()
-            mode_str = "LIVE" if is_live_trading else "PAPER"
-
-            # Compute position size and capital commitment
-            quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
-            capital_commitment = order.entry_price * quantity
-
-            # Log Phase A details (compute-only)
-            print(f"🎯 Phase A: Processing {order.symbol} ({order.action.value} {order.order_type.value})")
-            print(f"   Mode: {mode_str}")
-            print(f"   Account Value: ${total_capital:,.2f}")
-            print(f"   Fill Probability: {fill_probability:.2%}")
-            print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
-            print(f"   Quantity: {quantity}, Capital Commitment: ${capital_commitment:,.2f}")
-
-            # Decide if order would execute in Phase A
-            execute_phase_a = fill_probability >= self.execution_threshold
-            if execute_phase_a:
-                print(f"✅ Order eligible to execute (Phase A simulation)")
-            else:
-                print(f"⚠️  Order skipped due to low fill probability")
-
-            # Proceed with actual execution only if live/paper order execution is enabled
-            if self.execution_service:
-                self.execution_service.place_order(
-                    order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading
-                )
-
-        except Exception as e:
-            print(f"❌ Failed to execute order for {order.symbol}: {e}")
-            import traceback
-            traceback.print_exc()
-            self.order_persistence_service.update_order_status(
-                order, 'PENDING', f"Execution failed: {str(e)}"
-            )
 
     def _find_executable_orders(self) -> List[Dict]:
         """Find orders that meet execution criteria by delegating to the eligibility service."""
@@ -676,6 +561,65 @@ class TradingManager:
         # Implementation would go here
         pass
 
+    def _execute_order(self, order, fill_probability, effective_priority=None) -> None:
+        """Orchestrate the execution of a single order, including capital calculation and persistence.
+
+        Phase B: Enhanced to pass effective_priority for comprehensive attempt tracking.
+        """
+        try:
+            # Determine total capital based on live account or simulation
+            total_capital = (
+                self.ibkr_client.get_account_value()
+                if self.ibkr_client and self.ibkr_client.connected
+                else self.total_capital
+            )
+
+            # Determine trading mode
+            is_live_trading = self._get_trading_mode()
+            mode_str = "LIVE" if is_live_trading else "PAPER"
+
+            # Compute position size and capital commitment
+            quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
+            capital_commitment = order.entry_price * quantity
+
+            # Log Phase B details
+            print(f"🎯 Phase B: Processing {order.symbol} ({order.action.value} {order.order_type.value})")
+            print(f"   Mode: {mode_str}")
+            print(f"   Account Value: ${total_capital:,.2f}")
+            print(f"   Fill Probability: {fill_probability:.2%}")
+            if effective_priority is not None:
+                print(f"   Effective Priority: {effective_priority:.3f}")
+            print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
+            print(f"   Quantity: {quantity}, Capital Commitment: ${capital_commitment:,.2f}")
+
+            # Decide if order would execute based on threshold
+            execute_order = fill_probability >= self.execution_threshold
+            if execute_order:
+                print(f"✅ Order eligible to execute")
+            else:
+                print(f"⚠️  Order skipped due to low fill probability")
+
+            # Proceed with actual execution only if live/paper order execution is enabled
+            if self.execution_service and execute_order:
+                # Phase B Additions - Begin
+                # Calculate effective priority if not provided (backward compatibility)
+                if effective_priority is None:
+                    effective_priority = order.priority * fill_probability
+                # Phase B Additions - End
+                
+                self.execution_service.place_order(
+                    order, fill_probability, effective_priority, total_capital, 
+                    quantity, capital_commitment, is_live_trading
+                )
+
+        except Exception as e:
+            print(f"❌ Failed to execute order for {order.symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+            self.order_persistence_service.update_order_status(
+                order, 'PENDING', f"Execution failed: {str(e)}"
+            )
+
     # Phase B Additions - Begin
     def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
         """Execute orders using Phase B prioritization and capital allocation."""
@@ -736,12 +680,140 @@ class TradingManager:
                         f"already in state: {db_order.status}")
                     continue
 
-            # Execute the prioritized order
+            # Calculate effective priority for Phase B tracking
+            effective_priority = order.priority * fill_prob
+
+            # Execute the prioritized order with effective_priority for Phase B tracking
             print(f"✅ Executing {order.symbol} with score={order_data['deterministic_score']:.3f}, "
                 f"fill_prob={fill_prob:.2%}, capital=${order_data['capital_commitment']:,.2f}")
-            self._execute_order(order, fill_prob)
+            self._execute_order(order, fill_prob, effective_priority)
             executed_count += 1
 
         if executed_count == 0:
             print("💡 No orders executed after prioritization filtering")
+    # Phase B Additions - End
+
+    def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
+                        new_fill_probability: float) -> bool:
+        """Replace a stale active order with a new order."""
+        print(f"🔄 Replacing stale order {old_order.symbol} with new order")
+        if not self.cancel_active_order(old_order):
+            print("❌ Replacement failed - could not cancel old order")
+            return False
+
+        # Phase B Additions - Begin
+        # Calculate effective priority for replacement order
+        effective_priority = new_planned_order.priority * new_fill_probability
+        self._execute_order(new_planned_order, new_fill_probability, effective_priority)
+        # Phase B Additions - End
+        
+        old_order.update_status('REPLACED')
+        print(f"✅ Successfully replaced order {old_order.symbol}")
+        return True
+    
+    def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
+                       new_fill_probability: float) -> bool:
+        """Replace a stale active order with a new order."""
+        print(f"🔄 Replacing stale order {old_order.symbol} with new order")
+        if not self.cancel_active_order(old_order):
+            print("❌ Replacement failed - could not cancel old order")
+            return False
+
+        # Phase B Additions - Begin
+        # Calculate effective priority for replacement order
+        effective_priority = new_planned_order.priority * new_fill_probability
+        self._execute_order(new_planned_order, new_fill_probability, effective_priority)
+        # Phase B Additions - End
+        
+        old_order.update_status('REPLACED')
+        print(f"✅ Successfully replaced order {old_order.symbol}")
+        return True
+    
+    def _process_executable_orders_phase_a(self) -> None:
+        """
+        Phase A order orchestration:
+        1. Compute fill probability for planned orders.
+        2. Calculate effective priority (priority * fill_probability).
+        3. Sort eligible orders by effective priority.
+        4. Execute orders while respecting capital and active order limits.
+        """
+        if not self.planned_orders:
+            print("No planned orders to process")
+            return
+
+        print(f"\n🎯 Phase A: Processing {len(self.planned_orders)} planned orders")
+
+        eligible_orders = []
+        for order in self.planned_orders:
+            if not self._can_place_order(order):
+                continue
+
+            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
+            if should_execute:
+                effective_priority = order.priority * fill_prob
+                eligible_orders.append({
+                    'order': order,
+                    'fill_probability': fill_prob,
+                    'effective_priority': effective_priority
+                })
+
+        # Sort by effective_priority descending
+        eligible_orders.sort(key=lambda x: x['effective_priority'], reverse=True)
+
+        for item in eligible_orders:
+            order = item['order']
+            fill_prob = item['fill_probability']
+            effective_priority = item['effective_priority']
+
+            # Skip if we already have a position
+            if self.state_service.has_open_position(order.symbol):
+                print(f"⏩ Skipping {order.symbol} - open position exists")
+                continue
+
+            print(f"✅ Executing {order.symbol} with effective_priority={effective_priority:.3f}, fill_probability={fill_prob:.2%}")
+            
+            # Phase B Additions - Begin
+            # Pass effective_priority for Phase B attempt tracking
+            self._execute_order(order, fill_prob, effective_priority)
+            # Phase B Additions - End
+
+    # Phase B Additions - Begin
+    def _label_completed_orders(self) -> None:
+        """Label completed orders for ML training data."""
+        try:
+            print("\n🏷️  Labeling completed orders for ML training...")
+            summary = self.outcome_labeling_service.label_completed_orders(hours_back=24)
+            
+            if summary['total_orders'] > 0:
+                print(f"   Labeled {summary['labeled_orders']} orders with {summary['labels_created']} labels")
+                if summary['errors'] > 0:
+                    print(f"   ⚠️  {summary['errors']} errors during labeling")
+            else:
+                print("   No completed orders found to label")
+                
+        except Exception as e:
+            print(f"❌ Error in order labeling: {e}")
+            import traceback
+            traceback.print_exc()
+    # Phase B Additions - End
+
+    # Phase B Additions - Begin
+    def generate_training_data(self, output_path: str = "training_data.csv") -> bool:
+        """
+        Generate and export training data from labeled orders.
+        
+        Args:
+            output_path: Path to save the CSV file
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            success = self.outcome_labeling_service.export_training_data(output_path)
+            if success:
+                print(f"✅ Training data exported to {output_path}")
+            return success
+        except Exception as e:
+            print(f"❌ Error generating training data: {e}")
+            return False
     # Phase B Additions - End
