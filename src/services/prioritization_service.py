@@ -8,6 +8,12 @@ import datetime
 from src.core.planned_order import PlannedOrder
 from src.services.position_sizing_service import PositionSizingService
 
+# <Advanced Feature Integration - Begin>
+# New imports for advanced features
+from src.services.market_context_service import MarketContextService
+from src.services.historical_performance_service import HistoricalPerformanceService
+# <Advanced Feature Integration - End>
+
 
 class PrioritizationService:
     """
@@ -15,16 +21,26 @@ class PrioritizationService:
     Implements Phase B deterministic scoring algorithm with configurable weights.
     """
 
-    def __init__(self, sizing_service: PositionSizingService, config: Optional[Dict] = None):
+    def __init__(self, sizing_service: PositionSizingService, config: Optional[Dict] = None,
+                 market_context_service: Optional[MarketContextService] = None,
+                 historical_performance_service: Optional[HistoricalPerformanceService] = None):
         """
         Initialize the prioritization service with a sizing service and configuration.
         
         Args:
             sizing_service: Service for calculating position sizes and capital commitment
             config: Configuration dictionary with weights and parameters
+            market_context_service: Service for market context analysis (advanced feature)
+            historical_performance_service: Service for historical performance data (advanced feature)
         """
         self.sizing_service = sizing_service
         self.config = config or self._get_default_config()
+        
+        # <Advanced Feature Integration - Begin>
+        # Store advanced feature services
+        self.market_context_service = market_context_service
+        self.historical_performance_service = historical_performance_service
+        # <Advanced Feature Integration - End>
         
     def _get_default_config(self) -> Dict:
         """Get conservative default weights as specified in Phase B requirements."""
@@ -34,11 +50,19 @@ class PrioritizationService:
                 'manual_priority': 0.20, # Manual priority importance  
                 'efficiency': 0.15,      # Capital efficiency importance
                 'size_pref': 0.10,       # Size preference (smaller positions)
-                'timeframe_match': 0.08, # Timeframe matching (placeholder)
-                'setup_bias': 0.02       # Setup bias (placeholder)
+                'timeframe_match': 0.08, # Timeframe matching
+                'setup_bias': 0.02       # Setup bias
             },
             'max_open_orders': 5,        # Maximum number of open orders
-            'max_capital_utilization': 0.8  # Maximum fraction of capital to commit
+            'max_capital_utilization': .8,  # Maximum fraction of capital to commit
+            # <Advanced Feature Integration - Begin>
+            'enable_advanced_features': False,  # Toggle for advanced features
+            'setup_performance_thresholds': {
+                'min_trades_for_bias': 10,
+                'min_win_rate': 0.4,
+                'min_profit_factor': 1.2
+            }
+            # <Advanced Feature Integration - End>
         }
     
     def calculate_efficiency(self, order: PlannedOrder, total_capital: float) -> float:
@@ -81,6 +105,86 @@ class PrioritizationService:
         except (ValueError, ZeroDivisionError):
             return 0.0
     
+    # <Advanced Feature Integration - Begin>
+    def calculate_timeframe_match_score(self, order: PlannedOrder) -> float:
+        """
+        Calculate how well the order's timeframe matches current market conditions.
+        
+        Args:
+            order: The planned order to evaluate
+            
+        Returns:
+            Timeframe match score (0-1, higher is better)
+        """
+        if not self.config.get('enable_advanced_features', False) or not self.market_context_service:
+            return 0.5  # Default neutral score if advanced features disabled or service unavailable
+            
+        try:
+            dominant_timeframe = self.market_context_service.get_dominant_timeframe(order.symbol)
+            order_timeframe = order.core_timeframe
+            
+            if order_timeframe == dominant_timeframe:
+                return 1.0  # Perfect match
+            
+            # Check timeframe compatibility from config
+            compatible_timeframes = self.config.get('timeframe_compatibility_map', {}).get(
+                dominant_timeframe, []
+            )
+            if order_timeframe in compatible_timeframes:
+                return 0.7  # Compatible timeframes
+                
+            return 0.3  # Mismatched timeframes
+            
+        except Exception as e:
+            print(f"Error calculating timeframe match for {order.symbol}: {e}")
+            return 0.5  # Fallback value
+    
+    def calculate_setup_bias_score(self, order: PlannedOrder) -> float:
+        """
+        Calculate bias score based on historical performance of this trading setup.
+        
+        Args:
+            order: The planned order to evaluate
+            
+        Returns:
+            Setup bias score (0-1, higher is better)
+        """
+        if not self.config.get('enable_advanced_features', False) or not self.historical_performance_service:
+            return 0.5  # Default neutral score if advanced features disabled or service unavailable
+            
+        try:
+            setup_name = order.trading_setup
+            if not setup_name:
+                return 0.5
+                
+            performance = self.historical_performance_service.get_setup_performance(setup_name)
+            
+            if not performance:
+                return 0.5  # No historical data
+                
+            # Check minimum thresholds
+            thresholds = self.config.get('setup_performance_thresholds', {})
+            min_trades = thresholds.get('min_trades_for_bias', 10)
+            min_win_rate = thresholds.get('min_win_rate', 0.4)
+            min_profit_factor = thresholds.get('min_profit_factor', 1.2)
+            
+            if (performance.get('total_trades', 0) < min_trades or
+                performance.get('win_rate', 0) < min_win_rate or
+                performance.get('profit_factor', 0) < min_profit_factor):
+                return 0.3  # Below minimum thresholds
+                
+            # Composite score based on performance metrics
+            win_rate = performance.get('win_rate', 0.5)
+            profit_factor = min(performance.get('profit_factor', 1.0), 5.0)  # Cap at 5 for stability
+            
+            score = (win_rate * 0.6) + (profit_factor * 0.4) / 5.0
+            return max(0.1, min(score, 1.0))
+            
+        except Exception as e:
+            print(f"Error calculating setup bias for {order.trading_setup}: {e}")
+            return 0.5  # Fallback value
+    # <Advanced Feature Integration - End>
+    
     def calculate_deterministic_score(self, order: PlannedOrder, fill_prob: float, 
                                    total_capital: float, current_scores: Optional[List[float]] = None) -> Dict:
         """
@@ -120,11 +224,13 @@ class PrioritizationService:
         except (ValueError, ZeroDivisionError):
             size_pref = 0.5  # Neutral preference
             
-        # 5. Placeholder for timeframe matching (always 1 for now)
-        timeframe_match = 1.0
+        # <Advanced Feature Integration - Begin>
+        # 5. Timeframe matching (replaced placeholder with real implementation)
+        timeframe_match = self.calculate_timeframe_match_score(order)
         
-        # 6. Placeholder for setup bias (always 1 for now)
-        setup_bias = 1.0
+        # 6. Setup bias (replaced placeholder with real implementation)
+        setup_bias = self.calculate_setup_bias_score(order)
+        # <Advanced Feature Integration - End>
         
         # Combine all components using configured weights
         score = (

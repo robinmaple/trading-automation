@@ -11,7 +11,7 @@ import threading
 import time
 import pandas as pd
 
-from services.prioritization_service import PrioritizationService
+from src.services.prioritization_service import PrioritizationService
 from src.core.ibkr_client import IbkrClient
 from src.core.planned_order import PlannedOrder, ActiveOrder
 from src.core.probability_engine import FillProbabilityEngine
@@ -31,13 +31,20 @@ from src.services.market_hours_service import MarketHoursService
 from src.services.prioritization_service import PrioritizationService
 from src.services.outcome_labeling_service import OutcomeLabelingService
 # Phase B Additions - End
+from src.services.market_context_service import MarketContextService
+from src.services.historical_performance_service import HistoricalPerformanceService
+from config.prioritization_config import get_config
 
 class TradingManager:
     """Orchestrates the complete trading lifecycle and manages system state."""
 
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx",
                  ibkr_client: Optional[IbkrClient] = None,
-                 order_persistence_service: Optional[OrderPersistenceService] = None):
+                 order_persistence_service: Optional[OrderPersistenceService] = None,
+                 # <Advanced Feature Integration - Begin>
+                 enable_advanced_features: bool = False  # New parameter for toggle
+                 # <Advanced Feature Integration - End>
+                 ):
         """Initialize the trading manager with all necessary dependencies and services."""
         self.data_feed = data_feed
         self.excel_path = excel_path
@@ -82,6 +89,14 @@ class TradingManager:
         self.outcome_labeling_service = OutcomeLabelingService(self.db_session)
         # Phase B Additions - End
 
+        # <Advanced Feature Integration - Begin>
+        # Store advanced feature flag
+        self.enable_advanced_features = enable_advanced_features
+        self.market_context_service = None
+        self.historical_performance_service = None
+        self.prioritization_config = None
+        # <Advanced Feature Integration - End>
+
     def _initialize(self) -> bool:
         """Complete initialization that requires a connected data feed."""
         if self._initialized:
@@ -94,9 +109,30 @@ class TradingManager:
         self.probability_engine = FillProbabilityEngine(self.data_feed)
         self._validate_ibkr_connection()
 
+        # <Advanced Feature Integration - Begin>
+        # Initialize advanced services if enabled
+        if self.enable_advanced_features:
+            self._initialize_advanced_services()
+        # <Advanced Feature Integration - End>
+        
         # Initialize services with complex dependencies
         self.eligibility_service = OrderEligibilityService(self.planned_orders, self.probability_engine)
         self.execution_service.set_dependencies(self.order_persistence_service, self.active_orders)
+        
+        # <Advanced Feature Integration - Begin>
+        # Initialize prioritization service with advanced features if enabled
+        if self.enable_advanced_features and self.market_context_service and self.historical_performance_service:
+            self.prioritization_service = PrioritizationService(
+                self.sizing_service,
+                config=self.prioritization_config,
+                market_context_service=self.market_context_service,
+                historical_performance_service=self.historical_performance_service
+            )
+        else:
+            # Fallback to basic prioritization
+            self.prioritization_service = PrioritizationService(self.sizing_service)
+            print("⚠️  Advanced features disabled or services unavailable - using basic prioritization")
+        # <Advanced Feature Integration - End>
 
         self._initialized = True
         print("✅ Trading manager initialized")
@@ -691,6 +727,14 @@ class TradingManager:
 
         if executed_count == 0:
             print("💡 No orders executed after prioritization filtering")
+
+        # <Advanced Feature Integration - Begin>
+        # Enhanced logging for advanced features
+        if self.enable_advanced_features:
+            print(f"   Advanced Features: {'ENABLED' if self.enable_advanced_features else 'DISABLED'}")
+            if self.prioritization_config:
+                print(f"   Configuration: {self.prioritization_config['weights']}")
+        # <Advanced Feature Integration - End>
     # Phase B Additions - End
 
     def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
@@ -817,3 +861,30 @@ class TradingManager:
             print(f"❌ Error generating training data: {e}")
             return False
     # Phase B Additions - End
+
+    # <Advanced Feature Integration - Begin>
+    def _initialize_advanced_services(self):
+        """Initialize advanced feature services for timeframe matching and setup bias."""
+        try:
+            # Load advanced configuration
+            self.prioritization_config = get_config('default')
+            
+            # Initialize Market Context Service
+            self.market_context_service = MarketContextService(
+                data_feed=self.data_feed,
+                analytics_service=self.analytics_service  # Assuming you have this
+            )
+            
+            # Initialize Historical Performance Service
+            self.historical_performance_service = HistoricalPerformanceService(
+                order_persistence=self.order_persistence_service
+            )
+            
+            print("✅ Advanced services initialized: Market Context & Historical Performance")
+            
+        except Exception as e:
+            print(f"❌ Failed to initialize advanced services: {e}")
+            print("⚠️  Falling back to basic prioritization")
+            self.enable_advanced_features = False
+    # <Advanced Feature Integration - End>
+

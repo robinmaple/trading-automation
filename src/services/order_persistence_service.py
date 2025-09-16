@@ -6,7 +6,7 @@ Acts as the gateway between business logic and the persistence layer.
 
 from decimal import Decimal
 import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 from sqlalchemy.orm import Session
 
 from src.core.events import OrderState
@@ -249,3 +249,177 @@ class OrderPersistenceService:
         except Exception as e:
             print(f"❌ Error finding planned order in database: {e}")
             return None
+
+    # <Advanced Feature Integration - Begin>
+    # New methods for historical performance analysis
+    def get_trades_by_setup(self, setup_name: str, days_back: int = 90) -> List[Dict]:
+        """
+        Get all completed trades for a specific trading setup within time period.
+        
+        Args:
+            setup_name: Name of the trading setup (e.g., 'Breakout', 'Reversal')
+            days_back: Number of days to look back (default: 90 days)
+            
+        Returns:
+            List of trade dictionaries with performance data
+        """
+        try:
+            cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_back)
+            
+            # Join PlannedOrderDB with ExecutedOrderDB to get setup information
+            query = self.db_session.query(
+                ExecutedOrderDB,
+                PlannedOrderDB.trading_setup,
+                PlannedOrderDB.timeframe,
+                PlannedOrderDB.risk_reward_ratio
+            ).join(
+                PlannedOrderDB, ExecutedOrderDB.planned_order_id == PlannedOrderDB.id
+            ).filter(
+                PlannedOrderDB.trading_setup == setup_name,
+                ExecutedOrderDB.executed_at >= cutoff_date,
+                ExecutedOrderDB.status == 'FILLED',
+                ExecutedOrderDB.filled_price.isnot(None),
+                ExecutedOrderDB.filled_quantity.isnot(None)
+            )
+            
+            results = query.all()
+            
+            trades = []
+            for executed_order, trading_setup, timeframe, risk_reward_ratio in results:
+                # Calculate PnL if not already stored
+                pnl = executed_order.pnl
+                if pnl is None and executed_order.filled_price and executed_order.filled_quantity:
+                    # Simple PnL calculation (can be enhanced based on your actual logic)
+                    pnl = executed_order.filled_quantity * (executed_order.filled_price - 
+                                                          executed_order.planned_order.entry_price)
+                
+                trade_data = {
+                    'order_id': executed_order.id,
+                    'symbol': executed_order.planned_order.symbol,
+                    'entry_price': executed_order.planned_order.entry_price,
+                    'exit_price': executed_order.filled_price,
+                    'quantity': executed_order.filled_quantity,
+                    'pnl': pnl,
+                    'commission': executed_order.commission or 0.0,
+                    'entry_time': executed_order.planned_order.created_at,
+                    'exit_time': executed_order.executed_at,
+                    'trading_setup': trading_setup,
+                    'timeframe': timeframe,
+                    'risk_reward_ratio': risk_reward_ratio
+                }
+                
+                # Calculate PnL percentage if possible
+                if (executed_order.planned_order.entry_price and 
+                    executed_order.filled_price and 
+                    executed_order.planned_order.entry_price > 0):
+                    if executed_order.planned_order.action.value == 'BUY':
+                        pnl_percentage = ((executed_order.filled_price - executed_order.planned_order.entry_price) / 
+                                        executed_order.planned_order.entry_price) * 100
+                    else:  # SELL
+                        pnl_percentage = ((executed_order.planned_order.entry_price - executed_order.filled_price) / 
+                                        executed_order.planned_order.entry_price) * 100
+                    trade_data['pnl_percentage'] = pnl_percentage
+                
+                trades.append(trade_data)
+                
+            return trades
+            
+        except Exception as e:
+            print(f"Error getting trades for setup {setup_name}: {e}")
+            return []
+
+    def get_all_trading_setups(self, days_back: int = 90) -> List[str]:
+        """
+        Get all unique trading setups with recent trading activity.
+        
+        Args:
+            days_back: Number of days to look back (default: 90 days)
+            
+        Returns:
+            List of unique setup names
+        """
+        try:
+            cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_back)
+            
+            query = self.db_session.query(
+                PlannedOrderDB.trading_setup
+            ).join(
+                ExecutedOrderDB, PlannedOrderDB.id == ExecutedOrderDB.planned_order_id
+            ).filter(
+                ExecutedOrderDB.executed_at >= cutoff_date,
+                ExecutedOrderDB.status == 'FILLED',
+                PlannedOrderDB.trading_setup.isnot(None),
+                PlannedOrderDB.trading_setup != ''
+            ).distinct()
+            
+            results = query.all()
+            return [result[0] for result in results if result[0]]
+            
+        except Exception as e:
+            print(f"Error getting trading setups: {e}")
+            return []
+
+    def get_setup_performance_summary(self, days_back: int = 90) -> Dict[str, Dict]:
+        """
+        Get performance summary for all trading setups.
+        
+        Args:
+            days_back: Number of days to look back
+            
+        Returns:
+            Dictionary with setup names as keys and performance metrics as values
+        """
+        try:
+            setups = self.get_all_trading_setups(days_back)
+            performance_summary = {}
+            
+            for setup in setups:
+                trades = self.get_trades_by_setup(setup, days_back)
+                if trades:
+                    performance = self._calculate_setup_performance(trades)
+                    performance_summary[setup] = performance
+                    
+            return performance_summary
+            
+        except Exception as e:
+            print(f"Error getting setup performance summary: {e}")
+            return {}
+
+    def _calculate_setup_performance(self, trades: List[Dict]) -> Dict:
+        """Calculate performance metrics for a set of trades."""
+        if not trades:
+            return None
+            
+        winning_trades = [t for t in trades if t.get('pnl', 0) > 0]
+        losing_trades = [t for t in trades if t.get('pnl', 0) <= 0]
+        
+        total_trades = len(trades)
+        win_rate = len(winning_trades) / total_trades if total_trades > 0 else 0
+        
+        total_profit = sum(t.get('pnl', 0) for t in winning_trades)
+        total_loss = abs(sum(t.get('pnl', 0) for t in losing_trades))
+        
+        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
+        avg_pnl = sum(t.get('pnl', 0) for t in trades) / total_trades if total_trades > 0 else 0
+        
+        # Calculate average holding period
+        holding_periods = []
+        for trade in trades:
+            if trade.get('entry_time') and trade.get('exit_time'):
+                holding_period = (trade['exit_time'] - trade['entry_time']).total_seconds()
+                holding_periods.append(holding_period)
+        
+        avg_holding_period = sum(holding_periods) / len(holding_periods) if holding_periods else 0
+        
+        return {
+            'win_rate': round(win_rate, 4),
+            'profit_factor': round(min(profit_factor, 10.0), 2),
+            'avg_pnl': round(avg_pnl, 2),
+            'avg_holding_period': round(avg_holding_period, 0),
+            'total_trades': total_trades,
+            'winning_trades': len(winning_trades),
+            'losing_trades': len(losing_trades),
+            'total_profit': round(total_profit, 2),
+            'total_loss': round(total_loss, 2)
+        }
+    # <Advanced Feature Integration - End>
