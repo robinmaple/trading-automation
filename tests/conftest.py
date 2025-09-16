@@ -6,6 +6,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
 
+import pandas as pd
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 
@@ -291,3 +292,65 @@ def mock_order_persistence():
     
     return mock_persistence
 # Phase B Additions - End
+
+@pytest.fixture
+def mock_historical_performance_service():
+    """Create a properly mocked historical performance service."""
+    mock_service = Mock()
+    mock_service.get_symbol_performance.return_value = {
+        'success_rate': 75.0,
+        'total_trades': 20,
+        'winning_trades': 15,
+        'total_pnl': 2500.0
+    }
+    mock_service.calculate_performance_score.return_value = 85.0
+    mock_service.get_top_performing_symbols.return_value = [
+        {'symbol': 'AAPL', 'performance_score': 90.0},
+        {'symbol': 'MSFT', 'performance_score': 85.0}
+    ]
+    return mock_service
+
+@pytest.fixture
+def mock_market_context_service():
+    """Create a properly mocked market context service."""
+    mock_service = Mock()
+    
+    # Mock market context data
+    mock_context_data = {
+        'trend': 'bullish',
+        'volatility': 'medium',
+        'volume_profile': 'normal',
+        'support_levels': [145.0, 142.5],
+        'resistance_levels': [155.0, 157.5],
+        'rsi': 65.0,
+        'macd_signal': 'bullish'
+    }
+    
+    mock_service.analyze_market_context.return_value = mock_context_data
+    mock_service.get_market_context.return_value = pd.DataFrame({
+        'close': [150 + i for i in range(20)]
+    })
+    
+    return mock_service
+
+@pytest.fixture
+def mock_prioritization_service(mock_historical_performance_service, mock_market_context_service):
+    """Create a properly mocked prioritization service."""
+    mock_service = Mock()
+    
+    # Mock the calculate_priority method
+    mock_service.calculate_priority.return_value = {
+        'symbol': 'AAPL',
+        'priority_score': 85.0,
+        'factors': {
+            'technical_score': 80.0,
+            'performance_score': 85.0,
+            'market_context_score': 90.0
+        }
+    }
+    
+    # Mock the properties that might be accessed
+    mock_service.historical_performance_service = mock_historical_performance_service
+    mock_service.market_context_service = mock_market_context_service
+    
+    return mock_service
