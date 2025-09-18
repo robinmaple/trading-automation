@@ -4,7 +4,6 @@ Manages the entire trading workflow: loading orders, market data subscription,
 continuous monitoring, order execution, and active order management.
 Coordinates between data feeds, the IBKR client, service layer, and database.
 """
-
 import datetime
 from typing import List, Dict, Optional
 import threading
@@ -39,12 +38,12 @@ class TradingManager:
     """Orchestrates the complete trading lifecycle and manages system state."""
 
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx",
-                 ibkr_client: Optional[IbkrClient] = None,
-                 order_persistence_service: Optional[OrderPersistenceService] = None,
-                 # <Advanced Feature Integration - Begin>
-                 enable_advanced_features: bool = False  # New parameter for toggle
-                 # <Advanced Feature Integration - End>
-                 ):
+                ibkr_client: Optional[IbkrClient] = None,
+                order_persistence_service: Optional[OrderPersistenceService] = None,
+                # <Advanced Feature Integration - Begin>
+                enable_advanced_features: bool = False  # New parameter for toggle
+                # <Advanced Feature Integration - End>
+                ):
         """Initialize the trading manager with all necessary dependencies and services."""
         self.data_feed = data_feed
         self.excel_path = excel_path
@@ -69,25 +68,22 @@ class TradingManager:
         self.state_service.subscribe('order_state_change', self._handle_order_state_change)
         self.reconciliation_engine = ReconciliationEngine(ibkr_client, self.state_service)
 
-        # Service layer initialization
+        # Service layer initialization - initialize core services first
         self.execution_service = OrderExecutionService(self, self.ibkr_client)
         self.sizing_service = PositionSizingService(self)
         self.loading_service = OrderLoadingService(self, self.db_session)
-        self.eligibility_service = None
+        
+        # Initialize probability engine early to avoid attribute errors
+        self.probability_engine = FillProbabilityEngine(self.data_feed)
+        
+        # Initialize eligibility service with probability engine
+        self.eligibility_service = OrderEligibilityService(
+            self.probability_engine, self.db_session
+        )
 
         # Market hours service
         self.market_hours = MarketHoursService()
         self.last_position_close_check = None
-
-        # Service layer initialization
-        self.execution_service = OrderExecutionService(self, self.ibkr_client)
-        self.sizing_service = PositionSizingService(self)
-        self.loading_service = OrderLoadingService(self, self.db_session)
-        self.eligibility_service = None
-        # Phase B Additions - Begin
-        self.prioritization_service = None
-        self.outcome_labeling_service = OutcomeLabelingService(self.db_session)
-        # Phase B Additions - End
 
         # <Advanced Feature Integration - Begin>
         # Store advanced feature flag
@@ -97,8 +93,23 @@ class TradingManager:
         self.prioritization_config = None
         # <Advanced Feature Integration - End>
 
+        # Add configuration loading
+        self._load_configuration()
+        
+        # Initialize prioritization service with basic configuration
+        self.prioritization_service = PrioritizationService(
+            sizing_service=self.sizing_service,
+            config=self.prioritization_config
+        )
+        
+        self.outcome_labeling_service = OutcomeLabelingService(self.db_session)
+
+        # Phase B services that require advanced features are initialized conditionally
+        if self.enable_advanced_features:
+            self._initialize_advanced_services()
+
     def _initialize(self) -> bool:
-        """Complete initialization that requires a connected data feed."""
+        """Complete initialization with advanced services and validation."""
         if self._initialized:
             return True
 
@@ -106,55 +117,65 @@ class TradingManager:
             print("Cannot initialize - data feed not connected")
             return False
 
-        self.probability_engine = FillProbabilityEngine(self.data_feed)
         self._validate_ibkr_connection()
 
-        # <Advanced Feature Integration - Begin>
-        # Initialize advanced services if enabled
+        # Re-initialize advanced services if enabled (in case they weren't ready at __init__)
         if self.enable_advanced_features:
             self._initialize_advanced_services()
-        # <Advanced Feature Integration - End>
-        
-        # Initialize services with complex dependencies
-        self.eligibility_service = OrderEligibilityService(self.planned_orders, self.probability_engine)
+            
+            # Update prioritization service with advanced features if available
+            if (hasattr(self, 'market_context_service') and 
+                hasattr(self, 'historical_performance_service') and
+                self.market_context_service is not None and
+                self.historical_performance_service is not None):
+                
+                self.prioritization_service = PrioritizationService(
+                    self.sizing_service,
+                    config=self.prioritization_config,
+                    market_context_service=self.market_context_service,
+                    historical_performance_service=self.historical_performance_service
+                )
+
+        # Ensure execution service has proper dependencies
         self.execution_service.set_dependencies(self.order_persistence_service, self.active_orders)
-        
-        # <Advanced Feature Integration - Begin>
-        # Initialize prioritization service with advanced features if enabled
-        if self.enable_advanced_features and self.market_context_service and self.historical_performance_service:
-            self.prioritization_service = PrioritizationService(
-                self.sizing_service,
-                config=self.prioritization_config,
-                market_context_service=self.market_context_service,
-                historical_performance_service=self.historical_performance_service
-            )
-        else:
-            # Fallback to basic prioritization
-            self.prioritization_service = PrioritizationService(self.sizing_service)
-            print("⚠️  Advanced features disabled or services unavailable - using basic prioritization")
-        # <Advanced Feature Integration - End>
 
         self._initialized = True
-        print("✅ Trading manager initialized")
+        print("✅ Trading manager initialized successfully")
 
         self.validate_data_source()
-
-        if self.ibkr_client and self.ibkr_client.connected:
-            print("✅ Real order execution enabled (IBKR connected)")
-        elif self.ibkr_client:
-            print("⚠️  Order executor provided but not connected to IBKR - will use simulation")
-        else:
-            print("ℹ️  No order executor provided - using simulation mode")
-
-        # Initialize services with complex dependencies
-        self.eligibility_service = OrderEligibilityService(self.planned_orders, self.probability_engine, self.db_session)
-        self.execution_service.set_dependencies(self.order_persistence_service, self.active_orders)
-        # Phase B Additions - Begin
-        self.prioritization_service = PrioritizationService(self.sizing_service)
-        # Phase B Additions - End
-
         return True
 
+    def _initialize_advanced_services(self):
+        """Initialize advanced Phase B services if enabled."""
+        try:
+            # Initialize market context service
+            if self.market_context_service is None:
+                from src.services.market_context_service import MarketContextService
+                self.market_context_service = MarketContextService(self.data_feed)
+                print("✅ Market context service initialized")
+            
+            # Initialize historical performance service
+            if self.historical_performance_service is None:
+                from src.services.historical_performance_service import HistoricalPerformanceService
+                self.historical_performance_service = HistoricalPerformanceService()
+                print("✅ Historical performance service initialized")
+                
+        except ImportError as e:
+            print(f"⚠️  Advanced service not available: {e}")
+        except Exception as e:
+            print(f"❌ Failed to initialize advanced services: {e}")
+
+    def _load_configuration(self):
+        """Load trading configuration including prioritization config."""
+        try:
+            # Load prioritization configuration
+            self.prioritization_config = get_config('default')
+            print("✅ Prioritization configuration loaded")
+        except Exception as e:
+            print(f"❌ Failed to load prioritization config: {e}")
+            # Fallback to default config from prioritization service
+            self.prioritization_config = PrioritizationService(self.sizing_service)._get_default_config()
+            
     def _handle_order_state_change(self, event: OrderEvent) -> None:
         """Handle order state change events from the StateService."""
         print(f"📢 State Event: {event.symbol} {event.old_state} -> {event.new_state} via {event.source}")
@@ -598,10 +619,7 @@ class TradingManager:
         pass
 
     def _execute_order(self, order, fill_probability, effective_priority=None) -> None:
-        """Orchestrate the execution of a single order, including capital calculation and persistence.
-
-        Phase B: Enhanced to pass effective_priority for comprehensive attempt tracking.
-        """
+        """Orchestrate the execution of a single order with two-layer viability checks."""
         try:
             # Determine total capital based on live account or simulation
             total_capital = (
@@ -616,49 +634,78 @@ class TradingManager:
 
             # Compute position size and capital commitment
             quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
-            capital_commitment = order.entry_price * quantity
+            capital_commitment = order.entry_price * quantity if order.entry_price else 0
 
-            # Log Phase B details
-            print(f"🎯 Phase B: Processing {order.symbol} ({order.action.value} {order.order_type.value})")
-            print(f"   Mode: {mode_str}")
-            print(f"   Account Value: ${total_capital:,.2f}")
+            # Two-layer viability check
+            two_layer_config = getattr(self, 'prioritization_config', {}).get('two_layer_prioritization', {})
+            min_fill_prob = two_layer_config.get('min_fill_probability', 0.4)
+            is_viable = fill_probability >= min_fill_prob
+            
+            # Enhanced logging for two-layer system
+            print(f"🎯 Two-Layer Execution: {order.symbol} ({order.action.value} {order.order_type.value})")
+            print(f"   Mode: {mode_str}, Account Value: ${total_capital:,.2f}")
             print(f"   Fill Probability: {fill_probability:.2%}")
+            print(f"   Viability Threshold: {min_fill_prob:.2%}")
+            
+            if not is_viable:
+                print(f"❌ Order NOT VIABLE (fill_prob < {min_fill_prob:.2%}) - Skipping execution")
+                # Update order status to reflect viability rejection
+                self.order_persistence_service.update_order_status(
+                    order, 'REJECTED', f"Fill probability below minimum threshold ({fill_probability:.2%} < {min_fill_prob:.2%})"
+                )
+                return
+
+            print(f"✅ Order VIABLE - Proceeding with execution")
+
             if effective_priority is not None:
                 print(f"   Effective Priority: {effective_priority:.3f}")
+            
             print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
             print(f"   Quantity: {quantity}, Capital Commitment: ${capital_commitment:,.2f}")
 
-            # Decide if order would execute based on threshold
+            # Check if order would execute based on legacy threshold (for backward compatibility)
             execute_order = fill_probability >= self.execution_threshold
             if execute_order:
-                print(f"✅ Order eligible to execute")
+                print(f"✅ Order eligible to execute (≥{self.execution_threshold:.2%} threshold)")
             else:
-                print(f"⚠️  Order skipped due to low fill probability")
+                print(f"⚠️  Order below legacy execution threshold ({fill_probability:.2%} < {self.execution_threshold:.2%})")
+                # Still execute if viable in two-layer system, but log the warning
+                print(f"💡 Proceeding anyway due to two-layer viability approval")
 
-            # Proceed with actual execution only if live/paper order execution is enabled
-            if self.execution_service and execute_order:
-                # Phase B Additions - Begin
+            # Proceed with actual execution only if execution service is available
+            if self.execution_service:
                 # Calculate effective priority if not provided (backward compatibility)
                 if effective_priority is None:
                     effective_priority = order.priority * fill_probability
-                # Phase B Additions - End
                 
+                # Execute through execution service
                 self.execution_service.place_order(
                     order, fill_probability, effective_priority, total_capital, 
                     quantity, capital_commitment, is_live_trading
                 )
+                
+                # Update order status to reflect execution
+                self.order_persistence_service.update_order_status(
+                    order, 'EXECUTING', f"Order executing with fill_prob={fill_probability:.2%}"
+                )
+            else:
+                print(f"⚠️  No execution service available - order would be executed in simulation")
 
         except Exception as e:
             print(f"❌ Failed to execute order for {order.symbol}: {e}")
             import traceback
             traceback.print_exc()
+            # Update order status to reflect execution failure
             self.order_persistence_service.update_order_status(
-                order, 'PENDING', f"Execution failed: {str(e)}"
+                order, 'FAILED', f"Execution failed: {str(e)}"
             )
 
-    # Phase B Additions - Begin
     def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
-        """Execute orders using Phase B prioritization and capital allocation."""
+        """Execute orders using two-layer prioritization with viability gating."""
+        if not executable_orders:
+            print("💡 No executable orders to prioritize")
+            return
+
         # Determine total capital
         total_capital = (
             self.ibkr_client.get_account_value()
@@ -674,7 +721,7 @@ class TradingManager:
                     'capital_commitment': active_order.capital_commitment
                 })
 
-        # Prioritize orders using Phase B service
+        # Prioritize orders using two-layer service
         prioritized_orders = self.prioritization_service.prioritize_orders(
             executable_orders, total_capital, working_orders
         )
@@ -682,23 +729,33 @@ class TradingManager:
         # Get summary for logging
         summary = self.prioritization_service.get_prioritization_summary(prioritized_orders)
 
-        print(f"📈 Phase B Prioritization Results:")
-        print(f"   Allocated: {summary['total_allocated']}, Rejected: {summary['total_rejected']}")
+        # Enhanced logging for two-layer system
+        print(f"📈 Two-Layer Prioritization Results:")
+        print(f"   Viable & Allocated: {summary['total_allocated']}")
+        print(f"   Viable but Not Allocated: {summary['total_viable'] - summary['total_allocated']}")
+        print(f"   Non-Viable: {summary['total_non_viable']}")
         print(f"   Capital Commitment: ${summary['total_capital_commitment']:,.2f}")
-        print(f"   Average Score: {summary['average_score']:.3f}")
+        print(f"   Average Quality Score: {summary['average_score']:.3f}")
 
         # Log rejection reasons
         if summary['allocation_reasons']:
-            print(f"   Rejection Reasons: {summary['allocation_reasons']}")
+            print(f"   Rejection Reasons: {dict(summary['allocation_reasons'])}")
 
-        # Execute allocated orders
+        # Log two-layer configuration details
+        two_layer_config = getattr(self, 'prioritization_config', {}).get('two_layer_prioritization', {})
+        min_fill_prob = two_layer_config.get('min_fill_probability', 0.4)
+        print(f"   Min Fill Probability: {min_fill_prob:.2f}")
+
+        # Execute allocated viable orders
         executed_count = 0
         for order_data in prioritized_orders:
-            if not order_data['allocated']:
+            if not order_data.get('allocated', False) or not order_data.get('viable', False):
                 continue
 
             order = order_data['order']
             fill_prob = order_data['fill_probability']
+            quality_score = order_data.get('quality_score', 0)
+            capital_commitment = order_data.get('capital_commitment', 0)
 
             # Skip if there is an open position
             if self.state_service.has_open_position(order.symbol):
@@ -719,42 +776,21 @@ class TradingManager:
             # Calculate effective priority for Phase B tracking
             effective_priority = order.priority * fill_prob
 
-            # Execute the prioritized order with effective_priority for Phase B tracking
-            print(f"✅ Executing {order.symbol} with score={order_data['deterministic_score']:.3f}, "
-                f"fill_prob={fill_prob:.2%}, capital=${order_data['capital_commitment']:,.2f}")
+            # Execute the prioritized order
+            print(f"✅ Executing {order.symbol} with quality_score={quality_score:.3f}, "
+                f"fill_prob={fill_prob:.2%}, capital=${capital_commitment:,.2f}")
+            
             self._execute_order(order, fill_prob, effective_priority)
             executed_count += 1
 
         if executed_count == 0:
-            print("💡 No orders executed after prioritization filtering")
+            print("💡 No viable orders executed after prioritization filtering")
 
-        # <Advanced Feature Integration - Begin>
-        # Enhanced logging for advanced features
-        if self.enable_advanced_features:
-            print(f"   Advanced Features: {'ENABLED' if self.enable_advanced_features else 'DISABLED'}")
-            if self.prioritization_config:
-                print(f"   Configuration: {self.prioritization_config['weights']}")
-        # <Advanced Feature Integration - End>
-    # Phase B Additions - End
+        # Log advanced features status
+        if hasattr(self, 'enable_advanced_features'):
+            status = "ENABLED" if self.enable_advanced_features else "DISABLED"
+            print(f"   Advanced Features: {status}")
 
-    def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
-                        new_fill_probability: float) -> bool:
-        """Replace a stale active order with a new order."""
-        print(f"🔄 Replacing stale order {old_order.symbol} with new order")
-        if not self.cancel_active_order(old_order):
-            print("❌ Replacement failed - could not cancel old order")
-            return False
-
-        # Phase B Additions - Begin
-        # Calculate effective priority for replacement order
-        effective_priority = new_planned_order.priority * new_fill_probability
-        self._execute_order(new_planned_order, new_fill_probability, effective_priority)
-        # Phase B Additions - End
-        
-        old_order.update_status('REPLACED')
-        print(f"✅ Successfully replaced order {old_order.symbol}")
-        return True
-    
     def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
                        new_fill_probability: float) -> bool:
         """Replace a stale active order with a new order."""
@@ -864,15 +900,15 @@ class TradingManager:
 
     # <Advanced Feature Integration - Begin>
     def _initialize_advanced_services(self):
-        """Initialize advanced feature services for timeframe matching and setup bias."""
+        """Initialize advanced feature services with safe attribute access."""
         try:
             # Load advanced configuration
             self.prioritization_config = get_config('default')
             
-            # Initialize Market Context Service
+            # Initialize Market Context Service safely
             self.market_context_service = MarketContextService(
                 data_feed=self.data_feed,
-                analytics_service=self.analytics_service  # Assuming you have this
+                analytics_service=getattr(self, 'analytics_service', None)
             )
             
             # Initialize Historical Performance Service
@@ -880,11 +916,11 @@ class TradingManager:
                 order_persistence=self.order_persistence_service
             )
             
-            print("✅ Advanced services initialized: Market Context & Historical Performance")
+            print("✅ Advanced services initialized for two-layer prioritization")
             
         except Exception as e:
             print(f"❌ Failed to initialize advanced services: {e}")
-            print("⚠️  Falling back to basic prioritization")
+            print("⚠️  Falling back to basic two-layer prioritization")
             self.enable_advanced_features = False
     # <Advanced Feature Integration - End>
 

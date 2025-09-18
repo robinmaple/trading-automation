@@ -55,7 +55,26 @@ DEFAULT_PRIORITIZATION_CONFIG = {
             'efficiency': 0.25,         # Higher weight for efficiency in calm markets
             'setup_bias': 0.12          # Higher weight for setup bias in calm markets
         }
+    },
+    
+    # <Two-Layer Prioritization Configuration - Begin>
+    'two_layer_prioritization': {
+        'enabled': True,  # Master switch for two-layer system
+        'min_fill_probability': 0.4,  # Minimum fill probability to be considered viable
+        'quality_weights': {
+            'manual_priority': 0.30,   # Your judgment and experience
+            'efficiency': 0.25,        # Capital efficiency and risk-adjusted returns
+            'risk_reward': 0.25,       # Quality of risk/reward ratio
+            'timeframe_match': 0.10,   # Alignment with market timeframe
+            'setup_bias': 0.10         # Historical performance of the setup
+        },
+        'order_aging': {
+            'enabled': False,  # Not implemented yet
+            'max_age_hours': 72,
+            'probability_decay_rate': 0.1  # per 24 hours
+        }
     }
+    # <Two-Layer Prioritization Configuration - End>
 }
 
 CONSERVATIVE_CONFIG = {
@@ -75,7 +94,20 @@ CONSERVATIVE_CONFIG = {
         'min_trades_for_bias': 15,
         'min_win_rate': 0.45,
         'min_profit_factor': 1.5
+    },
+    # <Two-Layer Prioritization - Conservative - Begin>
+    'two_layer_prioritization': {
+        **DEFAULT_PRIORITIZATION_CONFIG['two_layer_prioritization'],
+        'min_fill_probability': 0.5,  # Higher minimum for conservative approach
+        'quality_weights': {
+            'manual_priority': 0.35,   # Even more weight to your judgment
+            'efficiency': 0.25,        # Capital efficiency
+            'risk_reward': 0.20,       # Slightly less weight to risk/reward
+            'timeframe_match': 0.10,   # Timeframe alignment
+            'setup_bias': 0.10         # Historical performance
+        }
     }
+    # <Two-Layer Prioritization - Conservative - End>
 }
 
 AGGRESSIVE_CONFIG = {
@@ -95,7 +127,20 @@ AGGRESSIVE_CONFIG = {
         'min_trades_for_bias': 5,
         'min_win_rate': 0.35,
         'min_profit_factor': 1.1
+    },
+    # <Two-Layer Prioritization - Aggressive - Begin>
+    'two_layer_prioritization': {
+        **DEFAULT_PRIORITIZATION_CONFIG['two_layer_prioritization'],
+        'min_fill_probability': 0.3,  # Lower minimum for aggressive approach
+        'quality_weights': {
+            'manual_priority': 0.20,   # Less weight to manual judgment
+            'efficiency': 0.20,        # Capital efficiency
+            'risk_reward': 0.30,       # More weight to risk/reward potential
+            'timeframe_match': 0.15,   # More weight to timeframe alignment
+            'setup_bias': 0.15         # More weight to historical performance
+        }
     }
+    # <Two-Layer Prioritization - Aggressive - End>
 }
 
 def get_config(environment: str = 'default') -> dict:
@@ -142,5 +187,22 @@ def validate_config(config: dict) -> tuple[bool, str]:
         for timeframe, compatibilities in config['timeframe_compatibility_map'].items():
             if timeframe not in compatibilities:
                 return False, f"Timeframe {timeframe} must include itself in compatibility list"
+    
+    # <Two-Layer Validation - Begin>
+    # Validate two-layer configuration if present
+    if 'two_layer_prioritization' in config:
+        two_layer = config['two_layer_prioritization']
+        
+        # Check minimum fill probability is valid
+        min_prob = two_layer.get('min_fill_probability', 0.4)
+        if not 0.0 <= min_prob <= 1.0:
+            return False, f"Minimum fill probability must be between 0.0 and 1.0, got {min_prob}"
+        
+        # Check quality weights sum to approximately 1.0
+        if 'quality_weights' in two_layer:
+            quality_weights_sum = sum(two_layer['quality_weights'].values())
+            if abs(quality_weights_sum - 1.0) > 0.001:
+                return False, f"Quality weights sum to {quality_weights_sum:.3f}, should be 1.0"
+    # <Two-Layer Validation - End>
     
     return True, "Configuration is valid"
