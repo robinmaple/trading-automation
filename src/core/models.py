@@ -12,7 +12,6 @@ from dataclasses import dataclass
 
 Base = declarative_base()
 
-
 class PositionStrategy(Base):
     """Lookup table for position management strategies (DAY, CORE, HYBRID)."""
     __tablename__ = 'position_strategies'
@@ -24,7 +23,6 @@ class PositionStrategy(Base):
 
     def __repr__(self):
         return f"<PositionStrategy(id={self.id}, name='{self.name}')>"
-
 
 class TradingSetup(Base):
     """Trading strategies and setups that can be associated with planned orders."""
@@ -38,7 +36,6 @@ class TradingSetup(Base):
 
     def __repr__(self):
         return f"<TradingSetup(id={self.id}, name='{self.name}')>"
-
 
 class PlannedOrderDB(Base):
     """Database model for planned trading orders with parameters and status tracking."""
@@ -73,7 +70,6 @@ class PlannedOrderDB(Base):
 
     def __repr__(self):
         return f"<PlannedOrderDB(id={self.id}, symbol='{self.symbol}', status='{self.status}')>"
-
 
 class ExecutedOrderDB(Base):
     """Database model for executed orders, tracking fills, commissions, and P&L."""

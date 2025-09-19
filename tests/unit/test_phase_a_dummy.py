@@ -64,14 +64,15 @@ class TestPhaseADummy(unittest.TestCase):
         self.assertGreaterEqual(executable_orders[0]['probability'], 0.9)
 
     def test_phase_a_end_to_end_dummy_negative(self):
-        """❌ Negative: no eligible orders → no execution"""
+        """❌ Negative: no eligible orders → no execution occurs."""
         dummy_order = self._make_dummy_order()
         self.tm.planned_orders = [dummy_order]
-        
+
         # Eligibility service returns nothing
         self.tm.eligibility_service.find_executable_orders.return_value = []
-        
-        with patch.object(self.tm, "_execute_order") as mock_execute:
+
+        # Patch the new method in TradingManager
+        with patch.object(self.tm, "_execute_prioritized_orders") as mock_execute:
             self.tm._check_and_execute_orders()
             mock_execute.assert_not_called()
 

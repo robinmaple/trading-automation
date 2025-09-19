@@ -10,6 +10,10 @@ import threading
 import time
 import pandas as pd
 
+from src.core.order_execution_orchestrator import OrderExecutionOrchestrator
+from src.core.monitoring_service import MonitoringService
+from src.core.order_lifecycle_manager import OrderLifecycleManager
+from src.core.advanced_feature_coordinator import AdvancedFeatureCoordinator
 from src.services.prioritization_service import PrioritizationService
 from src.core.ibkr_client import IbkrClient
 from src.core.planned_order import PlannedOrder, ActiveOrder
@@ -26,10 +30,7 @@ from src.services.state_service import StateService
 from src.core.events import OrderEvent
 from src.core.reconciliation_engine import ReconciliationEngine
 from src.services.market_hours_service import MarketHoursService
-# Phase B Additions - Begin
-from src.services.prioritization_service import PrioritizationService
 from src.services.outcome_labeling_service import OutcomeLabelingService
-# Phase B Additions - End
 from src.services.market_context_service import MarketContextService
 from src.services.historical_performance_service import HistoricalPerformanceService
 from config.prioritization_config import get_config
@@ -40,10 +41,7 @@ class TradingManager:
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx",
                 ibkr_client: Optional[IbkrClient] = None,
                 order_persistence_service: Optional[OrderPersistenceService] = None,
-                # <Advanced Feature Integration - Begin>
-                enable_advanced_features: bool = False  # New parameter for toggle
-                # <Advanced Feature Integration - End>
-                ):
+                enable_advanced_features: bool = False):
         """Initialize the trading manager with all necessary dependencies and services."""
         self.data_feed = data_feed
         self.excel_path = excel_path
@@ -51,12 +49,9 @@ class TradingManager:
         self.planned_orders: List[PlannedOrder] = []
         self.active_orders: Dict[int, ActiveOrder] = {}
         self.monitoring = False
-        self.monitor_thread: Optional[threading.Thread] = None
         self.total_capital = 100000
         self.max_open_orders = 5
         self.execution_threshold = 0.7
-        self.subscribed_symbols = set()
-        self.market_data_updates = {}
         self._initialized = False
 
         # Database and persistence setup
@@ -68,45 +63,56 @@ class TradingManager:
         self.state_service.subscribe('order_state_change', self._handle_order_state_change)
         self.reconciliation_engine = ReconciliationEngine(ibkr_client, self.state_service)
 
-        # Service layer initialization - initialize core services first
+        # Service layer initialization
         self.execution_service = OrderExecutionService(self, self.ibkr_client)
         self.sizing_service = PositionSizingService(self)
         self.loading_service = OrderLoadingService(self, self.db_session)
-        
-        # Initialize probability engine early to avoid attribute errors
         self.probability_engine = FillProbabilityEngine(self.data_feed)
-        
-        # Initialize eligibility service with probability engine
-        self.eligibility_service = OrderEligibilityService(
-            self.probability_engine, self.db_session
+        self.eligibility_service = OrderEligibilityService(self.probability_engine, self.db_session)
+        self.market_hours = MarketHoursService()
+
+        # Component initialization
+        self._initialize_components(enable_advanced_features)
+
+    def _initialize_components(self, enable_advanced_features: bool) -> None:
+        """Initialize all component managers and coordinators."""
+        # Order execution orchestrator
+        self.execution_orchestrator = OrderExecutionOrchestrator(
+            execution_service=self.execution_service,
+            sizing_service=self.sizing_service,
+            persistence_service=self.order_persistence_service,
+            state_service=self.state_service,
+            probability_engine=self.probability_engine,
+            ibkr_client=self.ibkr_client
         )
 
-        # Market hours service
-        self.market_hours = MarketHoursService()
-        self.last_position_close_check = None
+        # Monitoring service
+        self.monitoring_service = MonitoringService(self.data_feed)
 
-        # <Advanced Feature Integration - Begin>
-        # Store advanced feature flag
-        self.enable_advanced_features = enable_advanced_features
-        self.market_context_service = None
-        self.historical_performance_service = None
-        self.prioritization_config = None
-        # <Advanced Feature Integration - End>
+        # Order lifecycle manager
+        self.order_lifecycle_manager = OrderLifecycleManager(
+            loading_service=self.loading_service,
+            persistence_service=self.order_persistence_service,
+            state_service=self.state_service,
+            db_session=self.db_session
+        )
 
-        # Add configuration loading
+        # Advanced feature coordinator
+        self.advanced_features = AdvancedFeatureCoordinator(enable_advanced_features)
         self._load_configuration()
-        
-        # Initialize prioritization service with basic configuration
+
+        # Basic prioritization service (for backward compatibility)
         self.prioritization_service = PrioritizationService(
             sizing_service=self.sizing_service,
             config=self.prioritization_config
         )
-        
-        self.outcome_labeling_service = OutcomeLabelingService(self.db_session)
 
-        # Phase B services that require advanced features are initialized conditionally
-        if self.enable_advanced_features:
-            self._initialize_advanced_services()
+    def _load_configuration(self) -> None:
+        """Load trading configuration including prioritization config."""
+        try:
+            self.prioritization_config = get_config('default')
+        except Exception:
+            self.prioritization_config = PrioritizationService(self.sizing_service)._get_default_config()
 
     def _initialize(self) -> bool:
         """Complete initialization with advanced services and validation."""
@@ -114,108 +120,46 @@ class TradingManager:
             return True
 
         if not self.data_feed.is_connected():
-            print("Cannot initialize - data feed not connected")
             return False
 
         self._validate_ibkr_connection()
 
-        # Re-initialize advanced services if enabled (in case they weren't ready at __init__)
-        if self.enable_advanced_features:
-            self._initialize_advanced_services()
-            
-            # Update prioritization service with advanced features if available
-            if (hasattr(self, 'market_context_service') and 
-                hasattr(self, 'historical_performance_service') and
-                self.market_context_service is not None and
-                self.historical_performance_service is not None):
-                
-                self.prioritization_service = PrioritizationService(
-                    self.sizing_service,
-                    config=self.prioritization_config,
-                    market_context_service=self.market_context_service,
-                    historical_performance_service=self.historical_performance_service
-                )
+        # Initialize advanced services if enabled
+        if self.advanced_features.enabled:
+            self.advanced_features.initialize_services(
+                data_feed=self.data_feed,
+                sizing_service=self.sizing_service,
+                db_session=self.db_session,
+                prioritization_config=self.prioritization_config
+            )
 
-        # Ensure execution service has proper dependencies
         self.execution_service.set_dependencies(self.order_persistence_service, self.active_orders)
-
         self._initialized = True
-        print("✅ Trading manager initialized successfully")
-
-        self.validate_data_source()
         return True
 
-    def _initialize_advanced_services(self):
-        """Initialize advanced Phase B services if enabled."""
-        try:
-            # Initialize market context service
-            if self.market_context_service is None:
-                from src.services.market_context_service import MarketContextService
-                self.market_context_service = MarketContextService(self.data_feed)
-                print("✅ Market context service initialized")
-            
-            # Initialize historical performance service
-            if self.historical_performance_service is None:
-                from src.services.historical_performance_service import HistoricalPerformanceService
-                self.historical_performance_service = HistoricalPerformanceService()
-                print("✅ Historical performance service initialized")
-                
-        except ImportError as e:
-            print(f"⚠️  Advanced service not available: {e}")
-        except Exception as e:
-            print(f"❌ Failed to initialize advanced services: {e}")
-
-    def _load_configuration(self):
-        """Load trading configuration including prioritization config."""
-        try:
-            # Load prioritization configuration
-            self.prioritization_config = get_config('default')
-            print("✅ Prioritization configuration loaded")
-        except Exception as e:
-            print(f"❌ Failed to load prioritization config: {e}")
-            # Fallback to default config from prioritization service
-            self.prioritization_config = PrioritizationService(self.sizing_service)._get_default_config()
-            
     def _handle_order_state_change(self, event: OrderEvent) -> None:
         """Handle order state change events from the StateService."""
-        print(f"📢 State Event: {event.symbol} {event.old_state} -> {event.new_state} via {event.source}")
         if event.new_state == 'FILLED':
-            print(f"🎉 Order {event.order_id} filled! Details: {event.details}")
-            # Phase B Additions - Begin
-            # Immediately label filled orders for real-time learning
-            try:
-                self.outcome_labeling_service.label_completed_orders(hours_back=1)  # Last hour only
-            except Exception as e:
-                print(f"⚠️  Could not label filled order immediately: {e}")
-            # Phase B Additions - End
-        elif event.new_state == 'CANCELLED':
-            print(f"❌ Order {event.order_id} was cancelled")
-
-    def _execute_single_order(self, order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading):
-        """Execute a single order by delegating to the execution service."""
-        return self.execution_service.execute_single_order(
-            order, fill_probability, total_capital, quantity, capital_commitment, is_live_trading
-        )
+            if self.advanced_features.enabled:
+                try:
+                    self.advanced_features.label_completed_orders(hours_back=1)
+                except Exception:
+                    pass
 
     def cancel_active_order(self, active_order: ActiveOrder) -> bool:
         """Cancel an active order through the IBKR API."""
         if not self.ibkr_client or not self.ibkr_client.connected:
-            print("❌ Cannot cancel order - not connected to IBKR")
             return False
 
         try:
             for order_id in active_order.order_ids:
                 success = self.ibkr_client.cancel_order(order_id)
                 if not success:
-                    print(f"❌ Failed to cancel order {order_id}")
                     return False
 
             active_order.update_status('CANCELLED')
-            print(f"✅ Cancelled order {active_order.symbol} (IDs: {active_order.order_ids})")
             return True
-
-        except Exception as e:
-            print(f"❌ Error cancelling order {active_order.symbol}: {e}")
+        except Exception:
             return False
 
     def cleanup_completed_orders(self) -> None:
@@ -223,23 +167,14 @@ class TradingManager:
         orders_to_remove = [order_id for order_id, active_order in self.active_orders.items() if not active_order.is_working()]
         for order_id in orders_to_remove:
             del self.active_orders[order_id]
-        if orders_to_remove:
-            print(f"🧹 Cleaned up {len(orders_to_remove)} completed orders")
 
     def get_active_orders_summary(self) -> List[Dict]:
         """Get a summary of all active orders for monitoring purposes."""
         return [active_order.to_dict() for active_order in self.active_orders.values()]
 
-    def _calculate_quantity(self, security_type, entry_price, stop_loss, total_capital, risk_per_trade) -> float:
-        """Calculate position size by delegating to the sizing service."""
-        return self.sizing_service.calculate_quantity(
-            security_type, entry_price, stop_loss, total_capital, risk_per_trade
-        )
-
     def start_monitoring(self, interval_seconds: int = 5) -> bool:
         """Start the continuous monitoring loop with automatic initialization."""
         if not self._initialize():
-            print("❌ Failed to initialize trading manager")
             return False
 
         if self.ibkr_client and self.ibkr_client.connected:
@@ -248,219 +183,63 @@ class TradingManager:
         if not self.data_feed.is_connected():
             raise Exception("Data feed not connected")
 
-        self.monitoring = True
-        self.monitor_thread = threading.Thread(
-            target=self._monitoring_loop,
-            args=(interval_seconds,),
-            daemon=True
+        return self.monitoring_service.start_monitoring(
+            check_callback=self._check_and_execute_orders,
+            label_callback=self._label_completed_orders
         )
-        self.monitor_thread.start()
-        print("Monitoring started")
-        return True
 
     def _monitoring_loop(self, interval_seconds: int) -> None:
         """Main monitoring loop for Phase A with error handling and recovery."""
         error_count = 0
         max_errors = 10
 
-        # Subscribe to all symbols in planned orders
-        self._subscribe_to_all_symbols()
+        self.monitoring_service.subscribe_to_symbols(self.planned_orders)
 
         while self.monitoring and error_count < max_errors:
             try:
-                # Phase A: Check and execute eligible orders
                 self._check_and_execute_orders()
-
-                # Check market close actions (if any)
                 self._check_market_close_actions()
-
-                # Reset error counter and sleep
                 error_count = 0
                 time.sleep(interval_seconds)
-
-                # Phase B Additions - Begin
-                # Label completed orders periodically (every 10 minutes)
-                current_time = datetime.datetime.now()
-                if (not hasattr(self, 'last_labeling_time') or 
-                    (current_time - self.last_labeling_time).total_seconds() >= 600):  # 10 minutes
-                    
-                    self._label_completed_orders()
-                    self.last_labeling_time = current_time
-                # Phase B Additions - End
-
-            except Exception as e:
+            except Exception:
                 error_count += 1
-                print(f"Monitoring error ({error_count}/{max_errors}): {e}")
-                import traceback
-                traceback.print_exc()
-
-                # Backoff on repeated errors
-                backoff_time = min(60 * error_count, 300)
-                time.sleep(backoff_time)
-
-        if error_count >= max_errors:
-            print("Too many errors, stopping monitoring")
-            self.monitoring = False
-
-    def _subscribe_to_all_symbols(self) -> None:
-        """Subscribe to market data for all symbols in the planned orders."""
-        if not self.planned_orders:
-            return
-
-        print("\n" + "="*60)
-        print("SUBSCRIBING TO MARKET DATA")
-        print("="*60)
-
-        for order in self.planned_orders:
-            if order.symbol not in self.subscribed_symbols:
-                try:
-                    contract = order.to_ib_contract()
-                    success = self.data_feed.subscribe(order.symbol, contract)
-                    if success:
-                        self.subscribed_symbols.add(order.symbol)
-                        self.market_data_updates[order.symbol] = 0
-                        print(f"✅ Subscription successful: {order.symbol}")
-                    else:
-                        print(f"❌ Subscription failed: {order.symbol}")
-                except Exception as e:
-                    print(f"❌ Failed to subscribe to {order.symbol}: {e}")
-
-        print(f"Total successful subscriptions: {len(self.subscribed_symbols)}/{len(self.planned_orders)}")
-        print("="*60)
+                time.sleep(min(60 * error_count, 300))
 
     def _check_and_execute_orders(self) -> None:
-        """Check market conditions and execute orders that meet the criteria (Phase B)."""
+        """Check market conditions and execute orders that meet the criteria."""
         if not self.planned_orders:
-            print("No planned orders to monitor")
             return
 
-        print(f"\n📊 PLANNED ORDERS SUMMARY ({len(self.planned_orders)} orders)")
-        print("-" * 50)
-
-        # Display planned orders with market prices (keep for monitoring)
-        for i, order in enumerate(self.planned_orders):
-            price_data = self.data_feed.get_current_price(order.symbol)
-            current_price = price_data['price'] if price_data and price_data.get('price') else None
-            entry_display = f"${order.entry_price:8.4f}" if order.entry_price is not None else "None"
-
-            if current_price and order.entry_price is not None:
-                price_diff = current_price - order.entry_price
-                percent_diff = (price_diff / order.entry_price * 100)
-                print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
-                    f"Current: ${current_price:8.4f} | Entry: {entry_display} | "
-                    f"Diff: {percent_diff:6.2f}%")
-            else:
-                print(f"{i+1:2}. {order.action.value:4} {order.symbol:6} | "
-                    f"No market data yet | Entry: {entry_display}")
-
-        # Get executable orders from the eligibility service
         executable_orders = self.eligibility_service.find_executable_orders()
-
         if not executable_orders:
-            print("💡 No executable orders found at this time")
-            print("-" * 50)
             return
 
-        print(f"🎯 Found {len(executable_orders)} executable orders")
-
-        # Phase B Additions - Begin
-        # Use prioritization service instead of simple execution
         self._execute_prioritized_orders(executable_orders)
-        # Phase B Additions - End
-
-        print("-" * 50)
 
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persisting valid ones to the database."""
-        valid_orders = self.loading_service.load_and_validate_orders(self.excel_path)
-        for order in valid_orders:
-            try:
-                db_order = self.order_persistence_service.convert_to_db_model(order)
-                self.db_session.add(db_order)
-                print(f"✅ Persisted order: {order.symbol}")
-            except Exception as e:
-                print(f"❌ Failed to persist order {order.symbol}: {e}")
-
-        self.db_session.commit()
-        self.planned_orders = valid_orders
-        return valid_orders
-
-    def _find_existing_planned_order(self, order: PlannedOrder) -> Optional[PlannedOrderDB]:
-        """Check if an order with the same parameters already exists in the database."""
-        try:
-            existing_order = self.db_session.query(PlannedOrderDB).filter_by(
-                symbol=order.symbol,
-                entry_price=order.entry_price,
-                stop_loss=order.stop_loss,
-                action=order.action.value
-            ).first()
-            return existing_order
-        except Exception as e:
-            print(f"❌ Error checking for existing order {order.symbol}: {e}")
-            return None
-
-    def _validate_order_basic(self, order: PlannedOrder) -> bool:
-        """Perform basic validation on an order's parameters."""
-        if order.entry_price is None or order.stop_loss is None:
-            return False
-        if (order.action.value == 'BUY' and order.stop_loss >= order.entry_price) or \
-           (order.action.value == 'SELL' and order.stop_loss <= order.entry_price):
-            return False
-        if order.risk_per_trade <= 0 or order.risk_per_trade > 0.02:
-            return False
-        if order.risk_reward_ratio < 1.0:
-            return False
-        if not 1 <= order.priority <= 5:
-            return False
-        return True
-
-    def _find_executable_orders(self) -> List[Dict]:
-        """Find orders that meet execution criteria by delegating to the eligibility service."""
-        return self.eligibility_service.find_executable_orders()
+        self.planned_orders = self.order_lifecycle_manager.load_and_persist_orders(self.excel_path)
+        return self.planned_orders
 
     def stop_monitoring(self) -> None:
         """Stop the monitoring loop and perform cleanup of resources."""
-        self.monitoring = False
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=5)
+        self.monitoring_service.stop_monitoring()
         self.reconciliation_engine.stop()
         if self.db_session:
             self.db_session.close()
-        print("Monitoring stopped")
 
     def _get_trading_mode(self) -> bool:
         """Determine if the system is in live trading mode based on the IBKR connection."""
         if self.ibkr_client and self.ibkr_client.connected:
-            is_live_trading = not self.ibkr_client.is_paper_account
-            print(f"📊 Trading mode detected: {'LIVE' if is_live_trading else 'PAPER'} (Account: {self.ibkr_client.account_number})")
-            return is_live_trading
-        else:
-            print("📊 Trading mode: PAPER (Simulation/No IBKR connection)")
-            return False
-
-    def _find_planned_order_db_id(self, order) -> Optional[int]:
-        """Find the database ID for a planned order based on its parameters."""
-        try:
-            db_order = self.db_session.query(PlannedOrderDB).filter_by(
-                symbol=order.symbol,
-                entry_price=order.entry_price,
-                stop_loss=order.stop_loss,
-                action=order.action.value,
-                order_type=order.order_type.value
-            ).first()
-            return db_order.id if db_order else None
-        except Exception as e:
-            print(f"❌ Error finding planned order in database: {e}")
-            return None
+            return not self.ibkr_client.is_paper_account
+        return False
 
     def _calculate_capital_commitment(self, order, total_capital: float) -> float:
         """Calculate the capital commitment required for an order."""
         try:
             quantity = order.calculate_quantity(total_capital)
-            capital_commitment = order.entry_price * quantity
-            return capital_commitment
-        except Exception as e:
-            print(f"❌ Error calculating capital commitment for {order.symbol}: {e}")
+            return order.entry_price * quantity
+        except Exception:
             return 0.0
 
     def _can_place_order(self, order) -> bool:
@@ -478,120 +257,108 @@ class TradingManager:
             active_order_obj = active_order.planned_order
             active_key = f"{active_order_obj.symbol}_{active_order_obj.action.value}_{active_order_obj.entry_price}_{active_order_obj.stop_loss}"
             if order_key == active_key:
-                print(f"⚠️  Order already active: {order.symbol} {order.action.value} @ {order.entry_price}")
                 return False
         return True
 
-    def _calculate_order_score(self, order: PlannedOrder, fill_probability: float) -> float:
-        """Calculate a prioritization score for an order based on its priority and fill probability."""
-        return order.priority * fill_probability
+    def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
+        """Execute orders using two-layer prioritization with viability gating."""
+        total_capital = self._get_total_capital()
+        working_orders = self._get_working_orders()
 
-    def _get_eligible_orders(self) -> List[Dict]:
-        """Find all eligible orders that meet execution criteria, sorted by their score."""
-        eligible_orders = []
-        for order in self.planned_orders:
-            if not self._can_place_order(order):
+        prioritized_orders = self.prioritization_service.prioritize_orders(
+            executable_orders, total_capital, working_orders
+        )
+
+        executed_count = 0
+        for order_data in prioritized_orders:
+            if not order_data.get('allocated', False) or not order_data.get('viable', False):
                 continue
-            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
-            if should_execute:
-                score = self._calculate_order_score(order, fill_prob)
-                eligible_orders.append({
-                    'order': order,
-                    'fill_probability': fill_prob,
-                    'score': score,
-                    'timestamp': datetime.datetime.now()
-                })
-        eligible_orders.sort(key=lambda x: x['score'], reverse=True)
-        return eligible_orders
 
-    def _get_committed_capital(self) -> float:
-        """Calculate the total capital currently committed to working orders."""
-        return sum(active_order.capital_commitment for active_order in self.active_orders.values() if active_order.is_working())
+            order = order_data['order']
+            fill_prob = order_data['fill_probability']
 
-    def _find_worst_active_order(self, min_score_threshold: float = 0.0) -> Optional[ActiveOrder]:
-        """Find the worst-performing active order that is stale and eligible for replacement."""
-        worst_order = None
-        worst_score = float('inf')
-        current_time = datetime.datetime.now()
-
-        for active_order in self.active_orders.values():
-            if not active_order.is_working():
+            if self.state_service.has_open_position(order.symbol):
                 continue
-            age_minutes = (current_time - active_order.timestamp).total_seconds() / 60
-            if age_minutes < 30:
-                continue
-            current_score = self._calculate_order_score(active_order.planned_order, active_order.fill_probability)
-            if current_score < min_score_threshold:
-                continue
-            if current_score < worst_score:
-                worst_score = current_score
-                worst_order = active_order
 
-        return worst_order
+            db_order = self.order_lifecycle_manager.find_existing_order(order)
+            if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
+                same_action = db_order.action == order.action.value
+                same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
+                same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
+                if same_action and same_entry and same_stop:
+                    continue
+
+            effective_priority = order.priority * fill_prob
+            self.execution_orchestrator.execute_single_order(order, fill_prob, effective_priority)
+            executed_count += 1
+
+    def _get_total_capital(self) -> float:
+        """Get total capital from IBKR or use default."""
+        if self.ibkr_client and self.ibkr_client.connected:
+            return self.ibkr_client.get_account_value()
+        return self.total_capital
+
+    def _get_working_orders(self) -> List[Dict]:
+        """Get working orders in format expected by prioritization service."""
+        return [{'capital_commitment': ao.capital_commitment} 
+                for ao in self.active_orders.values() if ao.is_working()]
+
+    def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
+                           new_fill_probability: float) -> bool:
+        """Replace a stale active order with a new order."""
+        if not self.cancel_active_order(old_order):
+            return False
+
+        effective_priority = new_planned_order.priority * new_fill_probability
+        success = self.execution_orchestrator.execute_single_order(
+            new_planned_order, new_fill_probability, effective_priority
+        )
+        
+        if success:
+            old_order.update_status('REPLACED')
+        
+        return success
+
+    def _label_completed_orders(self) -> None:
+        """Label completed orders for ML training data."""
+        if self.advanced_features.enabled:
+            self.advanced_features.label_completed_orders(hours_back=24)
+
+    def generate_training_data(self, output_path: str = "training_data.csv") -> bool:
+        """Generate and export training data from labeled orders."""
+        if self.advanced_features.enabled:
+            return self.advanced_features.generate_training_data(output_path)
+        return False
 
     def _validate_ibkr_connection(self) -> bool:
         """Validate that the data feed is connected to IBKR and providing live data."""
         if not self.data_feed.is_connected():
-            print("❌ Data feed not connected")
             return False
 
         from src.data_feeds.ibkr_data_feed import IBKRDataFeed
         if not isinstance(self.data_feed, IBKRDataFeed):
-            print(f"❌ Wrong data feed type: {type(self.data_feed)}")
             return False
 
-        print("✅ Using IBKRDataFeed")
         test_symbol = "SPY"
         price_data = self.data_feed.get_current_price(test_symbol)
-
-        if price_data and price_data.get('price') not in [0, None]:
-            print(f"✅ Live data received for {test_symbol}: ${price_data['price']:.2f}")
-            print(f"   Data type: {price_data.get('data_type', 'UNKNOWN')}")
-            print(f"   Timestamp: {price_data.get('timestamp')}")
-            return True
-        else:
-            print("❌ No market data received")
-            return False
+        return price_data and price_data.get('price') not in [0, None]
 
     def validate_data_source(self) -> None:
         """Perform a quick validation of the data source and connection."""
-        print("\n" + "="*60)
-        print("DATA SOURCE VALIDATION")
-        print("="*60)
-
         from src.data_feeds.ibkr_data_feed import IBKRDataFeed
-        if isinstance(self.data_feed, IBKRDataFeed):
-            print("✅ Data Feed: IBKRDataFeed (Real IBKR API)")
-        else:
-            print(f"❌ Data Feed: {type(self.data_feed)} (Unexpected)")
-
-        if self.data_feed.is_connected():
-            print("✅ Connection: Connected to IBKR")
-        else:
-            print("❌ Connection: Not connected to IBKR")
-
+        is_ibkr = isinstance(self.data_feed, IBKRDataFeed)
+        is_connected = self.data_feed.is_connected()
+        
         if self.planned_orders:
             test_symbol = self.planned_orders[0].symbol
             price_data = self.data_feed.get_current_price(test_symbol)
-            if price_data and price_data.get('price'):
-                print(f"✅ Market Data: Live price for {test_symbol}: ${price_data['price']:.2f}")
-            else:
-                print(f"❌ Market Data: No data for {test_symbol}")
-
-        print("="*60)
 
     def _close_single_position(self, position) -> None:
         """Orchestrate the closing of a single position through the execution service."""
         try:
-            print(f"🔚 Closing position: {position.symbol} ({position.action} {position.quantity})")
-            print(f"   Cancelling existing orders for {position.symbol}...")
             cancel_success = self.execution_service.cancel_orders_for_symbol(position.symbol)
-            if not cancel_success:
-                print(f"⚠️  Order cancellation failed for {position.symbol}, proceeding anyway")
-
             close_action = 'SELL' if position.action == 'BUY' else 'BUY'
-            print(f"   Closing action: {close_action} (was {position.action})")
-
+            
             order_id = self.execution_service.close_position({
                 'symbol': position.symbol,
                 'action': close_action,
@@ -604,323 +371,9 @@ class TradingManager:
             if order_id is not None:
                 position.status = 'CLOSING'
                 self.db_session.commit()
-                print(f"✅ Position closing initiated for {position.symbol} (Order ID: {order_id})")
-            else:
-                print(f"✅ Simulation: Position would be closed for {position.symbol}")
-
-        except Exception as e:
-            print(f"❌ Failed to close position {position.symbol}: {e}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            pass
 
     def _check_market_close_actions(self) -> None:
         """Check if any positions need to be closed due to market close strategies."""
-        # Implementation would go here
         pass
-
-    def _execute_order(self, order, fill_probability, effective_priority=None) -> None:
-        """Orchestrate the execution of a single order with two-layer viability checks."""
-        try:
-            # Determine total capital based on live account or simulation
-            total_capital = (
-                self.ibkr_client.get_account_value()
-                if self.ibkr_client and self.ibkr_client.connected
-                else self.total_capital
-            )
-
-            # Determine trading mode
-            is_live_trading = self._get_trading_mode()
-            mode_str = "LIVE" if is_live_trading else "PAPER"
-
-            # Compute position size and capital commitment
-            quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
-            capital_commitment = order.entry_price * quantity if order.entry_price else 0
-
-            # Two-layer viability check
-            two_layer_config = getattr(self, 'prioritization_config', {}).get('two_layer_prioritization', {})
-            min_fill_prob = two_layer_config.get('min_fill_probability', 0.4)
-            is_viable = fill_probability >= min_fill_prob
-            
-            # Enhanced logging for two-layer system
-            print(f"🎯 Two-Layer Execution: {order.symbol} ({order.action.value} {order.order_type.value})")
-            print(f"   Mode: {mode_str}, Account Value: ${total_capital:,.2f}")
-            print(f"   Fill Probability: {fill_probability:.2%}")
-            print(f"   Viability Threshold: {min_fill_prob:.2%}")
-            
-            if not is_viable:
-                print(f"❌ Order NOT VIABLE (fill_prob < {min_fill_prob:.2%}) - Skipping execution")
-                # Update order status to reflect viability rejection
-                self.order_persistence_service.update_order_status(
-                    order, 'REJECTED', f"Fill probability below minimum threshold ({fill_probability:.2%} < {min_fill_prob:.2%})"
-                )
-                return
-
-            print(f"✅ Order VIABLE - Proceeding with execution")
-
-            if effective_priority is not None:
-                print(f"   Effective Priority: {effective_priority:.3f}")
-            
-            print(f"   Stop Loss: {order.stop_loss}, Profit Target: {order.calculate_profit_target()}")
-            print(f"   Quantity: {quantity}, Capital Commitment: ${capital_commitment:,.2f}")
-
-            # Check if order would execute based on legacy threshold (for backward compatibility)
-            execute_order = fill_probability >= self.execution_threshold
-            if execute_order:
-                print(f"✅ Order eligible to execute (≥{self.execution_threshold:.2%} threshold)")
-            else:
-                print(f"⚠️  Order below legacy execution threshold ({fill_probability:.2%} < {self.execution_threshold:.2%})")
-                # Still execute if viable in two-layer system, but log the warning
-                print(f"💡 Proceeding anyway due to two-layer viability approval")
-
-            # Proceed with actual execution only if execution service is available
-            if self.execution_service:
-                # Calculate effective priority if not provided (backward compatibility)
-                if effective_priority is None:
-                    effective_priority = order.priority * fill_probability
-                
-                # Execute through execution service
-                self.execution_service.place_order(
-                    order, fill_probability, effective_priority, total_capital, 
-                    quantity, capital_commitment, is_live_trading
-                )
-                
-                # Update order status to reflect execution
-                self.order_persistence_service.update_order_status(
-                    order, 'EXECUTING', f"Order executing with fill_prob={fill_probability:.2%}"
-                )
-            else:
-                print(f"⚠️  No execution service available - order would be executed in simulation")
-
-        except Exception as e:
-            print(f"❌ Failed to execute order for {order.symbol}: {e}")
-            import traceback
-            traceback.print_exc()
-            # Update order status to reflect execution failure
-            self.order_persistence_service.update_order_status(
-                order, 'FAILED', f"Execution failed: {str(e)}"
-            )
-
-    def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
-        """Execute orders using two-layer prioritization with viability gating."""
-        if not executable_orders:
-            print("💡 No executable orders to prioritize")
-            return
-
-        # Determine total capital
-        total_capital = (
-            self.ibkr_client.get_account_value()
-            if self.ibkr_client and self.ibkr_client.connected
-            else self.total_capital
-        )
-
-        # Convert active orders to format expected by prioritization service
-        working_orders = []
-        for active_order in self.active_orders.values():
-            if active_order.is_working():
-                working_orders.append({
-                    'capital_commitment': active_order.capital_commitment
-                })
-
-        # Prioritize orders using two-layer service
-        prioritized_orders = self.prioritization_service.prioritize_orders(
-            executable_orders, total_capital, working_orders
-        )
-
-        # Get summary for logging
-        summary = self.prioritization_service.get_prioritization_summary(prioritized_orders)
-
-        # Enhanced logging for two-layer system
-        print(f"📈 Two-Layer Prioritization Results:")
-        print(f"   Viable & Allocated: {summary['total_allocated']}")
-        print(f"   Viable but Not Allocated: {summary['total_viable'] - summary['total_allocated']}")
-        print(f"   Non-Viable: {summary['total_non_viable']}")
-        print(f"   Capital Commitment: ${summary['total_capital_commitment']:,.2f}")
-        print(f"   Average Quality Score: {summary['average_score']:.3f}")
-
-        # Log rejection reasons
-        if summary['allocation_reasons']:
-            print(f"   Rejection Reasons: {dict(summary['allocation_reasons'])}")
-
-        # Log two-layer configuration details
-        two_layer_config = getattr(self, 'prioritization_config', {}).get('two_layer_prioritization', {})
-        min_fill_prob = two_layer_config.get('min_fill_probability', 0.4)
-        print(f"   Min Fill Probability: {min_fill_prob:.2f}")
-
-        # Execute allocated viable orders
-        executed_count = 0
-        for order_data in prioritized_orders:
-            if not order_data.get('allocated', False) or not order_data.get('viable', False):
-                continue
-
-            order = order_data['order']
-            fill_prob = order_data['fill_probability']
-            quality_score = order_data.get('quality_score', 0)
-            capital_commitment = order_data.get('capital_commitment', 0)
-
-            # Skip if there is an open position
-            if self.state_service.has_open_position(order.symbol):
-                print(f"⏩ Skipping {order.symbol} - open position exists")
-                continue
-
-            # Skip duplicates or already filled orders
-            db_order = self._find_existing_planned_order(order)
-            if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
-                same_action = db_order.action == order.action.value
-                same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
-                same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
-                if same_action and same_entry and same_stop:
-                    print(f"⏩ Skipping {order.symbol} {order.action.value} @ {order.entry_price:.4f} - "
-                        f"already in state: {db_order.status}")
-                    continue
-
-            # Calculate effective priority for Phase B tracking
-            effective_priority = order.priority * fill_prob
-
-            # Execute the prioritized order
-            print(f"✅ Executing {order.symbol} with quality_score={quality_score:.3f}, "
-                f"fill_prob={fill_prob:.2%}, capital=${capital_commitment:,.2f}")
-            
-            self._execute_order(order, fill_prob, effective_priority)
-            executed_count += 1
-
-        if executed_count == 0:
-            print("💡 No viable orders executed after prioritization filtering")
-
-        # Log advanced features status
-        if hasattr(self, 'enable_advanced_features'):
-            status = "ENABLED" if self.enable_advanced_features else "DISABLED"
-            print(f"   Advanced Features: {status}")
-
-    def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
-                       new_fill_probability: float) -> bool:
-        """Replace a stale active order with a new order."""
-        print(f"🔄 Replacing stale order {old_order.symbol} with new order")
-        if not self.cancel_active_order(old_order):
-            print("❌ Replacement failed - could not cancel old order")
-            return False
-
-        # Phase B Additions - Begin
-        # Calculate effective priority for replacement order
-        effective_priority = new_planned_order.priority * new_fill_probability
-        self._execute_order(new_planned_order, new_fill_probability, effective_priority)
-        # Phase B Additions - End
-        
-        old_order.update_status('REPLACED')
-        print(f"✅ Successfully replaced order {old_order.symbol}")
-        return True
-    
-    def _process_executable_orders_phase_a(self) -> None:
-        """
-        Phase A order orchestration:
-        1. Compute fill probability for planned orders.
-        2. Calculate effective priority (priority * fill_probability).
-        3. Sort eligible orders by effective priority.
-        4. Execute orders while respecting capital and active order limits.
-        """
-        if not self.planned_orders:
-            print("No planned orders to process")
-            return
-
-        print(f"\n🎯 Phase A: Processing {len(self.planned_orders)} planned orders")
-
-        eligible_orders = []
-        for order in self.planned_orders:
-            if not self._can_place_order(order):
-                continue
-
-            should_execute, fill_prob = self.probability_engine.should_execute_order(order)
-            if should_execute:
-                effective_priority = order.priority * fill_prob
-                eligible_orders.append({
-                    'order': order,
-                    'fill_probability': fill_prob,
-                    'effective_priority': effective_priority
-                })
-
-        # Sort by effective_priority descending
-        eligible_orders.sort(key=lambda x: x['effective_priority'], reverse=True)
-
-        for item in eligible_orders:
-            order = item['order']
-            fill_prob = item['fill_probability']
-            effective_priority = item['effective_priority']
-
-            # Skip if we already have a position
-            if self.state_service.has_open_position(order.symbol):
-                print(f"⏩ Skipping {order.symbol} - open position exists")
-                continue
-
-            print(f"✅ Executing {order.symbol} with effective_priority={effective_priority:.3f}, fill_probability={fill_prob:.2%}")
-            
-            # Phase B Additions - Begin
-            # Pass effective_priority for Phase B attempt tracking
-            self._execute_order(order, fill_prob, effective_priority)
-            # Phase B Additions - End
-
-    # Phase B Additions - Begin
-    def _label_completed_orders(self) -> None:
-        """Label completed orders for ML training data."""
-        try:
-            print("\n🏷️  Labeling completed orders for ML training...")
-            summary = self.outcome_labeling_service.label_completed_orders(hours_back=24)
-            
-            if summary['total_orders'] > 0:
-                print(f"   Labeled {summary['labeled_orders']} orders with {summary['labels_created']} labels")
-                if summary['errors'] > 0:
-                    print(f"   ⚠️  {summary['errors']} errors during labeling")
-            else:
-                print("   No completed orders found to label")
-                
-        except Exception as e:
-            print(f"❌ Error in order labeling: {e}")
-            import traceback
-            traceback.print_exc()
-    # Phase B Additions - End
-
-    # Phase B Additions - Begin
-    def generate_training_data(self, output_path: str = "training_data.csv") -> bool:
-        """
-        Generate and export training data from labeled orders.
-        
-        Args:
-            output_path: Path to save the CSV file
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            success = self.outcome_labeling_service.export_training_data(output_path)
-            if success:
-                print(f"✅ Training data exported to {output_path}")
-            return success
-        except Exception as e:
-            print(f"❌ Error generating training data: {e}")
-            return False
-    # Phase B Additions - End
-
-    # <Advanced Feature Integration - Begin>
-    def _initialize_advanced_services(self):
-        """Initialize advanced feature services with safe attribute access."""
-        try:
-            # Load advanced configuration
-            self.prioritization_config = get_config('default')
-            
-            # Initialize Market Context Service safely
-            self.market_context_service = MarketContextService(
-                data_feed=self.data_feed,
-                analytics_service=getattr(self, 'analytics_service', None)
-            )
-            
-            # Initialize Historical Performance Service
-            self.historical_performance_service = HistoricalPerformanceService(
-                order_persistence=self.order_persistence_service
-            )
-            
-            print("✅ Advanced services initialized for two-layer prioritization")
-            
-        except Exception as e:
-            print(f"❌ Failed to initialize advanced services: {e}")
-            print("⚠️  Falling back to basic two-layer prioritization")
-            self.enable_advanced_features = False
-    # <Advanced Feature Integration - End>
-
