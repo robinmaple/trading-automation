@@ -7,6 +7,7 @@ Acts as the gateway between business logic and the persistence layer.
 from decimal import Decimal
 import datetime
 from typing import Optional, Tuple, List, Dict
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from src.core.events import OrderState
@@ -423,3 +424,36 @@ class OrderPersistenceService:
             'total_loss': round(total_loss, 2)
         }
     # <Advanced Feature Integration - End>
+
+    def get_realized_pnl_period(self, days: int) -> Decimal:
+        """Get realized P&L for the last N calendar days."""
+        start_date = datetime.now() - datetime.timedelta(days=days)
+        
+        result = self.db_session.execute(
+            text("""
+                SELECT COALESCE(SUM(realized_pnl), 0) 
+                FROM executed_orders 
+                WHERE exit_time >= :start_date
+            """),
+            {'start_date': start_date}
+        ).scalar()
+        
+        return Decimal(str(result or '0'))
+
+
+    def record_realized_pnl(self, order_id: int, symbol: str, pnl: Decimal, exit_date: datetime):
+        """Record realized P&L for a closed trade."""
+        # This assumes you have an executed_orders table
+        self.db_session.execute(
+            text("""
+                INSERT INTO executed_orders (order_id, symbol, realized_pnl, exit_time)
+                VALUES (:order_id, :symbol, :pnl, :exit_time)
+            """),
+            {
+                'order_id': order_id,
+                'symbol': symbol,
+                'pnl': float(pnl),
+                'exit_time': exit_date
+            }
+        )
+        self.db_session.commit()

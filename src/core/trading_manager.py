@@ -43,12 +43,14 @@ class TradingManager:
                 order_persistence_service: Optional[OrderPersistenceService] = None,
                 enable_advanced_features: bool = False):
         """Initialize the trading manager with all necessary dependencies and services."""
+        # Core dependencies
         self.data_feed = data_feed
         self.excel_path = excel_path
         self.ibkr_client = ibkr_client
         self.planned_orders: List[PlannedOrder] = []
         self.active_orders: Dict[int, ActiveOrder] = {}
         self.monitoring = False
+        self.monitor_thread: Optional[threading.Thread] = None
         self.total_capital = 100000
         self.max_open_orders = 5
         self.execution_threshold = 0.7
@@ -63,15 +65,55 @@ class TradingManager:
         self.state_service.subscribe('order_state_change', self._handle_order_state_change)
         self.reconciliation_engine = ReconciliationEngine(ibkr_client, self.state_service)
 
-        # Service layer initialization
+        # Service layer initialization - initialize core services first
         self.execution_service = OrderExecutionService(self, self.ibkr_client)
         self.sizing_service = PositionSizingService(self)
         self.loading_service = OrderLoadingService(self, self.db_session)
+        
+        # Initialize probability engine early to avoid attribute errors
         self.probability_engine = FillProbabilityEngine(self.data_feed)
-        self.eligibility_service = OrderEligibilityService(self.probability_engine, self.db_session)
-        self.market_hours = MarketHoursService()
+        
+        # Initialize eligibility service with probability engine
+        self.eligibility_service = OrderEligibilityService(
+            self.probability_engine, self.db_session
+        )
 
-        # Component initialization
+        # Risk Management Service - Begin
+        from src.services.risk_management_service import RiskManagementService
+        self.risk_service = RiskManagementService(
+            self.state_service,
+            self.order_persistence_service,
+            self.ibkr_client
+        )
+        # Risk Management Service - End
+
+        # Market hours service
+        self.market_hours = MarketHoursService()
+        self.last_position_close_check = None
+
+        # <Advanced Feature Integration - Begin>
+        # Store advanced feature flag
+        self.enable_advanced_features = enable_advanced_features
+        self.market_context_service = None
+        self.historical_performance_service = None
+        self.prioritization_config = None
+        # <Advanced Feature Integration - End>
+
+        # Add configuration loading
+        self._load_configuration()
+        
+        # Initialize prioritization service with basic configuration
+        self.prioritization_service = PrioritizationService(
+            sizing_service=self.sizing_service,
+            config=self.prioritization_config
+        )
+        
+        self.outcome_labeling_service = OutcomeLabelingService(self.db_session)
+
+        # Phase B services that require advanced features are initialized conditionally
+        if self.enable_advanced_features:
+            self._initialize_advanced_services()
+
         self._initialize_components(enable_advanced_features)
 
     def _initialize_components(self, enable_advanced_features: bool) -> None:
@@ -351,14 +393,26 @@ class TradingManager:
         
         if self.planned_orders:
             test_symbol = self.planned_orders[0].symbol
-            price_data = self.data_feed.get_current_price(test_symbol)
+            # Use MonitoringService instead of direct data feed access
+            current_price = self.monitoring_service.get_current_price(test_symbol)
+            print(f"Market Data: Live price for {test_symbol}: ${current_price:.2f}" if current_price else "No market data")
+
+    def _check_market_close_actions(self) -> None:
+        """Check if any positions need to be closed due to market close strategies."""
+        pass
 
     def _close_single_position(self, position) -> None:
         """Orchestrate the closing of a single position through the execution service."""
         try:
+            print(f"🔚 Closing position: {position.symbol} ({position.action} {position.quantity})")
+            print(f"   Cancelling existing orders for {position.symbol}...")
             cancel_success = self.execution_service.cancel_orders_for_symbol(position.symbol)
+            if not cancel_success:
+                print(f"⚠️  Order cancellation failed for {position.symbol}, proceeding anyway")
+
             close_action = 'SELL' if position.action == 'BUY' else 'BUY'
-            
+            print(f"   Closing action: {close_action} (was {position.action})")
+
             order_id = self.execution_service.close_position({
                 'symbol': position.symbol,
                 'action': close_action,
@@ -371,9 +425,25 @@ class TradingManager:
             if order_id is not None:
                 position.status = 'CLOSING'
                 self.db_session.commit()
-        except Exception:
-            pass
+                print(f"✅ Position closing initiated for {position.symbol} (Order ID: {order_id})")
+                
+                # Risk Management - Record P&L on position close - Begin
+                try:
+                    # Delegate P&L calculation and recording to RiskManagementService
+                    # Find the active order for this position
+                    for active_order in self.active_orders.values():
+                        if active_order.symbol == position.symbol and active_order.is_working():
+                            # Risk service will handle P&L calculation internally
+                            self.risk_service.record_trade_outcome(active_order, None)
+                            break
+                except Exception as e:
+                    print(f"⚠️  Could not record P&L for {position.symbol}: {e}")
+                # Risk Management - Record P&L on position close - End
+                
+            else:
+                print(f"✅ Simulation: Position would be closed for {position.symbol}")
 
-    def _check_market_close_actions(self) -> None:
-        """Check if any positions need to be closed due to market close strategies."""
-        pass
+        except Exception as e:
+            print(f"❌ Failed to close position {position.symbol}: {e}")
+            import traceback
+            traceback.print_exc()
