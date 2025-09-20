@@ -1,6 +1,7 @@
 import datetime
 import pytest
 from unittest.mock import MagicMock, Mock, patch
+from decimal import Decimal
 
 from src.core.trading_manager import TradingManager
 from src.core.planned_order import PlannedOrder, ActiveOrder, PositionStrategy
@@ -27,6 +28,21 @@ def create_trading_manager_with_mocks():
     manager.risk_service = MagicMock()
     manager.advanced_features = MagicMock()
     
+    # Mock configuration
+    manager.trading_config = {
+        'market_close': {'buffer_minutes': 10},
+        'labeling': {'hours_back': 24, 'state_change_hours_back': 1},
+        'monitoring': {
+            'interval_seconds': 5,
+            'max_errors': 10,
+            'error_backoff_base': 60,
+            'max_backoff': 300
+        },
+        'risk_limits': {'max_open_orders': 5},
+        'simulation': {'default_equity': 100000},
+        'execution': {'fill_probability_threshold': 0.7}
+    }
+    
     return manager
 # Helper function to create TradingManager with mocks - End
 
@@ -47,7 +63,22 @@ def mock_ibkr_client():
 
 @pytest.fixture
 def manager(mock_data_feed, mock_ibkr_client):
-    return TradingManager(data_feed=mock_data_feed, ibkr_client=mock_ibkr_client)
+    manager = TradingManager(data_feed=mock_data_feed, ibkr_client=mock_ibkr_client)
+    # Add mock configuration
+    manager.trading_config = {
+        'market_close': {'buffer_minutes': 10},
+        'labeling': {'hours_back': 24, 'state_change_hours_back': 1},
+        'monitoring': {
+            'interval_seconds': 5,
+            'max_errors': 10,
+            'error_backoff_base': 60,
+            'max_backoff': 300
+        },
+        'risk_limits': {'max_open_orders': 5},
+        'simulation': {'default_equity': 100000},
+        'execution': {'fill_probability_threshold': 0.7}
+    }
+    return manager
 
 def test_initialize_success(manager):
     assert manager._initialize() is True
@@ -93,7 +124,6 @@ def test_execute_prioritized_orders_runs(manager):
     manager._execute_prioritized_orders(executable_orders)
     manager.execution_orchestrator.execute_single_order.assert_called_once()
 
-# In your test file, update the OrderEvent creation:
 def test_handle_order_state_change_triggers_labeling(manager):
     manager.advanced_features.enabled = True
     manager.advanced_features.label_completed_orders = MagicMock()
@@ -179,7 +209,7 @@ def test_calculate_position_pnl_validation_errors():
 
 # Fixed Market Close Tests - Begin
 def test_check_market_close_actions_closes_day_positions():
-    """Test that DAY positions are closed 10 minutes before market close."""
+    """Test that DAY positions are closed before market close."""
     # Setup
     manager = create_trading_manager_with_mocks()
     
@@ -199,7 +229,7 @@ def test_check_market_close_actions_closes_day_positions():
     manager._check_market_close_actions()
     
     # Verify
-    manager.market_hours.should_close_positions.assert_called_once()
+    manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=10)
     manager.state_service.get_positions_by_strategy.assert_called_once_with(PositionStrategy.DAY)
     manager._close_single_position.assert_called_once_with(day_position)
 
@@ -219,7 +249,7 @@ def test_check_market_close_actions_does_nothing_when_not_time_to_close():
     manager._check_market_close_actions()
     
     # Verify
-    manager.market_hours.should_close_positions.assert_called_once()
+    manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=10)
     manager.state_service.get_positions_by_strategy.assert_not_called()
     manager._close_single_position.assert_not_called()
 
@@ -267,7 +297,7 @@ def test_check_market_close_actions_handles_no_day_positions():
     manager._check_market_close_actions()
     
     # Verify
-    manager.market_hours.should_close_positions.assert_called_once()
+    manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=10)
     manager.state_service.get_positions_by_strategy.assert_called_once_with(PositionStrategy.DAY)
     manager._close_single_position.assert_not_called()  # No positions to close
 
@@ -284,7 +314,170 @@ def test_check_market_close_actions_uses_correct_buffer_time():
     # Execute
     manager._check_market_close_actions()
     
-    # Verify the method was called (don't assert specific parameters for mocked method)
-    manager.market_hours.should_close_positions.assert_called_once()
+    # Verify the method was called with correct buffer time
+    manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=10)
     manager.state_service.get_positions_by_strategy.assert_called_once_with(PositionStrategy.DAY)
-# Fixed Market Close Tests - End
+
+# New Configuration Tests - Begin
+def test_market_close_buffer_configurable():
+    """Test that market close buffer minutes is configurable."""
+    # Setup
+    manager = create_trading_manager_with_mocks()
+    
+    # Set custom configuration
+    manager.trading_config = {
+        'market_close': {'buffer_minutes': 15},
+        'labeling': {'hours_back': 24, 'state_change_hours_back': 1},
+        'monitoring': {
+            'interval_seconds': 5,
+            'max_errors': 10,
+            'error_backoff_base': 60,
+            'max_backoff': 300
+        },
+        'risk_limits': {'max_open_orders': 5},
+        'simulation': {'default_equity': 100000},
+        'execution': {'fill_probability_threshold': 0.7}
+    }
+    
+    # Mock market hours
+    manager.market_hours.should_close_positions = MagicMock(return_value=True)
+    manager.state_service.get_positions_by_strategy = MagicMock(return_value=[])
+    manager._close_single_position = MagicMock()
+    
+    # Execute
+    manager._check_market_close_actions()
+    
+    # Verify - should use configured buffer minutes
+    manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=15)
+
+def test_labeling_timeframe_configurable():
+    """Test that labeling timeframes are configurable."""
+    # Setup
+    manager = create_trading_manager_with_mocks()
+    
+    # Set custom configuration
+    manager.trading_config = {
+        'market_close': {'buffer_minutes': 10},
+        'labeling': {'hours_back': 48, 'state_change_hours_back': 2},
+        'monitoring': {
+            'interval_seconds': 5,
+            'max_errors': 10,
+            'error_backoff_base': 60,
+            'max_backoff': 300
+        },
+        'risk_limits': {'max_open_orders': 5},
+        'simulation': {'default_equity': 100000},
+        'execution': {'fill_probability_threshold': 0.7}
+    }
+    
+    manager.advanced_features.enabled = True
+    manager.advanced_features.label_completed_orders = MagicMock()
+    
+    # Execute
+    manager._label_completed_orders()
+    
+    # Verify - should use configured hours_back
+    manager.advanced_features.label_completed_orders.assert_called_once_with(hours_back=48)
+
+def test_state_change_labeling_timeframe_configurable():
+    """Test that state change labeling timeframe is configurable."""
+    # Setup
+    manager = create_trading_manager_with_mocks()
+    
+    # Set custom configuration
+    manager.trading_config = {
+        'market_close': {'buffer_minutes': 10},
+        'labeling': {'hours_back': 24, 'state_change_hours_back': 3},
+        'monitoring': {
+            'interval_seconds': 5,
+            'max_errors': 10,
+            'error_backoff_base': 60,
+            'max_backoff': 300
+        },
+        'risk_limits': {'max_open_orders': 5},
+        'simulation': {'default_equity': 100000},
+        'execution': {'fill_probability_threshold': 0.7}
+    }
+    
+    manager.advanced_features.enabled = True
+    manager.advanced_features.label_completed_orders = MagicMock()
+    
+    # Create order event
+    event = OrderEvent(
+        order_id=1, 
+        symbol="TEST",
+        old_state="PENDING",
+        new_state="FILLED",
+        timestamp=datetime.datetime.now(),
+        source="test"
+    )
+    
+    # Execute
+    manager._handle_order_state_change(event)
+    
+    # Verify - should use configured state_change_hours_back
+    manager.advanced_features.label_completed_orders.assert_called_once_with(hours_back=3)
+
+def test_monitoring_interval_configurable():
+    """Test that monitoring interval is configurable."""
+    # Setup
+    manager = create_trading_manager_with_mocks()
+    
+    # Set custom configuration
+    manager.trading_config = {
+        'market_close': {'buffer_minutes': 10},
+        'labeling': {'hours_back': 24, 'state_change_hours_back': 1},
+        'monitoring': {
+            'interval_seconds': 15,  # Custom interval
+            'max_errors': 10,
+            'error_backoff_base': 60,
+            'max_backoff': 300
+        },
+        'risk_limits': {'max_open_orders': 5},
+        'simulation': {'default_equity': 100000},
+        'execution': {'fill_probability_threshold': 0.7}
+    }
+    
+    # Mock monitoring service
+    manager.monitoring_service = MagicMock()
+    manager.monitoring_service.start_monitoring = MagicMock(return_value=True)
+    
+    # Mock other dependencies
+    manager._initialize = MagicMock(return_value=True)
+    manager.reconciliation_engine = MagicMock()
+    manager.reconciliation_engine.start = MagicMock()
+    manager.data_feed.is_connected.return_value = True
+    
+    # Execute
+    result = manager.start_monitoring()
+    
+    # Verify - should use configured interval
+    assert result is True
+    manager.monitoring_service.start_monitoring.assert_called_once()
+    call_args = manager.monitoring_service.start_monitoring.call_args
+    assert call_args[1]['interval_seconds'] == 15  # Should use configured interval
+
+def test_fallback_to_hardcoded_defaults():
+    """Test that methods fall back to hardcoded defaults when config is missing."""
+    # Setup
+    manager = create_trading_manager_with_mocks()
+    
+    # Set minimal configuration (missing some sections)
+    manager.trading_config = {
+        'risk_limits': {'max_open_orders': 5},
+        'simulation': {'default_equity': 100000},
+        'execution': {'fill_probability_threshold': 0.7}
+        # Missing: market_close, labeling, monitoring sections
+    }
+    
+    # Mock market hours - should use hardcoded default (10 minutes)
+    manager.market_hours.should_close_positions = MagicMock(return_value=True)
+    manager.state_service.get_positions_by_strategy = MagicMock(return_value=[])
+    manager._close_single_position = MagicMock()
+    
+    # Execute
+    manager._check_market_close_actions()
+    
+    # Verify - should use hardcoded default (10 minutes)
+    manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=10)
+# New Configuration Tests - End

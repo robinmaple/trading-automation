@@ -197,15 +197,6 @@ class TradingManager:
         self._initialized = True
         return True
 
-    def _handle_order_state_change(self, event: OrderEvent) -> None:
-        """Handle order state change events from the StateService."""
-        if event.new_state == 'FILLED':
-            if self.advanced_features.enabled:
-                try:
-                    self.advanced_features.label_completed_orders(hours_back=1)
-                except Exception:
-                    pass
-
     def cancel_active_order(self, active_order: ActiveOrder) -> bool:
         """Cancel an active order through the IBKR API."""
         if not self.ibkr_client or not self.ibkr_client.connected:
@@ -231,39 +222,6 @@ class TradingManager:
     def get_active_orders_summary(self) -> List[Dict]:
         """Get a summary of all active orders for monitoring purposes."""
         return [active_order.to_dict() for active_order in self.active_orders.values()]
-
-    def start_monitoring(self, interval_seconds: int = 5) -> bool:
-        """Start the continuous monitoring loop with automatic initialization."""
-        if not self._initialize():
-            return False
-
-        if self.ibkr_client and self.ibkr_client.connected:
-            self.reconciliation_engine.start()
-
-        if not self.data_feed.is_connected():
-            raise Exception("Data feed not connected")
-
-        return self.monitoring_service.start_monitoring(
-            check_callback=self._check_and_execute_orders,
-            label_callback=self._label_completed_orders
-        )
-
-    def _monitoring_loop(self, interval_seconds: int) -> None:
-        """Main monitoring loop for Phase A with error handling and recovery."""
-        error_count = 0
-        max_errors = 10
-
-        self.monitoring_service.subscribe_to_symbols(self.planned_orders)
-
-        while self.monitoring and error_count < max_errors:
-            try:
-                self._check_and_execute_orders()
-                self._check_market_close_actions()
-                error_count = 0
-                time.sleep(interval_seconds)
-            except Exception:
-                error_count += 1
-                time.sleep(min(60 * error_count, 300))
 
     def _check_and_execute_orders(self) -> None:
         """Check market conditions and execute orders that meet the criteria."""
@@ -379,11 +337,6 @@ class TradingManager:
         
         return success
 
-    def _label_completed_orders(self) -> None:
-        """Label completed orders for ML training data."""
-        if self.advanced_features.enabled:
-            self.advanced_features.label_completed_orders(hours_back=24)
-
     def generate_training_data(self, output_path: str = "training_data.csv") -> bool:
         """Generate and export training data from labeled orders."""
         if self.advanced_features.enabled:
@@ -414,15 +367,6 @@ class TradingManager:
             # Use MonitoringService instead of direct data feed access
             current_price = self.monitoring_service.get_current_price(test_symbol)
             print(f"Market Data: Live price for {test_symbol}: ${current_price:.2f}" if current_price else "No market data")
-
-    def _check_market_close_actions(self) -> None:
-        """Check if any DAY positions need to be closed 10 minutes before market close."""
-        if self.market_hours.should_close_positions(buffer_minutes=10):
-            # Close all DAY strategy positions 10 minutes before market close
-            day_positions = self.state_service.get_positions_by_strategy(PositionStrategy.DAY)
-            for position in day_positions:
-                print(f"🔚 Closing DAY position {position.symbol} before market close")
-                self._close_single_position(position)
 
     def _close_single_position(self, position) -> None:
         """Orchestrate the closing of a single position through the execution service."""
@@ -506,3 +450,102 @@ class TradingManager:
                     'default_equity': Decimal('100000')
                 }
             }
+
+    # src/core/trading_manager.py - Fix the _check_market_close_actions method
+    def _check_market_close_actions(self) -> None:
+        """Check if any DAY positions need to be closed before market close."""
+        # Safely get buffer_minutes from config with fallback
+        market_close_config = self.trading_config.get('market_close', {})
+        buffer_minutes = market_close_config.get('buffer_minutes', 10)
+        
+        if self.market_hours.should_close_positions(buffer_minutes=buffer_minutes):
+            # Close all DAY strategy positions
+            day_positions = self.state_service.get_positions_by_strategy(PositionStrategy.DAY)
+            for position in day_positions:
+                print(f"🔚 Closing DAY position {position.symbol} before market close")
+                self._close_single_position(position)
+
+        """Main monitoring loop for Phase A with error handling and recovery."""
+        monitoring_config = self.trading_config.get('monitoring', {})
+        max_errors = monitoring_config.get('max_errors', 10)
+        error_backoff_base = monitoring_config.get('error_backoff_base', 60)
+        max_backoff = monitoring_config.get('max_backoff', 300)
+        
+        error_count = 0
+
+        self.monitoring_service.subscribe_to_symbols(self.planned_orders)
+
+        while self.monitoring and error_count < max_errors:
+            try:
+                self._check_and_execute_orders()
+                self._check_market_close_actions()
+                error_count = 0
+                time.sleep(5)
+            except Exception:
+                error_count += 1
+                backoff_time = min(error_backoff_base * error_count, max_backoff)
+                time.sleep(backoff_time)
+
+    # src/core/trading_manager.py - Fix other config access methods
+    def _label_completed_orders(self) -> None:
+        """Label completed orders for ML training data."""
+        if self.advanced_features.enabled:
+            # Safely get hours_back from config with fallback
+            labeling_config = self.trading_config.get('labeling', {})
+            hours_back = labeling_config.get('hours_back', 24)
+            self.advanced_features.label_completed_orders(hours_back=hours_back)
+
+    def _handle_order_state_change(self, event: OrderEvent) -> None:
+        """Handle order state change events from the StateService."""
+        if event.new_state == 'FILLED':
+            if self.advanced_features.enabled:
+                try:
+                    # Safely get state_change_hours_back from config with fallback
+                    labeling_config = self.trading_config.get('labeling', {})
+                    hours_back = labeling_config.get('state_change_hours_back', 1)
+                    self.advanced_features.label_completed_orders(hours_back=hours_back)
+                except Exception:
+                    pass
+
+    def start_monitoring(self, interval_seconds: Optional[int] = None) -> bool:
+        """Start the continuous monitoring loop with automatic initialization."""
+        if not self._initialize():
+            return False
+
+        if self.ibkr_client and self.ibkr_client.connected:
+            self.reconciliation_engine.start()
+
+        if not self.data_feed.is_connected():
+            raise Exception("Data feed not connected")
+
+        # Use configured interval if not explicitly provided
+        monitoring_config = self.trading_config.get('monitoring', {})
+        interval = interval_seconds or monitoring_config.get('interval_seconds', 5)
+        
+        return self.monitoring_service.start_monitoring(
+            check_callback=self._check_and_execute_orders,
+            label_callback=self._label_completed_orders,
+            interval_seconds=interval
+        )
+
+    def _monitoring_loop(self, interval_seconds: int) -> None:
+        """Main monitoring loop for Phase A with error handling and recovery."""
+        monitoring_config = self.trading_config.get('monitoring', {})
+        max_errors = monitoring_config.get('max_errors', 10)
+        error_backoff_base = monitoring_config.get('error_backoff_base', 60)
+        max_backoff = monitoring_config.get('max_backoff', 300)
+        
+        error_count = 0
+
+        self.monitoring_service.subscribe_to_symbols(self.planned_orders)
+
+        while self.monitoring and error_count < max_errors:
+            try:
+                self._check_and_execute_orders()
+                self._check_market_close_actions()
+                error_count = 0
+                time.sleep(interval_seconds)
+            except Exception:
+                error_count += 1
+                backoff_time = min(error_backoff_base * error_count, max_backoff)
+                time.sleep(backoff_time)

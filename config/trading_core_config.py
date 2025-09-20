@@ -25,6 +25,19 @@ DEFAULT_TRADING_CORE_CONFIG: Dict[str, Any] = {
     },
     'simulation': {
         'default_equity': Decimal('100000') # Default equity for simulation/paper trading
+    },
+    'monitoring': {
+        'interval_seconds': 5,           # Main monitoring loop interval
+        'max_errors': 10,                # Maximum consecutive errors before backing off
+        'error_backoff_base': 60,        # Base backoff time in seconds
+        'max_backoff': 300,              # Maximum backoff time in seconds
+    },
+    'market_close': {
+        'buffer_minutes': 10            # Minutes before market close to start closing positions
+    },
+    'labeling': {
+        'hours_back': 24,                # Hours back for labeling completed orders
+        'state_change_hours_back': 1,    # Hours back for state change triggered labeling
     }
 }
 
