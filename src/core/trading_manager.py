@@ -84,8 +84,10 @@ class TradingManager:
             config=self.trading_config  # <-- PASS CONFIG HERE
 )        
         # Initialize probability engine early to avoid attribute errors
-        self.probability_engine = FillProbabilityEngine(self.data_feed)
-        
+        self.probability_engine = FillProbabilityEngine(
+            data_feed=self.data_feed,
+            config=self.trading_config  # <-- PASS CONFIG HERE
+)        
         # Initialize eligibility service with probability engine
         self.eligibility_service = OrderEligibilityService(
             self.probability_engine, self.db_session

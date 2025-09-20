@@ -217,27 +217,61 @@ class TestFillProbabilityEngine:
         assert isinstance(volatility, float)
         assert volatility == 0.001
 
+    def test_empty_market_data(self):
+        """Test behavior with completely empty market data."""
+        empty_feed = MockDataFeed({})
+        engine = FillProbabilityEngine(empty_feed)
+        
+        order = PlannedOrder(
+            security_type=SecurityType.STK,
+            exchange="SMART",
+            currency="USD",
+            action=Action.BUY,
+            symbol="TEST",
+            order_type=OrderType.LMT,
+            entry_price=100.0,
+            stop_loss=98.0
+        )
+        
+        # Should handle empty data gracefully
+        score = engine.score_fill(order)
+        assert score == 0.9  # Default neutral score
+        
+        features = engine.extract_features(order, {})
+        assert features == {}  # Empty features for empty data
 
-# Additional test for edge cases
-def test_empty_market_data():
-    """Test behavior with completely empty market data."""
-    empty_feed = MockDataFeed({})
-    engine = FillProbabilityEngine(empty_feed)
-    
-    order = PlannedOrder(
-        security_type=SecurityType.STK,
-        exchange="SMART",
-        currency="USD",
-        action=Action.BUY,
-        symbol="TEST",
-        order_type=OrderType.LMT,
-        entry_price=100.0,
-        stop_loss=98.0
-    )
-    
-    # Should handle empty data gracefully
-    score = engine.score_fill(order)
-    assert score == 0.9  # Default neutral score
-    
-    features = engine.extract_features(order, {})
-    assert features == {}  # Empty features for empty data
+    def test_configurable_execution_threshold(self):
+        """Test that ProbabilityEngine uses configurable execution threshold."""
+        # Arrange
+        mock_data_feed = Mock()
+        test_config = {
+            'execution': {'fill_probability_threshold': 0.6}
+        }
+        
+        # Act
+        engine = FillProbabilityEngine(mock_data_feed, config=test_config)
+        
+        # Assert
+        assert engine.execution_threshold == 0.6
+
+    def test_fallback_to_hardcoded_default(self):
+        """Test fallback to original default when no config provided."""
+        # Arrange
+        mock_data_feed = Mock()
+        
+        # Act
+        engine = FillProbabilityEngine(mock_data_feed, config=None)
+        
+        # Assert
+        assert engine.execution_threshold == 0.7
+
+    def test_empty_config_uses_hardcoded_default(self):
+        """Test that empty config uses hardcoded default."""
+        # Arrange
+        mock_data_feed = Mock()
+        
+        # Act
+        engine = FillProbabilityEngine(mock_data_feed, config={})
+        
+        # Assert
+        assert engine.execution_threshold == 0.7

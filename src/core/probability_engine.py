@@ -5,16 +5,24 @@ This is a placeholder implementation for a future, more sophisticated model.
 """
 
 from src.core.abstract_data_feed import AbstractDataFeed
+from typing import Dict, Any, Optional
 import datetime
 
 
 class FillProbabilityEngine:
-    """Estimates fill probability for orders based on market conditions."""
-
-    # Initialize engine with data feed and configurable execution threshold
-    def __init__(self, data_feed: AbstractDataFeed):
+    def __init__(self, data_feed: AbstractDataFeed, config: Optional[Dict[str, Any]] = None):
         self.data_feed = data_feed
-        self.execution_threshold = 0.7
+        self._load_configuration(config or {})
+    
+    def _load_configuration(self, config: Dict[str, Any]) -> None:
+        """Load configuration parameters."""
+        execution_config = config.get('execution', {})
+        self.execution_threshold = execution_config.get('fill_probability_threshold', 0.7)
+        
+        # Optional logging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"ProbabilityEngine configured: execution_threshold={self.execution_threshold}")
 
     # Compute fill probability score with optional feature extraction
     def score_fill(self, order, return_features=False) -> float:
