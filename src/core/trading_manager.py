@@ -37,6 +37,7 @@ from src.services.market_context_service import MarketContextService
 from src.services.historical_performance_service import HistoricalPerformanceService
 from config.prioritization_config import get_config
 from config.trading_core_config import get_config as get_trading_core_config
+from src.services.risk_management_service import RiskManagementService
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,8 @@ class TradingManager:
     def __init__(self, data_feed: AbstractDataFeed, excel_path: str = "plan.xlsx",
                 ibkr_client: Optional[IbkrClient] = None,
                 order_persistence_service: Optional[OrderPersistenceService] = None,
-                enable_advanced_features: bool = False):
+                enable_advanced_features: bool = False,
+                risk_config: Optional[Dict] = None):
         """Initialize the trading manager with all necessary dependencies and services."""
         # Core dependencies
         self.data_feed = data_feed
@@ -94,12 +96,11 @@ class TradingManager:
         )
 
         # Risk Management Service - UPDATED WITH CONFIG
-        from src.services.risk_management_service import RiskManagementService
         self.risk_service = RiskManagementService(
             state_service=self.state_service,
-            persistence=self.order_persistence_service,
+            persistence_service=self.order_persistence_service,  # ← Fixed parameter name
             ibkr_client=self.ibkr_client,
-            config=self.trading_config  # <-- PASS THE CONFIG HERE
+            config=risk_config
         )        
         # Risk Management Service - End
 

@@ -23,10 +23,11 @@ class TestRiskManagementService(unittest.TestCase):
         self.mock_persistence = MagicMock(spec=OrderPersistenceService)
         self.mock_ibkr_client = MagicMock()
         
+        # Use keyword arguments to ensure correct parameter mapping
         self.risk_service = RiskManagementService(
-            self.mock_state_service,
-            self.mock_persistence,
-            self.mock_ibkr_client
+            state_service=self.mock_state_service,
+            persistence_service=self.mock_persistence,  # Correct parameter name
+            ibkr_client=self.mock_ibkr_client
         )
     
     def test_calculate_position_pnl_long_profit(self):

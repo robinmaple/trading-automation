@@ -2,6 +2,9 @@ import sys
 import os
 from pathlib import Path
 
+from src.services.order_persistence_service import OrderPersistenceService
+from src.services.state_service import StateService
+
 # Add the src directory to Python path for imports
 src_path = Path(__file__).parent.parent / 'src'
 sys.path.insert(0, str(src_path))
@@ -353,4 +356,21 @@ def mock_prioritization_service(mock_historical_performance_service, mock_market
     mock_service.historical_performance_service = mock_historical_performance_service
     mock_service.market_context_service = mock_market_context_service
     
+    return mock_service
+
+@pytest.fixture
+def mock_state_service():
+    """Mock StateService for testing."""
+    mock_service = Mock(spec=StateService)
+    # Add any necessary mock methods or return values
+    mock_service.get_current_state.return_value = {'trading_enabled': True}
+    return mock_service
+
+@pytest.fixture
+def mock_persistence_service():
+    """Mock OrderPersistenceService for testing."""
+    mock_service = Mock(spec=OrderPersistenceService)
+    # Add any necessary mock methods or return values
+    mock_service.save_order.return_value = True
+    mock_service.load_orders.return_value = []
     return mock_service

@@ -17,17 +17,43 @@ logger = logging.getLogger(__name__)
 class RiskManagementService:
     """Manages trading risk parameters and validations."""
     
-    def __init__(self, state_service, persistence, ibkr_client=None, config=None):
-        # Parameter order matches actual usage in TradingManager
-        # Parameter names match the resulting attributes
+    def __init__(self, state_service: StateService, 
+                    persistence_service: OrderPersistenceService,
+                    ibkr_client=None,
+                    config: Optional[Dict] = None):
+        """Initialize with optional risk configuration."""
         self.state_service = state_service
-        self.persistence = persistence  # This is what tests and other code expect
+        self.persistence = persistence_service
         self.ibkr_client = ibkr_client
-        # config is handled separately
-            
-        # Load configuration with defaults
-        self._load_configuration(config or {})
         
+        # Load risk configuration - Begin
+        from config.risk_config import DEFAULT_RISK_CONFIG, merge_risk_config
+        self.config = merge_risk_config(config or {}, DEFAULT_RISK_CONFIG)
+        
+        # Use config values instead of hardcoded
+        self.position_limits = self.config['position_limits']
+        self.loss_limits = self.config['loss_limits']
+        self.check_interval = self.config['check_intervals']['trading_halt_check']
+        # Load risk configuration - End
+        
+        # Cache for performance
+        self._last_trading_halt_check = None
+        self._trading_halted = False
+        self._halt_reason = ""
+
+    def _get_total_equity(self) -> Decimal:
+        """Get total account equity, using configurable default for simulation."""
+        if self.ibkr_client and self.ibkr_client.connected:
+            try:
+                return Decimal(str(self.ibkr_client.get_account_value()))
+            except Exception:
+                # Fall back to state service if IBKR fails
+                pass
+                    
+        # Use configurable default equity - Begin
+        return self.config['defaults']['simulation_equity']
+        # Use configurable default equity - End
+
     def _load_configuration(self, config: Dict[str, Any]) -> None:
         """Load and validate risk configuration parameters."""
         # Extract risk_limits section or use empty dict as fallback
