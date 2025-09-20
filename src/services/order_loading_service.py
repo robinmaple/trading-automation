@@ -3,7 +3,7 @@ Service responsible for loading, validating, and preparing planned orders from E
 Handles parsing, validation, duplicate detection (in-file and in-database), and filtering.
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional
 from src.core.models import PlannedOrderDB
 from src.core.planned_order import PlannedOrderManager
 
@@ -11,18 +11,19 @@ from src.core.planned_order import PlannedOrderManager
 class OrderLoadingService:
     """Orchestrates the loading and validation of planned orders from an Excel template."""
 
-    def __init__(self, trading_manager, db_session):
-        """Initialize the service with a trading manager and database session."""
+    def __init__(self, trading_manager, db_session, config: Optional[Dict[str, Any]] = None):
+        """Initialize the service with a trading manager, database session, and configuration."""
         self._trading_manager = trading_manager
         self._db_session = db_session
-
+        self.config = config or {}  # <-- STORE CONFIGURATION
+        
     def load_and_validate_orders(self, excel_path) -> list:
         """
         Load orders from Excel, validate them, and filter out duplicates/invalid entries.
         Returns a list of valid PlannedOrder objects.
         """
         try:
-            excel_orders = PlannedOrderManager.from_excel(excel_path)
+            excel_orders = PlannedOrderManager.from_excel(excel_path, self.config)
             print(f"Loaded {len(excel_orders)} planned orders from Excel")
 
             valid_orders = []

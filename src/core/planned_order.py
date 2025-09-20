@@ -7,9 +7,10 @@ Defines the fundamental data structures (Enums, Dataclasses) representing:
 Also provides a static PlannedOrderManager for loading orders from an Excel template.
 """
 
+from decimal import Decimal
 from ibapi.client import *
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 import pandas as pd
 import datetime
@@ -88,12 +89,9 @@ class PlannedOrder:
     action: Action
     symbol: str
     order_type: OrderType = OrderType.LMT
-    risk_per_trade: float = 0.005  # 0.5% default
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
-    risk_reward_ratio: float = 2.0
     position_strategy: PositionStrategy = PositionStrategy.CORE
-    priority: int = 3  # Default to medium priority (scale 1-5)
     # Phase B Additions - Begin
     trading_setup: Optional[str] = None  # Trading strategy/setup type
     core_timeframe: Optional[str] = None  # Core trading timeframe
@@ -103,6 +101,10 @@ class PlannedOrder:
     _quantity: Optional[float] = None
     _profit_target: Optional[float] = None
 
+    risk_per_trade: Decimal = field(default=Decimal('0.005'))
+    risk_reward_ratio: Decimal = field(default=Decimal('2.0'))
+    priority: int = field(default=3)
+
     def __post_init__(self) -> None:
         """Dataclass hook to validate and set expiration after initialization."""
         self.validate()
@@ -110,6 +112,15 @@ class PlannedOrder:
 
     def validate(self) -> None:
         """Enforce business rules on order parameters."""
+        # Check for None values first - Begin
+        if self.risk_per_trade is None:
+            raise ValueError("Risk per trade cannot be None")
+        if self.risk_reward_ratio is None:
+            raise ValueError("Risk reward ratio cannot be None")  
+        if self.priority is None:
+            raise ValueError("Priority cannot be None")
+        # Check for None values first - End
+
         if self.risk_per_trade > 0.02:
             raise ValueError("Risk per trade cannot exceed 2%")
         if not 1 <= self.priority <= 5:
@@ -124,7 +135,7 @@ class PlannedOrder:
             if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
                (self.action == Action.SELL and self.stop_loss <= self.entry_price):
                 raise ValueError("Stop loss must be on the correct side of the entry price for a protective order")
-
+            
     def _set_expiration_date(self) -> None:
         """Set expiration date based on position strategy."""
         expiration_days = self.position_strategy.get_expiration_days()
@@ -228,76 +239,67 @@ class PlannedOrderManager:
     """Static class providing utilities for loading and managing PlannedOrders."""
 
     @staticmethod
-    def from_excel(file_path: str) -> list[PlannedOrder]:
-        """Load and parse planned orders from an Excel template."""
+    def from_excel(file_path: str, config: Optional[Dict[str, Any]] = None) -> list[PlannedOrder]:
+        """Load and parse planned orders from an Excel template with configurable defaults."""
+        config = config or {}
+        order_defaults = config.get('order_defaults', {})
+
+        # Use configurable defaults with fallback to original hardcoded values
+        default_risk = order_defaults.get('risk_per_trade', 0.005)
+        default_rr = order_defaults.get('risk_reward_ratio', 2.0)
+        default_priority = order_defaults.get('priority', 3)
+
         orders = []
         try:
             print(f"Loading Excel file: {file_path}")
             df = pd.read_excel(file_path)
             print(f"Excel loaded successfully. Shape: {df.shape}")
             print(f"Columns: {list(df.columns)}")
-            print("\nFirst 3 rows of data:")
-            print(df.head(3).to_string())
 
             for index, row in df.iterrows():
                 try:
-                    print(f"\n--- Processing row {index + 2} (Excel row {index + 2}) ---")
-                    print("Raw row data:")
-                    for col, value in row.items():
-                        print(f"  {col}: {value} (type: {type(value)})")
-
+                    # Parse enums
                     security_type_str = str(row['Security Type']).strip()
-                    print(f"Security Type: '{security_type_str}'")
                     security_type = SecurityType[security_type_str]
 
                     action_str = str(row['Action']).strip().upper()
-                    print(f"Action: '{action_str}'")
                     action = Action[action_str]
 
                     order_type_str = str(row.get('Order Type', 'LMT')).strip()
-                    print(f"Order Type: '{order_type_str}'")
                     order_type = OrderType[order_type_str] if order_type_str and order_type_str != 'nan' else OrderType.LMT
 
                     position_strategy_str = str(row.get('Position Management Strategy', 'CORE')).strip()
-                    print(f"Position Strategy: '{position_strategy_str}'")
-                    try:
-                        position_strategy = PositionStrategy[position_strategy_str]
-                    except KeyError as e:
-                        print(f"ERROR: Invalid Position Management Strategy: '{position_strategy_str}'")
-                        print(f"Valid options: {[e.value for e in PositionStrategy]}")
-                        raise
+                    position_strategy = PositionStrategy[position_strategy_str]
 
-                    risk_per_trade = float(row.get('Risk Per Trade', 0.005))
-                    print(f"Risk Per Trade: {risk_per_trade}")
+                    # Risk per trade
+                    if pd.notna(row.get("Risk Per Trade")):
+                        risk_per_trade = float(row["Risk Per Trade"])
+                    else:
+                        risk_per_trade = float(order_defaults.get("risk_per_trade", 0.005))
 
-                    entry_price = None
-                    if pd.notna(row.get('Entry Price')):
-                        entry_price = float(row['Entry Price'])
-                    print(f"Entry Price: {entry_price}")
+                    # Entry price
+                    entry_price = float(row["Entry Price"]) if pd.notna(row.get("Entry Price")) else None
 
-                    stop_loss = None
-                    if pd.notna(row.get('Stop Loss')):
-                        stop_loss = float(row['Stop Loss'])
-                    print(f"Stop Loss: {stop_loss}")
+                    # Stop loss
+                    stop_loss = float(row["Stop Loss"]) if pd.notna(row.get("Stop Loss")) else None
 
-                    risk_reward_ratio = float(row.get('Risk Reward Ratio', 2.0))
-                    print(f"Risk Reward Ratio: {risk_reward_ratio}")
+                    # Risk reward ratio
+                    if pd.notna(row.get("Risk Reward Ratio")):
+                        risk_reward_ratio = float(row["Risk Reward Ratio"])
+                    else:
+                        risk_reward_ratio = float(order_defaults.get("risk_reward_ratio", 2.0))
 
-                    priority = int(row.get('Priority', 3))
-                    print(f"Priority: {priority}")
+                    # Priority
+                    if pd.notna(row.get("Priority")):
+                        priority = int(row["Priority"])
+                    else:
+                        priority = int(order_defaults.get("priority", 3))
 
-                    # Phase B Additions - Begin
-                    trading_setup = None
-                    if pd.notna(row.get('Trading Setup')):
-                        trading_setup = str(row['Trading Setup']).strip()
-                    print(f"Trading Setup: '{trading_setup}'")
+                    # Phase B Additions
+                    trading_setup = str(row["Trading Setup"]).strip() if pd.notna(row.get("Trading Setup")) else None
+                    core_timeframe = str(row["Core Timeframe"]).strip() if pd.notna(row.get("Core Timeframe")) else None
 
-                    core_timeframe = None
-                    if pd.notna(row.get('Core Timeframe')):
-                        core_timeframe = str(row['Core Timeframe']).strip()
-                    print(f"Core Timeframe: '{core_timeframe}'")
-                    # Phase B Additions - End
-
+                    # Build PlannedOrder
                     order = PlannedOrder(
                         security_type=security_type,
                         exchange=str(row['Exchange']).strip(),
@@ -311,17 +313,13 @@ class PlannedOrderManager:
                         risk_reward_ratio=risk_reward_ratio,
                         position_strategy=position_strategy,
                         priority=priority,
-                        # Phase B Additions - Begin
                         trading_setup=trading_setup,
-                        core_timeframe=core_timeframe
-                        # Phase B Additions - End
+                        core_timeframe=core_timeframe,
                     )
                     orders.append(order)
-                    print(f"✅ Successfully created order for {order.symbol}")
 
                 except Exception as row_error:
                     print(f"❌ ERROR processing row {index + 2}: {row_error}")
-                    print(f"Row data: {dict(row)}")
                     import traceback
                     traceback.print_exc()
 

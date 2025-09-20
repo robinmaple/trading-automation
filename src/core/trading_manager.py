@@ -78,8 +78,11 @@ class TradingManager:
         # Service layer initialization - initialize core services first
         self.execution_service = OrderExecutionService(self, self.ibkr_client)
         self.sizing_service = PositionSizingService(self)
-        self.loading_service = OrderLoadingService(self, self.db_session)
-        
+        self.loading_service = OrderLoadingService(
+            trading_manager=self,
+            db_session=self.db_session,
+            config=self.trading_config  # <-- PASS CONFIG HERE
+)        
         # Initialize probability engine early to avoid attribute errors
         self.probability_engine = FillProbabilityEngine(self.data_feed)
         
