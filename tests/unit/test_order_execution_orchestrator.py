@@ -341,3 +341,85 @@ class TestOrderExecutionOrchestrator:
         has_duplicate = orchestrator._has_duplicate_active_order(sample_order, active_orders)
         
         assert has_duplicate is False
+
+    def test_configurable_defaults(self):
+        """Test that orchestrator uses configurable values."""
+        # Arrange - Mock all required services
+        mock_services = [
+            Mock(),  # execution_service
+            Mock(),  # sizing_service  
+            Mock(),  # persistence_service
+            Mock(),  # state_service
+            Mock(),  # probability_engine
+            None     # ibkr_client (optional)
+        ]
+        
+        test_config = {
+            'execution': {'min_fill_probability': 0.3},
+            'simulation': {'default_equity': 50000}
+        }
+        
+        # Act
+        orchestrator = OrderExecutionOrchestrator(*mock_services, config=test_config)
+        
+        # Assert
+        assert orchestrator.min_fill_probability == 0.3
+        assert orchestrator.default_capital == 50000
+    
+    def test_fallback_to_hardcoded_defaults(self):
+        """Test fallback to original defaults when no config provided."""
+        # Arrange
+        mock_services = [Mock() for _ in range(6)]
+        
+        # Act
+        orchestrator = OrderExecutionOrchestrator(*mock_services, config=None)
+        
+        # Assert
+        assert orchestrator.min_fill_probability == 0.4
+        assert orchestrator.default_capital == 100000
+    
+    def test_empty_config_uses_hardcoded_defaults(self):
+        """Test that empty config uses hardcoded defaults."""
+        # Arrange
+        mock_services = [Mock() for _ in range(6)]
+        
+        # Act
+        orchestrator = OrderExecutionOrchestrator(*mock_services, config={})
+        
+        # Assert
+        assert orchestrator.min_fill_probability == 0.4
+        assert orchestrator.default_capital == 100000
+    
+    def test_partial_config_uses_mixed_defaults(self):
+        """Test that partial config uses provided values and falls back for others."""
+        # Arrange
+        mock_services = [Mock() for _ in range(6)]
+        test_config = {
+            'execution': {'min_fill_probability': 0.35}
+            # simulation section missing - should use hardcoded default
+        }
+        
+        # Act
+        orchestrator = OrderExecutionOrchestrator(*mock_services, config=test_config)
+        
+        # Assert
+        assert orchestrator.min_fill_probability == 0.35  # From config
+        assert orchestrator.default_capital == 100000     # Hardcoded default
+    
+    def test_config_with_different_data_types(self):
+        """Test that configuration handles different data types correctly."""
+        # Arrange
+        mock_services = [Mock() for _ in range(6)]
+        test_config = {
+            'execution': {'min_fill_probability': 0.25},
+            'simulation': {'default_equity': 75000.0}
+        }
+        
+        # Act
+        orchestrator = OrderExecutionOrchestrator(*mock_services, config=test_config)
+        
+        # Assert
+        assert orchestrator.min_fill_probability == 0.25
+        assert orchestrator.default_capital == 75000.0
+        assert isinstance(orchestrator.min_fill_probability, float)
+        assert isinstance(orchestrator.default_capital, float)

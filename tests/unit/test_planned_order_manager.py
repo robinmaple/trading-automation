@@ -91,6 +91,7 @@ class TestPlannedOrderManagerConfig:
     @patch('pandas.read_excel')
     @patch('builtins.print')  # Suppress print output
     def test_from_excel_fallback_to_hardcoded_defaults(self, mock_print, mock_read_excel):
+
         """Test that falls back to hardcoded defaults when no config provided."""
         # Mock Excel data with missing values
         mock_data = {

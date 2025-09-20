@@ -9,7 +9,7 @@ Handles the complete order execution workflow including:
 """
 
 import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 from src.core.planned_order import PlannedOrder, ActiveOrder
 from src.core.probability_engine import FillProbabilityEngine
 from src.services.order_execution_service import OrderExecutionService
@@ -27,7 +27,8 @@ class OrderExecutionOrchestrator:
                  persistence_service: OrderPersistenceService,
                  state_service: StateService,
                  probability_engine: FillProbabilityEngine,
-                 ibkr_client: Optional[IbkrClient] = None):
+                 ibkr_client: Optional[IbkrClient] = None,
+                 config: Optional[Dict[str, Any]] = None):  # <-- ADD CONFIG PARAMETER
         """Initialize the order execution orchestrator with required services."""
         self.execution_service = execution_service
         self.sizing_service = sizing_service
@@ -35,9 +36,24 @@ class OrderExecutionOrchestrator:
         self.state_service = state_service
         self.probability_engine = probability_engine
         self.ibkr_client = ibkr_client
-        self.default_capital = 100000
-        self.min_fill_probability = 0.4
         
+        # Load configuration instead of hardcoded values
+        self._load_configuration(config or {})
+    
+    def _load_configuration(self, config: Dict[str, Any]) -> None:
+        """Load configuration parameters."""
+        execution_config = config.get('execution', {})
+        simulation_config = config.get('simulation', {})
+        
+        # Use configurable defaults with fallback to original hardcoded values
+        self.min_fill_probability = execution_config.get('min_fill_probability', 0.4)
+        self.default_capital = simulation_config.get('default_equity', 100000)
+        
+        # Optional: Add logging for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"OrderExecutionOrchestrator configured: min_fill_probability={self.min_fill_probability}, default_capital={self.default_capital}")        
+    
     def execute_single_order(self, order: PlannedOrder, fill_probability: float, 
                            effective_priority: Optional[float] = None) -> bool:
         """Execute a single order with viability checks and proper status tracking."""

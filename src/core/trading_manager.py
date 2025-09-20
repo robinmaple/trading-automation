@@ -139,7 +139,8 @@ class TradingManager:
             persistence_service=self.order_persistence_service,
             state_service=self.state_service,
             probability_engine=self.probability_engine,
-            ibkr_client=self.ibkr_client
+            ibkr_client=self.ibkr_client,
+            config=self.trading_config
         )
 
         # Monitoring service
