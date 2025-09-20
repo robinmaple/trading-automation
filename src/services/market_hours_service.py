@@ -54,4 +54,5 @@ class MarketHoursService:
             return f"OPEN ({minutes_until_close} minutes until close)"
         
         return "OPEN"
+    
 # Market Hours Service - End

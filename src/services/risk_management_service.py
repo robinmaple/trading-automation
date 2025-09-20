@@ -27,8 +27,8 @@ class RiskManagementService:
         
         # Risk configuration - could be made configurable
         self.position_limits = {
-            PositionStrategy.CORE: {'single_trade': 0.3, 'total_exposure': 0.6},
-            PositionStrategy.HYBRID: {'single_trade': 0.3, 'total_exposure': 0.6}
+            PositionStrategy.CORE: {'single_trade': 0.2, 'total_exposure': 0.6},
+            PositionStrategy.HYBRID: {'single_trade': 0.2, 'total_exposure': 0.6}
         }
         
         self.loss_limits = {

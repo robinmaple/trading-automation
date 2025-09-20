@@ -16,7 +16,7 @@ from src.core.order_lifecycle_manager import OrderLifecycleManager
 from src.core.advanced_feature_coordinator import AdvancedFeatureCoordinator
 from src.services.prioritization_service import PrioritizationService
 from src.core.ibkr_client import IbkrClient
-from src.core.planned_order import PlannedOrder, ActiveOrder
+from src.core.planned_order import PlannedOrder, ActiveOrder, PositionStrategy
 from src.core.probability_engine import FillProbabilityEngine
 from src.core.abstract_data_feed import AbstractDataFeed
 from src.core.database import get_db_session
@@ -398,8 +398,13 @@ class TradingManager:
             print(f"Market Data: Live price for {test_symbol}: ${current_price:.2f}" if current_price else "No market data")
 
     def _check_market_close_actions(self) -> None:
-        """Check if any positions need to be closed due to market close strategies."""
-        pass
+        """Check if any DAY positions need to be closed 10 minutes before market close."""
+        if self.market_hours.should_close_positions(buffer_minutes=10):
+            # Close all DAY strategy positions 10 minutes before market close
+            day_positions = self.state_service.get_positions_by_strategy(PositionStrategy.DAY)
+            for position in day_positions:
+                print(f"🔚 Closing DAY position {position.symbol} before market close")
+                self._close_single_position(position)
 
     def _close_single_position(self, position) -> None:
         """Orchestrate the closing of a single position through the execution service."""
