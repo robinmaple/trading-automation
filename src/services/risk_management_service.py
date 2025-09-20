@@ -4,44 +4,69 @@ Handles position sizing constraints and loss-based trading halts.
 Uses realized P&L from closed trades for risk calculations.
 """
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Any, Optional
 from decimal import Decimal
 
 from src.core.planned_order import PlannedOrder, PositionStrategy, ActiveOrder
 from src.services.state_service import StateService
 from src.services.order_persistence_service import OrderPersistenceService
+import logging
 
+logger = logging.getLogger(__name__)
 
 class RiskManagementService:
-    """
-    Comprehensive risk management with position limits and loss-based trading halts.
-    Enforces hard blocks with no override capability for discipline.
-    """
+    """Manages trading risk parameters and validations."""
     
-    def __init__(self, state_service: StateService, 
-                 persistence_service: OrderPersistenceService,
-                 ibkr_client=None):
+    def __init__(self, state_service, persistence, ibkr_client=None, config=None):
+        # Parameter order matches actual usage in TradingManager
+        # Parameter names match the resulting attributes
         self.state_service = state_service
-        self.persistence = persistence_service
+        self.persistence = persistence  # This is what tests and other code expect
         self.ibkr_client = ibkr_client
+        # config is handled separately
+            
+        # Load configuration with defaults
+        self._load_configuration(config or {})
         
-        # Risk configuration - could be made configurable
-        self.position_limits = {
-            PositionStrategy.CORE: {'single_trade': 0.2, 'total_exposure': 0.6},
-            PositionStrategy.HYBRID: {'single_trade': 0.2, 'total_exposure': 0.6}
-        }
+    def _load_configuration(self, config: Dict[str, Any]) -> None:
+        """Load and validate risk configuration parameters."""
+        # Extract risk_limits section or use empty dict as fallback
+        risk_config = config.get('risk_limits', {})
         
+        # Set loss limits with defaults from config
         self.loss_limits = {
-            'daily': Decimal('0.02'),    # 2%
-            'weekly': Decimal('0.05'),   # 5%
-            'monthly': Decimal('0.08')   # 8%
+            'daily': risk_config.get('daily_loss_pct', Decimal('0.02')),
+            'weekly': risk_config.get('weekly_loss_pct', Decimal('0.05')),
+            'monthly': risk_config.get('monthly_loss_pct', Decimal('0.08'))
         }
         
-        # Cache for performance
-        self._last_trading_halt_check = None
-        self._trading_halted = False
-        self._halt_reason = ""
-    
+        # Set position limits
+        self.position_limits = {
+            'max_open_orders': risk_config.get('max_open_orders', 5)
+        }
+        
+        # Store max_risk_per_trade for validation
+        self.max_risk_per_trade = risk_config.get('max_risk_per_trade', Decimal('0.02'))
+        
+        # Store simulation equity (fallback to old hardcoded value)
+        simulation_config = config.get('simulation', {})
+        self.simulation_equity = simulation_config.get('default_equity', Decimal('100000'))
+        
+        # Log the configuration for debugging
+        logger.info(f"RiskManagementService configured with: {self.loss_limits}, "
+                   f"max_open_orders: {self.position_limits['max_open_orders']}, "
+                   f"max_risk_per_trade: {self.max_risk_per_trade}")
+
+    def get_account_equity(self) -> Decimal:
+        """Get current account equity from IBKR or use simulation value."""
+        if self.ibkr_client and self.ibkr_client.is_connected():
+            try:
+                return Decimal(str(self.ibkr_client.get_account_value()))
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Failed to get account equity from IBKR: {e}")
+                
+        # Fallback to simulation equity from config
+        return self.simulation_equity  # <-- NOW FROM CONFIG    
     # P&L Calculation Methods - Begin
     def calculate_position_pnl(self, entry_price: float, exit_price: float, 
                              quantity: float, action: str) -> float:

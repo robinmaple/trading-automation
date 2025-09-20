@@ -5,10 +5,12 @@ continuous monitoring, order execution, and active order management.
 Coordinates between data feeds, the IBKR client, service layer, and database.
 """
 import datetime
+from decimal import Decimal
 from typing import List, Dict, Optional
 import threading
 import time
 import pandas as pd
+import logging
 
 from src.core.order_execution_orchestrator import OrderExecutionOrchestrator
 from src.core.monitoring_service import MonitoringService
@@ -34,6 +36,9 @@ from src.services.outcome_labeling_service import OutcomeLabelingService
 from src.services.market_context_service import MarketContextService
 from src.services.historical_performance_service import HistoricalPerformanceService
 from config.prioritization_config import get_config
+from config.trading_core_config import get_config as get_trading_core_config
+
+logger = logging.getLogger(__name__)
 
 class TradingManager:
     """Orchestrates the complete trading lifecycle and manages system state."""
@@ -51,9 +56,14 @@ class TradingManager:
         self.active_orders: Dict[int, ActiveOrder] = {}
         self.monitoring = False
         self.monitor_thread: Optional[threading.Thread] = None
-        self.total_capital = 100000
-        self.max_open_orders = 5
-        self.execution_threshold = 0.7
+
+        self._load_configuration()
+        
+        # Now use values from config instead of hardcoding
+        self.total_capital = float(self.trading_config['simulation']['default_equity'])
+        self.max_open_orders = self.trading_config['risk_limits']['max_open_orders']
+        self.execution_threshold = float(self.trading_config['execution']['fill_probability_threshold'])
+
         self._initialized = False
 
         # Database and persistence setup
@@ -78,13 +88,14 @@ class TradingManager:
             self.probability_engine, self.db_session
         )
 
-        # Risk Management Service - Begin
+        # Risk Management Service - UPDATED WITH CONFIG
         from src.services.risk_management_service import RiskManagementService
         self.risk_service = RiskManagementService(
-            self.state_service,
-            self.order_persistence_service,
-            self.ibkr_client
-        )
+            state_service=self.state_service,
+            persistence=self.order_persistence_service,
+            ibkr_client=self.ibkr_client,
+            config=self.trading_config  # <-- PASS THE CONFIG HERE
+        )        
         # Risk Management Service - End
 
         # Market hours service
@@ -287,7 +298,7 @@ class TradingManager:
     def _can_place_order(self, order) -> bool:
         """Check if an order can be placed based on basic constraints and existing active orders."""
         working_orders = sum(1 for ao in self.active_orders.values() if ao.is_working())
-        if working_orders >= self.max_open_orders:
+        if working_orders >= self.trading_config['risk_limits']['max_open_orders']:
             return False
         if order.entry_price is None:
             return False
@@ -338,7 +349,7 @@ class TradingManager:
         """Get total capital from IBKR or use default."""
         if self.ibkr_client and self.ibkr_client.connected:
             return self.ibkr_client.get_account_value()
-        return self.total_capital
+        return float(self.trading_config['simulation']['default_equity'])
 
     def _get_working_orders(self) -> List[Dict]:
         """Get working orders in format expected by prioritization service."""
@@ -452,3 +463,39 @@ class TradingManager:
             print(f"❌ Failed to close position {position.symbol}: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _load_configuration(self) -> None:
+        """Load trading configuration including prioritization and core config."""
+        try:
+            # Load prioritization config (existing)
+            self.prioritization_config = get_config('default')
+        except Exception:
+            self.prioritization_config = PrioritizationService(self.sizing_service)._get_default_config()
+        
+        try:
+            # Load trading core config (NEW)
+            self.trading_config = get_trading_core_config('default')
+        except Exception as e:
+            # Fallback to hardcoded values if config loading fails
+            logger.warning(f"Failed to load trading core config: {e}. Using defaults.")
+            self.trading_config = {
+                'risk_limits': {
+                    'max_open_orders': 5,
+                    'daily_loss_pct': Decimal('0.02'),
+                    'weekly_loss_pct': Decimal('0.05'),
+                    'monthly_loss_pct': Decimal('0.08'),
+                    'max_risk_per_trade': Decimal('0.02')
+                },
+                'execution': {
+                    'fill_probability_threshold': Decimal('0.7'),
+                    'min_fill_probability': Decimal('0.4')
+                },
+                'order_defaults': {
+                    'risk_per_trade': Decimal('0.005'),
+                    'risk_reward_ratio': Decimal('2.0'),
+                    'priority': 3
+                },
+                'simulation': {
+                    'default_equity': Decimal('100000')
+                }
+            }
