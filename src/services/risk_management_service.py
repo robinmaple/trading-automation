@@ -152,6 +152,19 @@ class RiskManagementService:
             raise ValueError(f"Action must be 'BUY' or 'SELL', got {action}")
     # P&L Calculation Methods - End
     
+    # Risk Capping Implementation - Begin
+    def _cap_risk_to_max_limit(self, order: PlannedOrder) -> None:
+        """
+        Cap the order's risk_per_trade to the maximum allowed value if it exceeds the limit.
+        Logs a warning when capping occurs.
+        """
+        if order.risk_per_trade is not None and order.risk_per_trade > self.max_risk_per_trade:
+            original_risk = order.risk_per_trade
+            order.risk_per_trade = self.max_risk_per_trade
+            logger.warning(f"Risk per trade capped: {original_risk:.3%} -> {self.max_risk_per_trade:.3%} "
+                          f"for order {order.symbol} {order.action.value}")
+    # Risk Capping Implementation - End
+    
     def can_place_order(self, order: PlannedOrder, 
                        active_orders: Dict[int, ActiveOrder], 
                        total_capital: float) -> bool:
@@ -161,8 +174,11 @@ class RiskManagementService:
         # 1. Check trading halts first (highest priority - loss limits)
         if not self._check_trading_halts():
             return False
+        
+        # 2. Cap risk_per_trade to maximum allowed instead of rejecting
+        self._cap_risk_to_max_limit(order)
             
-        # 2. Check position sizing for CORE/HYBRID strategies
+        # 3. Check position sizing for CORE/HYBRID strategies
         if not self._validate_position_limits(order, active_orders, total_capital):
             return False
             

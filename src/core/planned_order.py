@@ -121,8 +121,10 @@ class PlannedOrder:
             raise ValueError("Priority cannot be None")
         # Check for None values first - End
 
-        if self.risk_per_trade > 0.02:
-            raise ValueError("Risk per trade cannot exceed 2%")
+        # Risk capping now handled by RiskManagementService - Begin
+        # Removed: if self.risk_per_trade > 0.02: raise ValueError("Risk per trade cannot exceed 2%")
+        # Risk capping now handled by RiskManagementService - End
+        
         if not 1 <= self.priority <= 5:
             raise ValueError("Priority must be between 1 and 5")
         # Phase B Additions - Begin

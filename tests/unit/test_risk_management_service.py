@@ -251,6 +251,212 @@ class TestRiskManagementService(unittest.TestCase):
         expected = (123.567890 - 123.456789) * 1000
         self.assertAlmostEqual(pnl, expected, places=6)
 
+# Risk Capping Functionality Tests - Begin
+# Risk Capping Functionality Tests - Begin
+class TestRiskCappingFunctionality(unittest.TestCase):
+    """Test suite for RiskManagementService risk capping functionality."""
+    
+    def setUp(self):
+        """Set up test fixtures before each test method."""
+        self.mock_state_service = MagicMock(spec=StateService)
+        self.mock_persistence = MagicMock(spec=OrderPersistenceService)
+        self.mock_ibkr_client = MagicMock()
+        
+        # Create risk service with specific config for testing
+        # Use the proper config structure that matches RiskManagementService expectations
+        test_config = {
+            'position_limits': {},
+            'loss_limits': {
+                'daily': Decimal('0.02'),
+                'weekly': Decimal('0.05'), 
+                'monthly': Decimal('0.08')
+            },
+            'check_intervals': {
+                'trading_halt_check': 300
+            },
+            'defaults': {
+                'simulation_equity': Decimal('100000')
+            }
+        }
+        
+        self.risk_service = RiskManagementService(
+            state_service=self.mock_state_service,
+            persistence_service=self.mock_persistence,
+            ibkr_client=self.mock_ibkr_client,
+            config=test_config
+        )
+        
+        # MANUALLY SET THE max_risk_per_trade ATTRIBUTE since config loading is complex
+        self.risk_service.max_risk_per_trade = Decimal('0.02')  # 2% max
+    
+    def test_cap_risk_to_max_limit_exceeds_max(self):
+        """Test that risk_per_trade is capped when exceeding max_risk_per_trade."""
+        # Create a mock order with risk exceeding max
+        mock_order = MagicMock()
+        mock_order.risk_per_trade = Decimal('0.03')  # 3% > 2% max
+        mock_order.symbol = 'TEST'
+        mock_order.action.value = 'BUY'
+        
+        # Apply risk capping
+        self.risk_service._cap_risk_to_max_limit(mock_order)
+        
+        # Should be capped to 2%
+        self.assertEqual(mock_order.risk_per_trade, Decimal('0.02'))
+    
+    def test_cap_risk_to_max_limit_within_limit(self):
+        """Test that risk_per_trade remains unchanged when within limits."""
+        # Create a mock order with risk within limits
+        mock_order = MagicMock()
+        original_risk = Decimal('0.015')  # 1.5% < 2% max
+        mock_order.risk_per_trade = original_risk
+        mock_order.symbol = 'TEST'
+        mock_order.action.value = 'BUY'
+        
+        # Apply risk capping
+        self.risk_service._cap_risk_to_max_limit(mock_order)
+        
+        # Should remain unchanged
+        self.assertEqual(mock_order.risk_per_trade, original_risk)
+    
+    def test_cap_risk_to_max_limit_equal_to_max(self):
+        """Test that risk_per_trade remains unchanged when equal to max."""
+        # Create a mock order with risk equal to max
+        mock_order = MagicMock()
+        original_risk = Decimal('0.02')  # 2% = 2% max
+        mock_order.risk_per_trade = original_risk
+        mock_order.symbol = 'TEST'
+        mock_order.action.value = 'BUY'
+        
+        # Apply risk capping
+        self.risk_service._cap_risk_to_max_limit(mock_order)
+        
+        # Should remain unchanged
+        self.assertEqual(mock_order.risk_per_trade, original_risk)
+    
+    @patch('src.services.risk_management_service.logger')
+    def test_cap_risk_logs_warning_when_capped(self, mock_logger):
+        """Test that risk capping logs a warning when values are capped."""
+        # Create a mock order with risk exceeding max
+        mock_order = MagicMock()
+        mock_order.risk_per_trade = Decimal('0.03')  # 3% > 2% max
+        mock_order.symbol = 'TEST'
+        mock_order.action.value = 'BUY'
+        
+        # Apply risk capping
+        self.risk_service._cap_risk_to_max_limit(mock_order)
+        
+        # Should log warning
+        mock_logger.warning.assert_called_once()
+        warning_msg = mock_logger.warning.call_args[0][0]
+        self.assertIn('capped', warning_msg.lower())
+        self.assertIn('3.000%', warning_msg)
+        self.assertIn('2.000%', warning_msg)
+    
+    @patch('src.services.risk_management_service.logger')
+    def test_cap_risk_no_warning_when_within_limits(self, mock_logger):
+        """Test that no warning is logged when risk is within limits."""
+        # Create a mock order with risk within limits
+        mock_order = MagicMock()
+        mock_order.risk_per_trade = Decimal('0.015')  # 1.5% < 2% max
+        mock_order.symbol = 'TEST'
+        mock_order.action.value = 'BUY'
+        
+        # Apply risk capping
+        self.risk_service._cap_risk_to_max_limit(mock_order)
+        
+        # Should not log warning
+        mock_logger.warning.assert_not_called()
+    
+    def test_can_place_order_with_capped_risk(self):
+        """Test that orders with capped risk can still be placed."""
+        # Create a mock order with risk exceeding max
+        mock_order = MagicMock()
+        mock_order.risk_per_trade = Decimal('0.03')  # 3% > 2% max
+        mock_order.symbol = 'TEST'
+        mock_order.position_strategy = PositionStrategy.DAY  # No position limits
+        
+        # Mock other risk checks to pass
+        with patch.object(self.risk_service, '_check_trading_halts', return_value=True), \
+             patch.object(self.risk_service, '_validate_position_limits', return_value=True):
+            
+            # Should return True (order allowed with capped risk)
+            result = self.risk_service.can_place_order(
+                mock_order, {}, 100000.0
+            )
+            
+            self.assertTrue(result)
+            # Risk should be capped to 2%
+            self.assertEqual(mock_order.risk_per_trade, Decimal('0.02'))
+    
+    def test_can_place_order_still_rejects_other_violations(self):
+        """Test that other risk violations still cause rejection despite capping."""
+        # Create a mock order with risk exceeding max
+        mock_order = MagicMock()
+        mock_order.risk_per_trade = Decimal('0.03')  # 3% > 2% max
+        mock_order.symbol = 'TEST'
+        mock_order.position_strategy = PositionStrategy.CORE
+        
+        # Mock trading halts to fail
+        with patch.object(self.risk_service, '_check_trading_halts', return_value=False):
+            
+            # Should return False (trading halted)
+            result = self.risk_service.can_place_order(
+                mock_order, {}, 100000.0
+            )
+            
+            self.assertFalse(result)
+    
+    def test_different_max_risk_configurations(self):
+        """Test that different max_risk_per_trade config values work correctly."""
+        # Create a new risk service with 1% max risk
+        risk_service_1pct = RiskManagementService(
+            state_service=self.mock_state_service,
+            persistence_service=self.mock_persistence,
+            ibkr_client=self.mock_ibkr_client,
+            config={}  # Empty config, we'll set attribute manually
+        )
+        
+        # MANUALLY SET THE max_risk_per_trade ATTRIBUTE
+        risk_service_1pct.max_risk_per_trade = Decimal('0.01')  # 1% max
+        
+        mock_order = MagicMock()
+        mock_order.risk_per_trade = Decimal('0.02')  # 2% > 1% max
+        mock_order.symbol = 'TEST'
+        mock_order.action.value = 'BUY'
+        
+        # Should cap to 1%
+        risk_service_1pct._cap_risk_to_max_limit(mock_order)
+        self.assertEqual(mock_order.risk_per_trade, Decimal('0.01'))
+    
+    def test_cap_risk_with_none_value(self):
+        """Test that risk capping handles None risk_per_trade gracefully."""
+        mock_order = MagicMock()
+        mock_order.risk_per_trade = None  # None value
+        mock_order.symbol = 'TEST'
+        mock_order.action.value = 'BUY'
+        
+        # Should not raise exception
+        try:
+            self.risk_service._cap_risk_to_max_limit(mock_order)
+            success = True
+        except Exception:
+            success = False
+        
+        self.assertTrue(success, "Should handle None risk_per_trade gracefully")
+    
+    def test_cap_risk_with_zero_value(self):
+        """Test that risk capping handles zero risk_per_trade."""
+        mock_order = MagicMock()
+        mock_order.risk_per_trade = Decimal('0.00')  # 0% risk
+        mock_order.symbol = 'TEST'
+        mock_order.action.value = 'BUY'
+        
+        # Apply risk capping
+        self.risk_service._cap_risk_to_max_limit(mock_order)
+        
+        # Should remain 0% (though this would fail other validations)
+        self.assertEqual(mock_order.risk_per_trade, Decimal('0.00'))
+# Risk Capping Functionality Tests - End# Risk Capping Functionality Tests - End
 
 if __name__ == '__main__':
     unittest.main()
