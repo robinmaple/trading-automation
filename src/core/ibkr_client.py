@@ -12,12 +12,12 @@ import threading
 import datetime
 
 from src.core.ibkr_types import IbkrOrder, IbkrPosition
-
+from src.core.account_utils import is_paper_account  # ADD THIS IMPORT
 
 class IbkrClient(EClient, EWrapper):
     """Manages the connection and all communication with the IBKR trading API."""
 
-    def __init__(self):
+    def __init__(self, host='127.0.0.1', port=7497, client_id=1):  # ADD DEFAULT PARAMETERS
         """Initialize the client, connection flags, and data stores."""
         EClient.__init__(self, self)
         self.next_valid_id = None
@@ -27,9 +27,15 @@ class IbkrClient(EClient, EWrapper):
         self.account_value_received = threading.Event()
         self.order_history = []
         self.account_number = None
+        self.account_name = None  # ADD ACCOUNT NAME STORAGE
         self.is_paper_account = False
         self.account_ready_event = threading.Event()
         self.displayed_errors = set()
+
+        # Store connection parameters
+        self.host = host
+        self.port = port
+        self.client_id = client_id
 
         # Reconciliation data tracking
         self.open_orders: List[IbkrOrder] = []
@@ -39,13 +45,19 @@ class IbkrClient(EClient, EWrapper):
         self.open_orders_end_received = False
         self.positions_end_received = False
 
-    def connect(self, host='127.0.0.1', port=7497, client_id=0) -> bool:
+    def connect(self, host: Optional[str] = None, port: Optional[int] = None, 
+                client_id: Optional[int] = None) -> bool:
         """Establish a connection to IB Gateway/TWS. Returns success status."""
         try:
-            EClient.connect(self, host, port, client_id)
+            # Use provided parameters or fall back to instance defaults
+            connect_host = host or self.host
+            connect_port = port or self.port
+            connect_client_id = client_id or self.client_id
+            
+            EClient.connect(self, connect_host, connect_port, connect_client_id)
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
-            print(f"Connecting to IB API at {host}:{port}...")
+            print(f"Connecting to IB API at {connect_host}:{connect_port}...")
             return self.connection_event.wait(10)
         except Exception as e:
             print(f"Connection failed: {e}")
@@ -56,6 +68,10 @@ class IbkrClient(EClient, EWrapper):
         if self.connected:
             super().disconnect()
             self.connected = False
+
+    def get_account_name(self) -> Optional[str]:
+        """Get the connected account name."""
+        return self.account_name
 
     def get_account_value(self) -> float:
         """Request and return the Net Liquidation value of the account."""
@@ -335,9 +351,11 @@ class IbkrClient(EClient, EWrapper):
 
         if accountsList:
             self.account_number = accountsList.split(',')[0].strip()
-            self.is_paper_account = self.account_number.startswith('DU')
+            self.account_name = self.account_number  # Store account name for detection
+            self.is_paper_account = is_paper_account(self.account_name)  # Use utility function
+            
             env = "PAPER" if self.is_paper_account else "PRODUCTION"
-            print(f"🎯 Auto-detected environment: {env} (Account: {self.account_number})")
+            print(f"🎯 Auto-detected environment: {env} (Account: {self.account_name})")
             self.account_ready_event.set()
 
     def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice) -> None:

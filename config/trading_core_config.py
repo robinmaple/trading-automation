@@ -5,8 +5,10 @@ Contains risk limits, execution thresholds, order defaults, and simulation setti
 
 from decimal import Decimal
 from typing import Any, Dict
+import copy
 
-DEFAULT_TRADING_CORE_CONFIG: Dict[str, Any] = {
+# Base configuration structure
+BASE_TRADING_CORE_CONFIG: Dict[str, Any] = {
     'risk_limits': {
         'daily_loss_pct': Decimal('0.02'),    # 2%
         'weekly_loss_pct': Decimal('0.05'),   # 5%
@@ -41,12 +43,35 @@ DEFAULT_TRADING_CORE_CONFIG: Dict[str, Any] = {
     }
 }
 
+# Paper trading configuration - same as base but with explicit name
+PAPER_TRADING_CONFIG = copy.deepcopy(BASE_TRADING_CORE_CONFIG)
+
+# Live trading configuration - more conservative settings
+LIVE_TRADING_CONFIG = copy.deepcopy(BASE_TRADING_CORE_CONFIG)
+LIVE_TRADING_CONFIG['risk_limits'].update({
+    'daily_loss_pct': Decimal('0.015'),   # 1.5% (more conservative)
+    'weekly_loss_pct': Decimal('0.04'),   # 4% (more conservative)
+    'monthly_loss_pct': Decimal('0.06'),  # 6% (more conservative)
+    'max_risk_per_trade': Decimal('0.015') # 1.5% (more conservative)
+})
+LIVE_TRADING_CONFIG['order_defaults'].update({
+    'risk_per_trade': Decimal('0.003'),   # 0.3% (more conservative)
+    'risk_reward_ratio': Decimal('2.5')   # 2.5 (higher reward target)
+})
+
+# Environment configurations
+CONFIGS = {
+    'paper': PAPER_TRADING_CONFIG,
+    'live': LIVE_TRADING_CONFIG,
+    'default': BASE_TRADING_CORE_CONFIG
+}
+
 def get_config(environment: str = 'default') -> Dict[str, Any]:
     """
     Get trading core configuration for specific environment.
     
     Args:
-        environment: Configuration environment. Currently only 'default' is supported.
+        environment: Configuration environment ('paper', 'live', 'default')
         
     Returns:
         Configuration dictionary for the specified environment.
@@ -54,17 +79,12 @@ def get_config(environment: str = 'default') -> Dict[str, Any]:
     Raises:
         ValueError: If the requested environment is not found.
     """
-    configs = {
-        'default': DEFAULT_TRADING_CORE_CONFIG,
-    }
-    
-    if environment not in configs:
+    if environment not in CONFIGS:
         raise ValueError(f"Unknown trading core environment: {environment}. "
-                         f"Available: {list(configs.keys())}")
+                         f"Available: {list(CONFIGS.keys())}")
     
-    # Return a deep copy to prevent accidental mutation of the default config
-    import copy
-    return copy.deepcopy(configs[environment])
+    # Return a deep copy to prevent accidental mutation
+    return copy.deepcopy(CONFIGS[environment])
 
 def validate_config(config: Dict[str, Any]) -> tuple[bool, str]:
     """
@@ -125,17 +145,27 @@ def validate_config(config: Dict[str, Any]) -> tuple[bool, str]:
 
 # Example usage and self-test when run directly
 if __name__ == "__main__":
-    # Test loading default config
-    try:
-        config = get_config('default')
-        print("✓ Successfully loaded default configuration")
-        
-        # Validate the configuration
-        is_valid, message = validate_config(config)
-        if is_valid:
-            print("✓ Configuration validation passed")
-        else:
-            print(f"✗ Configuration validation failed: {message}")
+    # Test loading all environment configs
+    environments = ['paper', 'live', 'default']
+    
+    for env in environments:
+        try:
+            config = get_config(env)
+            print(f"✓ Successfully loaded {env} configuration")
             
-    except Exception as e:
-        print(f"✗ Failed to load configuration: {e}")
+            # Validate the configuration
+            is_valid, message = validate_config(config)
+            if is_valid:
+                print(f"✓ {env} configuration validation passed")
+                
+                # Show some key differences
+                if env == 'live':
+                    print(f"  Live settings: {config['risk_limits']['daily_loss_pct']} daily loss, "
+                          f"{config['order_defaults']['risk_per_trade']} risk/trade")
+            else:
+                print(f"✗ {env} configuration validation failed: {message}")
+                
+        except Exception as e:
+            print(f"✗ Failed to load {env} configuration: {e}")
+        
+        print()

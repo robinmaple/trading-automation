@@ -12,6 +12,7 @@ import time
 import pandas as pd
 import logging
 
+from core.account_utils import detect_trading_environment
 from src.core.order_execution_orchestrator import OrderExecutionOrchestrator
 from src.core.monitoring_service import MonitoringService
 from src.core.order_lifecycle_manager import OrderLifecycleManager
@@ -35,7 +36,6 @@ from src.services.market_hours_service import MarketHoursService
 from src.services.outcome_labeling_service import OutcomeLabelingService
 from src.services.market_context_service import MarketContextService
 from src.services.historical_performance_service import HistoricalPerformanceService
-from config.prioritization_config import get_config
 from config.trading_core_config import get_config as get_trading_core_config
 from src.services.risk_management_service import RiskManagementService
 
@@ -166,13 +166,6 @@ class TradingManager:
             sizing_service=self.sizing_service,
             config=self.prioritization_config
         )
-
-    def _load_configuration(self) -> None:
-        """Load trading configuration including prioritization config."""
-        try:
-            self.prioritization_config = get_config('default')
-        except Exception:
-            self.prioritization_config = PrioritizationService(self.sizing_service)._get_default_config()
 
     def _initialize(self) -> bool:
         """Complete initialization with advanced services and validation."""
@@ -415,41 +408,72 @@ class TradingManager:
             import traceback
             traceback.print_exc()
     
-    def _load_configuration(self) -> None:
-        """Load trading configuration including prioritization and core config."""
-        try:
-            # Load prioritization config (existing)
-            self.prioritization_config = get_config('default')
-        except Exception:
-            self.prioritization_config = PrioritizationService(self.sizing_service)._get_default_config()
+    def _get_trading_environment(self) -> str:
+        """
+        Detect trading environment based on connected account.
         
+        Returns:
+            'paper' for paper trading, 'live' for live trading
+        """
+        if self.ibkr_client and self.ibkr_client.connected:
+            account_name = self.ibkr_client.get_account_name()
+            return detect_trading_environment(account_name)
+        else:
+            # No IBKR connection = simulation/paper mode
+            return 'paper'
+
+    def _load_configuration(self) -> None:
+        """Load trading configuration for the detected environment."""
         try:
-            # Load trading core config (NEW)
-            self.trading_config = get_trading_core_config('default')
+            # Detect environment automatically
+            environment = self._get_trading_environment()
+            
+            # Load appropriate trading core config
+            self.trading_config = get_trading_core_config(environment)
+            
+            logger.info(f"Loaded {environment} trading configuration")
+            
         except Exception as e:
-            # Fallback to hardcoded values if config loading fails
-            logger.warning(f"Failed to load trading core config: {e}. Using defaults.")
-            self.trading_config = {
-                'risk_limits': {
-                    'max_open_orders': 5,
-                    'daily_loss_pct': Decimal('0.02'),
-                    'weekly_loss_pct': Decimal('0.05'),
-                    'monthly_loss_pct': Decimal('0.08'),
-                    'max_risk_per_trade': Decimal('0.02')
-                },
-                'execution': {
-                    'fill_probability_threshold': Decimal('0.7'),
-                    'min_fill_probability': Decimal('0.4')
-                },
-                'order_defaults': {
-                    'risk_per_trade': Decimal('0.005'),
-                    'risk_reward_ratio': Decimal('2.0'),
-                    'priority': 3
-                },
-                'simulation': {
-                    'default_equity': Decimal('100000')
-                }
+            # Fallback to hardcoded defaults
+            logger.warning(f"Failed to load configuration: {e}. Using defaults.")
+            self._load_fallback_config()
+    
+    def _load_fallback_config(self) -> None:
+        """Load fallback configuration with hardcoded defaults."""
+        self.trading_config = {
+            'risk_limits': {
+                'max_open_orders': 5,
+                'daily_loss_pct': Decimal('0.02'),
+                'weekly_loss_pct': Decimal('0.05'),
+                'monthly_loss_pct': Decimal('0.08'),
+                'max_risk_per_trade': Decimal('0.02')
+            },
+            'execution': {
+                'fill_probability_threshold': Decimal('0.7'),
+                'min_fill_probability': Decimal('0.4')
+            },
+            'order_defaults': {
+                'risk_per_trade': Decimal('0.005'),
+                'risk_reward_ratio': Decimal('2.0'),
+                'priority': 3
+            },
+            'simulation': {
+                'default_equity': Decimal('100000')
+            },
+            'monitoring': {
+                'interval_seconds': 5,
+                'max_errors': 10,
+                'error_backoff_base': 60,
+                'max_backoff': 300
+            },
+            'market_close': {
+                'buffer_minutes': 10
+            },
+            'labeling': {
+                'hours_back': 24,
+                'state_change_hours_back': 1
             }
+        }
 
     # src/core/trading_manager.py - Fix the _check_market_close_actions method
     def _check_market_close_actions(self) -> None:
