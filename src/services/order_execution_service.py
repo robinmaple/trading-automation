@@ -33,7 +33,8 @@ class OrderExecutionService:
     # Phase B Additions - Begin
     def _record_order_attempt(self, planned_order, attempt_type, fill_probability=None,
                             effective_priority=None, quantity=None, capital_commitment=None,
-                            status=None, ib_order_ids=None, details=None):
+                            status=None, ib_order_ids=None, details=None,
+                            account_number: Optional[str] = None):
         """
         Record an order attempt to the database for Phase B tracking.
         
@@ -47,6 +48,7 @@ class OrderExecutionService:
             status: Status of the attempt
             ib_order_ids: IBKR order IDs if available
             details: Additional details or error messages
+            account_number: Account number for the attempt
         """
         if not self.order_persistence or not hasattr(self.order_persistence, 'db_session'):
             return None
@@ -64,7 +66,8 @@ class OrderExecutionService:
                 capital_commitment=capital_commitment,
                 status=status,
                 ib_order_ids=ib_order_ids,
-                details=details
+                details=details,
+                account_number=account_number  # Store account number
             )
             
             self.order_persistence.db_session.add(attempt)
@@ -77,6 +80,7 @@ class OrderExecutionService:
             return None
     # Phase B Additions - End
 
+    # Account Context Integration - Begin
     def place_order(
         self,
         planned_order,
@@ -85,7 +89,8 @@ class OrderExecutionService:
         total_capital=None,
         quantity=None,
         capital_commitment=None,
-        is_live_trading=False
+        is_live_trading=False,
+        account_number: Optional[str] = None
     ) -> bool:
         """Place an order for a PlannedOrder, tracking fill probability (Phase B)."""
         return self.execute_single_order(
@@ -95,8 +100,10 @@ class OrderExecutionService:
             total_capital,
             quantity,
             capital_commitment,
-            is_live_trading
+            is_live_trading,
+            account_number  # Pass account number
         )
+    # Account Context Integration - End
 
     def _validate_order_margin(self, order, quantity, total_capital) -> tuple[bool, str]:
         """Validate if the order has sufficient margin before execution."""
@@ -111,6 +118,7 @@ class OrderExecutionService:
         except Exception as e:
             return False, f"Margin validation error: {e}"
 
+    # Account Context Integration - Begin
     def execute_single_order(
         self,
         order,
@@ -119,7 +127,8 @@ class OrderExecutionService:
         total_capital=None,
         quantity=None,
         capital_commitment=None,
-        is_live_trading=False
+        is_live_trading=False,
+        account_number: Optional[str] = None
     ) -> bool:
         """
         Execute a single order while incorporating fill probability into ActiveOrder tracking.
@@ -137,7 +146,8 @@ class OrderExecutionService:
             # Record failed attempt due to margin validation
             self._record_order_attempt(
                 order, 'PLACEMENT', fill_probability, effective_priority,
-                quantity, capital_commitment, 'FAILED', None, margin_message
+                quantity, capital_commitment, 'FAILED', None, margin_message,
+                account_number  # Pass account number
             )
             # Phase B Additions - End
             return False
@@ -152,7 +162,8 @@ class OrderExecutionService:
             # Record placement attempt before execution
             attempt_id = self._record_order_attempt(
                 order, 'PLACEMENT', fill_probability, effective_priority,
-                quantity, capital_commitment, 'SUBMITTING', None, None
+                quantity, capital_commitment, 'SUBMITTING', None, None,
+                account_number  # Pass account number
             )
             # Phase B Additions - End
             
@@ -180,20 +191,23 @@ class OrderExecutionService:
                 # Update attempt with failure
                 self._record_order_attempt(
                     order, 'PLACEMENT', fill_probability, effective_priority,
-                    quantity, capital_commitment, 'FAILED', None, rejection_reason
+                    quantity, capital_commitment, 'FAILED', None, rejection_reason,
+                    account_number  # Pass account number
                 )
                 # Phase B Additions - End
                 return False
 
-            # Phase B: Record execution once, track fill probability
+            # Account Context Integration - Begin
+            # Pass account number to persistence service
             execution_id = self.order_persistence.record_order_execution(
                 order,
                 order.entry_price,
                 quantity,
+                account_number,  # Pass account number
                 status='SUBMITTED',
-                is_live_trading=is_live_trading,
-                fill_probability=fill_probability
+                is_live_trading=is_live_trading
             )
+            # Account Context Integration - End
 
             # Create ActiveOrder with unified tracking
             db_id = self._trading_manager._find_planned_order_db_id(order)
@@ -216,11 +230,12 @@ class OrderExecutionService:
             # Update attempt with success and order IDs
             self._record_order_attempt(
                 order, 'PLACEMENT', fill_probability, effective_priority,
-                quantity, capital_commitment, 'SUBMITTED', order_ids, None
+                quantity, capital_commitment, 'SUBMITTED', order_ids, None,
+                account_number  # Pass account number
             )
             # Phase B Additions - End
             
-            print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR")
+            print(f"✅ REAL ORDER PLACED: Order IDs {order_ids} sent to IBKR (Account: {account_number})")
             return True
 
         # === SIMULATION PATH ===
@@ -231,19 +246,24 @@ class OrderExecutionService:
             # Record simulation attempt
             self._record_order_attempt(
                 order, 'PLACEMENT', fill_probability, effective_priority,
-                quantity, capital_commitment, 'SIMULATION', None, None
+                quantity, capital_commitment, 'SIMULATION', None, None,
+                account_number  # Pass account number
             )
             # Phase B Additions - End
             
             update_success = self.order_persistence.update_order_status(order, 'FILLED')
+            
+            # Account Context Integration - Begin
+            # Pass account number to persistence service
             execution_id = self.order_persistence.record_order_execution(
                 order,
                 order.entry_price,
                 quantity,
+                account_number,  # Pass account number
                 status='FILLED',
-                is_live_trading=is_live_trading,
-                fill_probability=fill_probability
+                is_live_trading=is_live_trading
             )
+            # Account Context Integration - End
 
             db_id = self._trading_manager._find_planned_order_db_id(order)
             if db_id:
@@ -259,6 +279,7 @@ class OrderExecutionService:
                 )
                 self.active_orders[active_order.order_ids[0]] = active_order
             return True
+    # Account Context Integration - End
 
     def cancel_order(self, order_id) -> bool:
         """Cancel a working order by delegating to the trading manager's logic."""
@@ -275,7 +296,8 @@ class OrderExecutionService:
             self._record_order_attempt(
                 active_order.planned_order, 'CANCELLATION',
                 active_order.fill_probability, None, None, None,
-                'ATTEMPTING', [order_id], None
+                'ATTEMPTING', [order_id], None,
+                active_order.account_number if hasattr(active_order, 'account_number') else None
             )
         # Phase B Additions - End
         
@@ -289,16 +311,17 @@ class OrderExecutionService:
             self._record_order_attempt(
                 active_order.planned_order, 'CANCELLATION',
                 active_order.fill_probability, None, None, None,
-                status, [order_id], details
+                status, [order_id], details,
+                active_order.account_number if hasattr(active_order, 'account_number') else None
             )
         # Phase B Additions - End
         
         return success
 
-    def close_position(self, position_data: Dict) -> Optional[int]:
+    def close_position(self, position_data: Dict, account_number: Optional[str] = None) -> Optional[int]:
         """Close an open position by placing a market order through IBKR."""
         if not self._ibkr_client or not self._ibkr_client.connected:
-            print(f"✅ Simulation: Would close {position_data['symbol']} position")
+            print(f"✅ Simulation: Would close {position_data['symbol']} position (Account: {account_number})")
             return None
         try:
             contract = Contract()
@@ -317,7 +340,7 @@ class OrderExecutionService:
             self._ibkr_client.placeOrder(order_id, contract, order)
             self._ibkr_client.next_valid_id += 1
 
-            print(f"✅ Closing market order placed for {position_data['symbol']} (ID: {order_id})")
+            print(f"✅ Closing market order placed for {position_data['symbol']} (ID: {order_id}, Account: {account_number})")
             return order_id
         except Exception as e:
             print(f"❌ Failed to close position {position_data['symbol']}: {e}")

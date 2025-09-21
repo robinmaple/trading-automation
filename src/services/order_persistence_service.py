@@ -22,10 +22,11 @@ class OrderPersistenceService:
         """Initialize the service with an optional database session."""
         self.db_session = db_session or get_db_session()
 
+    # Account Tracking Implementation - Begin
     def record_order_execution(self, planned_order, filled_price: float,
-                             filled_quantity: float, commission: float = 0.0,
-                             status: str = 'FILLED', is_live_trading: bool = False) -> Optional[int]:
-        """Record an order execution in the database. Returns the ID of the new record or None."""
+                             filled_quantity: float, account_number: str,
+                             commission: float = 0.0, status: str = 'FILLED') -> Optional[int]:
+        """Record an order execution in the database with account context. Returns the ID of the new record or None."""
         try:
             planned_order_id = self._find_planned_order_id(planned_order)
             if planned_order_id is None:
@@ -44,7 +45,8 @@ class OrderPersistenceService:
                 commission=commission,
                 status=status,
                 executed_at=datetime.datetime.now(),
-                is_live_trading=is_live_trading
+                is_live_trading=account_number.startswith('U'),  # Live accounts start with 'U'
+                account_number=account_number  # Store which account executed this
             )
 
             if planned_order.position_strategy.value == 'HYBRID':
@@ -55,7 +57,7 @@ class OrderPersistenceService:
             self.db_session.add(executed_order)
             self.db_session.commit()
 
-            print(f"✅ Execution recorded for {planned_order.symbol}: "
+            print(f"✅ Execution recorded for {planned_order.symbol} (Account: {account_number}): "
                   f"{filled_quantity} @ {filled_price}, Status: {status}")
 
             return executed_order.id
@@ -66,6 +68,71 @@ class OrderPersistenceService:
             import traceback
             traceback.print_exc()
             return None
+
+    def create_executed_order(self, planned_order, fill_info, account_number: str) -> Optional[ExecutedOrderDB]:
+        """Create an ExecutedOrderDB record from a PlannedOrder and fill information with account context."""
+        try:
+            planned_order_id = self._find_planned_order_id(planned_order)
+            if not planned_order_id:
+                print(f"❌ Cannot create executed order: Planned order not found for {planned_order.symbol}")
+                return None
+
+            executed_order = ExecutedOrderDB(
+                planned_order_id=planned_order_id,
+                filled_price=fill_info.get('price', 0),
+                filled_quantity=fill_info.get('quantity', 0),
+                commission=fill_info.get('commission', 0),
+                pnl=fill_info.get('pnl', 0),
+                status=fill_info.get('status', 'FILLED'),
+                executed_at=datetime.datetime.now(),
+                account_number=account_number,  # Store which account executed this
+                is_live_trading=account_number.startswith('U')  # Live accounts start with 'U'
+            )
+
+            self.db_session.add(executed_order)
+            self.db_session.commit()
+
+            print(f"✅ Created executed order for {planned_order.symbol} (Account: {account_number})")
+            return executed_order
+
+        except Exception as e:
+            self.db_session.rollback()
+            print(f"❌ Failed to create executed order: {e}")
+            return None
+
+    def get_realized_pnl_period(self, account_number: str, days: int) -> Decimal:
+        """Get realized P&L for specific account for the last N calendar days."""
+        start_date = datetime.datetime.now() - datetime.timedelta(days=days)
+        
+        result = self.db_session.execute(
+            text("""
+                SELECT COALESCE(SUM(realized_pnl), 0) 
+                FROM executed_orders 
+                WHERE exit_time >= :start_date AND account_number = :account_number
+            """),
+            {'start_date': start_date, 'account_number': account_number}
+        ).scalar()
+        
+        return Decimal(str(result or '0'))
+
+    def record_realized_pnl(self, order_id: int, symbol: str, pnl: Decimal, 
+                          exit_date: datetime, account_number: str):
+        """Record realized P&L for a closed trade with account context."""
+        self.db_session.execute(
+            text("""
+                INSERT INTO executed_orders (order_id, symbol, realized_pnl, exit_time, account_number)
+                VALUES (:order_id, :symbol, :pnl, :exit_time, :account_number)
+            """),
+            {
+                'order_id': order_id,
+                'symbol': symbol,
+                'pnl': float(pnl),
+                'exit_time': exit_date,
+                'account_number': account_number
+            }
+        )
+        self.db_session.commit()
+    # Account Tracking Implementation - End
 
     def _find_planned_order_id(self, planned_order) -> Optional[int]:
         """Find the database ID for a planned order based on its parameters."""
@@ -110,35 +177,6 @@ class OrderPersistenceService:
         except Exception as e:
             print(f"❌ Failed to convert planned order to DB model: {e}")
             raise
-
-    def create_executed_order(self, planned_order, fill_info) -> Optional[ExecutedOrderDB]:
-        """Create an ExecutedOrderDB record from a PlannedOrder and fill information."""
-        try:
-            planned_order_id = self._find_planned_order_id(planned_order)
-            if not planned_order_id:
-                print(f"❌ Cannot create executed order: Planned order not found for {planned_order.symbol}")
-                return None
-
-            executed_order = ExecutedOrderDB(
-                planned_order_id=planned_order_id,
-                filled_price=fill_info.get('price', 0),
-                filled_quantity=fill_info.get('quantity', 0),
-                commission=fill_info.get('commission', 0),
-                pnl=fill_info.get('pnl', 0),
-                status=fill_info.get('status', 'FILLED'),
-                executed_at=datetime.datetime.now()
-            )
-
-            self.db_session.add(executed_order)
-            self.db_session.commit()
-
-            print(f"✅ Created executed order for {planned_order.symbol}")
-            return executed_order
-
-        except Exception as e:
-            self.db_session.rollback()
-            print(f"❌ Failed to create executed order: {e}")
-            return None
 
     def handle_order_rejection(self, planned_order_id: int, rejection_reason: str) -> bool:
         """Mark a planned order as CANCELLED with a rejection reason in the database."""
@@ -252,13 +290,14 @@ class OrderPersistenceService:
             return None
 
     # <Advanced Feature Integration - Begin>
-    # New methods for historical performance analysis
-    def get_trades_by_setup(self, setup_name: str, days_back: int = 90) -> List[Dict]:
+    # Updated methods for account-specific performance analysis
+    def get_trades_by_setup(self, setup_name: str, account_number: str, days_back: int = 90) -> List[Dict]:
         """
-        Get all completed trades for a specific trading setup within time period.
+        Get all completed trades for a specific trading setup and account within time period.
         
         Args:
             setup_name: Name of the trading setup (e.g., 'Breakout', 'Reversal')
+            account_number: Specific account to filter by
             days_back: Number of days to look back (default: 90 days)
             
         Returns:
@@ -280,7 +319,8 @@ class OrderPersistenceService:
                 ExecutedOrderDB.executed_at >= cutoff_date,
                 ExecutedOrderDB.status == 'FILLED',
                 ExecutedOrderDB.filled_price.isnot(None),
-                ExecutedOrderDB.filled_quantity.isnot(None)
+                ExecutedOrderDB.filled_quantity.isnot(None),
+                ExecutedOrderDB.account_number == account_number  # Account-specific filter
             )
             
             results = query.all()
@@ -306,7 +346,8 @@ class OrderPersistenceService:
                     'exit_time': executed_order.executed_at,
                     'trading_setup': trading_setup,
                     'timeframe': timeframe,
-                    'risk_reward_ratio': risk_reward_ratio
+                    'risk_reward_ratio': risk_reward_ratio,
+                    'account_number': executed_order.account_number  # Include account info
                 }
                 
                 # Calculate PnL percentage if possible
@@ -326,14 +367,15 @@ class OrderPersistenceService:
             return trades
             
         except Exception as e:
-            print(f"Error getting trades for setup {setup_name}: {e}")
+            print(f"Error getting trades for setup {setup_name} on account {account_number}: {e}")
             return []
 
-    def get_all_trading_setups(self, days_back: int = 90) -> List[str]:
+    def get_all_trading_setups(self, account_number: str, days_back: int = 90) -> List[str]:
         """
-        Get all unique trading setups with recent trading activity.
+        Get all unique trading setups with recent trading activity for specific account.
         
         Args:
+            account_number: Specific account to filter by
             days_back: Number of days to look back (default: 90 days)
             
         Returns:
@@ -349,6 +391,7 @@ class OrderPersistenceService:
             ).filter(
                 ExecutedOrderDB.executed_at >= cutoff_date,
                 ExecutedOrderDB.status == 'FILLED',
+                ExecutedOrderDB.account_number == account_number,  # Account-specific filter
                 PlannedOrderDB.trading_setup.isnot(None),
                 PlannedOrderDB.trading_setup != ''
             ).distinct()
@@ -357,25 +400,26 @@ class OrderPersistenceService:
             return [result[0] for result in results if result[0]]
             
         except Exception as e:
-            print(f"Error getting trading setups: {e}")
+            print(f"Error getting trading setups for account {account_number}: {e}")
             return []
 
-    def get_setup_performance_summary(self, days_back: int = 90) -> Dict[str, Dict]:
+    def get_setup_performance_summary(self, account_number: str, days_back: int = 90) -> Dict[str, Dict]:
         """
-        Get performance summary for all trading setups.
+        Get performance summary for all trading setups for specific account.
         
         Args:
+            account_number: Specific account to filter by
             days_back: Number of days to look back
             
         Returns:
             Dictionary with setup names as keys and performance metrics as values
         """
         try:
-            setups = self.get_all_trading_setups(days_back)
+            setups = self.get_all_trading_setups(account_number, days_back)
             performance_summary = {}
             
             for setup in setups:
-                trades = self.get_trades_by_setup(setup, days_back)
+                trades = self.get_trades_by_setup(setup, account_number, days_back)
                 if trades:
                     performance = self._calculate_setup_performance(trades)
                     performance_summary[setup] = performance
@@ -383,77 +427,6 @@ class OrderPersistenceService:
             return performance_summary
             
         except Exception as e:
-            print(f"Error getting setup performance summary: {e}")
+            print(f"Error getting setup performance summary for account {account_number}: {e}")
             return {}
-
-    def _calculate_setup_performance(self, trades: List[Dict]) -> Dict:
-        """Calculate performance metrics for a set of trades."""
-        if not trades:
-            return None
-            
-        winning_trades = [t for t in trades if t.get('pnl', 0) > 0]
-        losing_trades = [t for t in trades if t.get('pnl', 0) <= 0]
-        
-        total_trades = len(trades)
-        win_rate = len(winning_trades) / total_trades if total_trades > 0 else 0
-        
-        total_profit = sum(t.get('pnl', 0) for t in winning_trades)
-        total_loss = abs(sum(t.get('pnl', 0) for t in losing_trades))
-        
-        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
-        avg_pnl = sum(t.get('pnl', 0) for t in trades) / total_trades if total_trades > 0 else 0
-        
-        # Calculate average holding period
-        holding_periods = []
-        for trade in trades:
-            if trade.get('entry_time') and trade.get('exit_time'):
-                holding_period = (trade['exit_time'] - trade['entry_time']).total_seconds()
-                holding_periods.append(holding_period)
-        
-        avg_holding_period = sum(holding_periods) / len(holding_periods) if holding_periods else 0
-        
-        return {
-            'win_rate': round(win_rate, 4),
-            'profit_factor': round(min(profit_factor, 10.0), 2),
-            'avg_pnl': round(avg_pnl, 2),
-            'avg_holding_period': round(avg_holding_period, 0),
-            'total_trades': total_trades,
-            'winning_trades': len(winning_trades),
-            'losing_trades': len(losing_trades),
-            'total_profit': round(total_profit, 2),
-            'total_loss': round(total_loss, 2)
-        }
     # <Advanced Feature Integration - End>
-
-    def get_realized_pnl_period(self, days: int) -> Decimal:
-        """Get realized P&L for the last N calendar days."""
-        start_date = datetime.now() - datetime.timedelta(days=days)
-        
-        result = self.db_session.execute(
-            text("""
-                SELECT COALESCE(SUM(realized_pnl), 0) 
-                FROM executed_orders 
-                WHERE exit_time >= :start_date
-            """),
-            {'start_date': start_date}
-        ).scalar()
-        
-        return Decimal(str(result or '0'))
-
-
-    def record_realized_pnl(self, order_id: int, symbol: str, pnl: Decimal, exit_date: datetime):
-        """Record realized P&L for a closed trade."""
-        # This assumes you have an executed_orders table
-        self.db_session.execute(
-            text("""
-                INSERT INTO executed_orders (order_id, symbol, realized_pnl, exit_time)
-                VALUES (:order_id, :symbol, :pnl, :exit_time)
-            """),
-            {
-                'order_id': order_id,
-                'symbol': symbol,
-                'pnl': float(pnl),
-                'exit_time': exit_date
-            }
-        )
-        self.db_session.commit()

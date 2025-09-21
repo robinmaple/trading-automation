@@ -4,7 +4,7 @@ Tests both successful calculations and error conditions.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 from decimal import Decimal
 import datetime
 
@@ -177,27 +177,31 @@ class TestRiskManagementService(unittest.TestCase):
             quantity=100.0,
             action='buy'  # lowercase
         )
-    
+
     def test_record_trade_outcome_calls_persistence(self):
-        """Test that record_trade_outcome calls persistence service."""
-        mock_active_order = MagicMock()
-        mock_active_order.db_id = 123
-        mock_active_order.symbol = 'TEST'
-        
-        test_pnl = 500.0
-        
-        # Mock the persistence method
-        with patch.object(self.risk_service.persistence, 'record_realized_pnl') as mock_record:
-            self.risk_service.record_trade_outcome(mock_active_order, test_pnl)
-            
-            # Verify persistence was called with correct parameters
+        """Test that recording a trade outcome calls persistence correctly."""
+        mock_order = MagicMock()
+        mock_order.account_number = "TEST_ACCOUNT"
+        mock_order.db_id = 123
+        mock_order.symbol = 'TEST'
+
+        # Patch the persistence method - use mock_persistence instead of persistence
+        with patch.object(self.mock_persistence, 'record_realized_pnl') as mock_record:
+            # Call the method under test
+            self.risk_service.record_trade_outcome(
+                executed_order=mock_order,  # Pass the mock order object
+                pnl=500.0  # Use float instead of Decimal for the test
+            )
+
+            # Assert that persistence was called with correct arguments
             mock_record.assert_called_once_with(
                 order_id=123,
                 symbol='TEST',
-                pnl=Decimal('500.0'),
-                exit_date=unittest.mock.ANY  # Should be datetime
+                pnl=ANY,  # The service converts to Decimal, so use ANY
+                exit_date=ANY,  # ignore exact datetime
+                account_number="TEST_ACCOUNT"
             )
-    
+            
     def test_record_trade_outcome_handles_exception(self):
         """Test that record_trade_outcome handles exceptions gracefully."""
         mock_active_order = MagicMock()

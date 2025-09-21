@@ -54,8 +54,10 @@ class OrderExecutionOrchestrator:
         logger = logging.getLogger(__name__)
         logger.info(f"OrderExecutionOrchestrator configured: min_fill_probability={self.min_fill_probability}, default_capital={self.default_capital}")        
     
+    # Account Context Integration - Begin
     def execute_single_order(self, order: PlannedOrder, fill_probability: float, 
-                           effective_priority: Optional[float] = None) -> bool:
+                           effective_priority: Optional[float] = None,
+                           account_number: Optional[str] = None) -> bool:
         """Execute a single order with viability checks and proper status tracking."""
         try:
             total_capital = self._get_total_capital()
@@ -72,7 +74,8 @@ class OrderExecutionOrchestrator:
             # Execute the order through execution service
             execution_success = self._execute_via_service(
                 order, fill_probability, effective_priority, 
-                total_capital, quantity, capital_commitment, is_live_trading
+                total_capital, quantity, capital_commitment, is_live_trading,
+                account_number  # Pass account number to execution service
             )
             
             return execution_success
@@ -80,6 +83,7 @@ class OrderExecutionOrchestrator:
         except Exception as e:
             self._handle_execution_failure(order, str(e))
             return False
+    # Account Context Integration - End
             
     def _get_total_capital(self) -> float:
         """Get total capital from IBKR or use default simulation capital."""
@@ -122,18 +126,21 @@ class OrderExecutionOrchestrator:
             
         return True
         
+    # Account Context Integration - Begin
     def _execute_via_service(self, order: PlannedOrder, fill_probability: float, 
                            effective_priority: Optional[float], total_capital: float,
-                           quantity: float, capital_commitment: float, is_live_trading: bool) -> bool:
+                           quantity: float, capital_commitment: float, is_live_trading: bool,
+                           account_number: Optional[str] = None) -> bool:
         """Execute order through the execution service with proper status tracking."""
         # Calculate effective priority if not provided
         if effective_priority is None:
             effective_priority = order.priority * fill_probability
             
-        # Execute through execution service
+        # Execute through execution service with account context
         success = self.execution_service.place_order(
             order, fill_probability, effective_priority,
-            total_capital, quantity, capital_commitment, is_live_trading
+            total_capital, quantity, capital_commitment, is_live_trading,
+            account_number  # Pass account number to execution service
         )
         
         # Update order status based on execution result
@@ -149,6 +156,7 @@ class OrderExecutionOrchestrator:
             )
             
         return success
+    # Account Context Integration - End
         
     def _handle_execution_failure(self, order: PlannedOrder, error_message: str) -> None:
         """Handle execution failures with proper error logging and status updates."""

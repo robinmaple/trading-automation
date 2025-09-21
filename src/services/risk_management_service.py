@@ -26,20 +26,40 @@ class RiskManagementService:
         self.persistence = persistence_service
         self.ibkr_client = ibkr_client
         
-        # Load risk configuration - Begin
+        # Load risk configuration from config only - Begin
+        # Remove any database dependency for risk limits
         from config.risk_config import DEFAULT_RISK_CONFIG, merge_risk_config
         self.config = merge_risk_config(config or {}, DEFAULT_RISK_CONFIG)
         
-        # Use config values instead of hardcoded
-        self.position_limits = self.config['position_limits']
-        self.loss_limits = self.config['loss_limits']
-        self.check_interval = self.config['check_intervals']['trading_halt_check']
-        # Load risk configuration - End
+        # Extract risk limits directly from config
+        risk_limits = self.config.get('risk_limits', {})
+        self.loss_limits = {
+            'daily': risk_limits.get('daily_loss_pct', Decimal('0.02')),
+            'weekly': risk_limits.get('weekly_loss_pct', Decimal('0.05')),
+            'monthly': risk_limits.get('monthly_loss_pct', Decimal('0.08'))
+        }
+        
+        # Store max_risk_per_trade for validation (from config, not DB)
+        self.max_risk_per_trade = risk_limits.get('max_risk_per_trade', Decimal('0.02'))
+        
+        # Store position limits from config
+        self.position_limits = {
+            'max_open_orders': risk_limits.get('max_open_orders', 5)
+        }
+        
+        # Store simulation equity from config
+        simulation_config = self.config.get('simulation', {})
+        self.simulation_equity = simulation_config.get('default_equity', Decimal('100000'))
         
         # Cache for performance
         self._last_trading_halt_check = None
         self._trading_halted = False
         self._halt_reason = ""
+        
+        logger.info(f"RiskManagementService configured from config: {self.loss_limits}, "
+                   f"max_open_orders: {self.position_limits['max_open_orders']}, "
+                   f"max_risk_per_trade: {self.max_risk_per_trade}")
+        # Load risk configuration from config only - End
 
     def _get_total_equity(self) -> Decimal:
         """Get total account equity, using configurable default for simulation."""
@@ -50,38 +70,8 @@ class RiskManagementService:
                 # Fall back to state service if IBKR fails
                 pass
                     
-        # Use configurable default equity - Begin
-        return self.config['defaults']['simulation_equity']
-        # Use configurable default equity - End
-
-    def _load_configuration(self, config: Dict[str, Any]) -> None:
-        """Load and validate risk configuration parameters."""
-        # Extract risk_limits section or use empty dict as fallback
-        risk_config = config.get('risk_limits', {})
-        
-        # Set loss limits with defaults from config
-        self.loss_limits = {
-            'daily': risk_config.get('daily_loss_pct', Decimal('0.02')),
-            'weekly': risk_config.get('weekly_loss_pct', Decimal('0.05')),
-            'monthly': risk_config.get('monthly_loss_pct', Decimal('0.08'))
-        }
-        
-        # Set position limits
-        self.position_limits = {
-            'max_open_orders': risk_config.get('max_open_orders', 5)
-        }
-        
-        # Store max_risk_per_trade for validation
-        self.max_risk_per_trade = risk_config.get('max_risk_per_trade', Decimal('0.02'))
-        
-        # Store simulation equity (fallback to old hardcoded value)
-        simulation_config = config.get('simulation', {})
-        self.simulation_equity = simulation_config.get('default_equity', Decimal('100000'))
-        
-        # Log the configuration for debugging
-        logger.info(f"RiskManagementService configured with: {self.loss_limits}, "
-                   f"max_open_orders: {self.position_limits['max_open_orders']}, "
-                   f"max_risk_per_trade: {self.max_risk_per_trade}")
+        # Use configurable default equity
+        return self.simulation_equity
 
     def get_account_equity(self) -> Decimal:
         """Get current account equity from IBKR or use simulation value."""
@@ -92,7 +82,8 @@ class RiskManagementService:
                 logger.warning(f"Failed to get account equity from IBKR: {e}")
                 
         # Fallback to simulation equity from config
-        return self.simulation_equity  # <-- NOW FROM CONFIG    
+        return self.simulation_equity
+    
     # P&L Calculation Methods - Begin
     def calculate_position_pnl(self, entry_price: float, exit_price: float, 
                              quantity: float, action: str) -> float:
@@ -259,7 +250,7 @@ class RiskManagementService:
             weekly_loss_pct = abs(min(weekly_pnl, Decimal('0'))) / total_equity  
             monthly_loss_pct = abs(min(monthly_pnl, Decimal('0'))) / total_equity
             
-            # Check against limits
+            # Check against limits from config (not database)
             if daily_loss_pct >= self.loss_limits['daily']:
                 self._trading_halted = True
                 self._halt_reason = f"Daily loss limit exceeded: {daily_loss_pct:.2%} >= {self.loss_limits['daily']:.2%}"
@@ -295,23 +286,34 @@ class RiskManagementService:
                 # Fall back to state service if IBKR fails
                 pass
                 
-        # Use state service or default equity
-        return Decimal('100000')  # Default simulation equity
+        # Use simulation equity from config
+        return self.simulation_equity
     
     def record_trade_outcome(self, executed_order: ActiveOrder, pnl: float):
         """
         Record trade outcome for loss tracking. Called when position is closed.
         """
         try:
-            self.persistence.record_realized_pnl(
-                order_id=executed_order.db_id,
-                symbol=executed_order.symbol,
-                pnl=Decimal(str(pnl)),
-                exit_date=datetime.now()
-            )
+            # Use account-specific P&L recording if available
+            if hasattr(executed_order, 'account_number'):
+                self.persistence.record_realized_pnl(
+                    order_id=executed_order.db_id,
+                    symbol=executed_order.symbol,
+                    pnl=Decimal(str(pnl)),
+                    exit_date=datetime.now(),
+                    account_number=executed_order.account_number
+                )
+            else:
+                # Fallback for backward compatibility
+                self.persistence.record_realized_pnl(
+                    order_id=executed_order.db_id,
+                    symbol=executed_order.symbol,
+                    pnl=Decimal(str(pnl)),
+                    exit_date=datetime.now()
+                )
         except Exception as e:
             # Log error but don't break execution
-            print(f"Warning: Failed to record P&L for {executed_order.symbol}: {e}")
+            logger.warning(f"Failed to record P&L for {executed_order.symbol}: {e}")
     
     def get_risk_status(self) -> Dict:
         """Get current risk status for monitoring and reporting."""

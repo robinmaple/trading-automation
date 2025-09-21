@@ -59,6 +59,10 @@ class TradingManager:
         self.monitoring = False
         self.monitor_thread: Optional[threading.Thread] = None
 
+        # Account Context Tracking - Begin
+        self.current_account_number: Optional[str] = None
+        # Account Context Tracking - End
+
         self._load_configuration()
         
         # Now use values from config instead of hardcoding
@@ -133,6 +137,32 @@ class TradingManager:
 
         self._initialize_components(enable_advanced_features)
 
+    # Account Context Methods - Begin
+    def _get_current_account_number(self) -> Optional[str]:
+        """Get the current account number from IBKR client or use default."""
+        if self.ibkr_client and self.ibkr_client.connected:
+            try:
+                # Get account number from IBKR client
+                account_number = self.ibkr_client.get_account_number()
+                if account_number:
+                    self.current_account_number = account_number
+                    return account_number
+            except Exception as e:
+                logger.warning(f"Failed to get account number from IBKR: {e}")
+        
+        # Fallback: use simulation account or previously set account
+        if not self.current_account_number:
+            # Default simulation account number
+            self.current_account_number = "SIM0001"
+        
+        return self.current_account_number
+
+    def set_account_number(self, account_number: str) -> None:
+        """Explicitly set the account number for simulation or testing."""
+        self.current_account_number = account_number
+        logger.info(f"Account number set to: {account_number}")
+    # Account Context Methods - End
+
     def _initialize_components(self, enable_advanced_features: bool) -> None:
         """Initialize all component managers and coordinators."""
         # Order execution orchestrator
@@ -176,6 +206,9 @@ class TradingManager:
             return False
 
         self._validate_ibkr_connection()
+
+        # Initialize account context
+        self._get_current_account_number()
 
         # Initialize advanced services if enabled
         if self.advanced_features.enabled:
@@ -300,7 +333,11 @@ class TradingManager:
                     continue
 
             effective_priority = order.priority * fill_prob
-            self.execution_orchestrator.execute_single_order(order, fill_prob, effective_priority)
+            # Pass account number to execution orchestrator
+            account_number = self._get_current_account_number()
+            self.execution_orchestrator.execute_single_order(
+                order, fill_prob, effective_priority, account_number
+            )
             executed_count += 1
 
     def _get_total_capital(self) -> float:
@@ -321,8 +358,10 @@ class TradingManager:
             return False
 
         effective_priority = new_planned_order.priority * new_fill_probability
+        # Pass account number to execution orchestrator
+        account_number = self._get_current_account_number()
         success = self.execution_orchestrator.execute_single_order(
-            new_planned_order, new_fill_probability, effective_priority
+            new_planned_order, new_fill_probability, effective_priority, account_number
         )
         
         if success:
@@ -373,6 +412,8 @@ class TradingManager:
             close_action = 'SELL' if position.action == 'BUY' else 'BUY'
             print(f"   Closing action: {close_action} (was {position.action})")
 
+            # Pass account number to execution service
+            account_number = self._get_current_account_number()
             order_id = self.execution_service.close_position({
                 'symbol': position.symbol,
                 'action': close_action,
@@ -380,7 +421,7 @@ class TradingManager:
                 'security_type': position.security_type,
                 'exchange': position.exchange,
                 'currency': position.currency
-            })
+            }, account_number)
 
             if order_id is not None:
                 position.status = 'CLOSING'

@@ -88,6 +88,10 @@ class ExecutedOrderDB(Base):
     closed_at = Column(DateTime, nullable=True)
     is_live_trading = Column(Boolean, default=False, nullable=False)
     is_open = Column(Boolean, default=True)
+    
+    # Account Tracking - Begin
+    account_number = Column(String(20), nullable=True)  # Stores which account executed this order
+    # Account Tracking - End
 
     planned_order = relationship("PlannedOrderDB", back_populates="executed_orders")
 
@@ -125,6 +129,10 @@ class OrderAttemptDB(Base):
     status = Column(String(20), nullable=True)
     ib_order_ids = Column(JSON, nullable=True)
     details = Column(JSON, nullable=True)
+    
+    # Account Tracking - Begin
+    account_number = Column(String(20), nullable=True)  # Stores which account attempted this order
+    # Account Tracking - End
 
     planned_order = relationship("PlannedOrderDB", backref="order_attempts")
 
@@ -139,6 +147,10 @@ class OrderLabelDB(Base):
     label_value = Column(Float, nullable=False)
     computed_at = Column(DateTime, default=datetime.datetime.now)
     notes = Column(Text, nullable=True)
+    
+    # Account Tracking - Begin
+    account_number = Column(String(20), nullable=True)  # Stores which account this label belongs to
+    # Account Tracking - End
 
     planned_order = relationship("PlannedOrderDB", backref="order_labels")
 
