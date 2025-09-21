@@ -286,7 +286,10 @@ class AdvancedFeatureCoordinator:
                     'basic_features': {
                         'priority': order.priority,
                         'risk_reward': order.risk_reward_ratio,
-                        'risk_per_trade': order.risk_per_trade
+                        'risk_per_trade': order.risk_per_trade,
+                        'overall_trend_human': getattr(order, 'overall_trend', None),
+                        'system_trend_score': getattr(order, 'system_trend_score', None),
+                        'brief_analysis': getattr(order, 'brief_analysis', None),
                     },
                     'market_context': self.analyze_market_context(order.symbol),
                     'historical_performance': self.get_historical_performance(order.symbol),

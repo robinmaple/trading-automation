@@ -150,33 +150,34 @@ class OrderPersistenceService:
             return None
 
     def convert_to_db_model(self, planned_order) -> PlannedOrderDB:
-        """Convert a domain PlannedOrder object to a PlannedOrderDB database entity."""
-        try:
-            position_strategy = self.db_session.query(PositionStrategy).filter_by(
-                name=planned_order.position_strategy.value
-            ).first()
+        """Convert a domain PlannedOrder object to a PlannedOrderDB entity."""
 
-            if not position_strategy:
-                raise ValueError(f"Position strategy {planned_order.position_strategy.value} not found in database")
+        # Resolve DB row; create if missing
+        strategy_name = getattr(planned_order.position_strategy, 'value', str(planned_order.position_strategy))
+        position_strategy = self.db_session.query(PositionStrategy).filter_by(name=strategy_name).first()
 
-            db_model = PlannedOrderDB(
-                symbol=planned_order.symbol,
-                security_type=planned_order.security_type.value,
-                action=planned_order.action.value,
-                order_type=planned_order.order_type.value,
-                entry_price=planned_order.entry_price,
-                stop_loss=planned_order.stop_loss,
-                risk_per_trade=planned_order.risk_per_trade,
-                risk_reward_ratio=planned_order.risk_reward_ratio,
-                priority=planned_order.priority,
-                position_strategy_id=position_strategy.id,
-                status='PENDING'
-            )
-            return db_model
+        if not position_strategy:
+            print(f"⚠ Position strategy '{strategy_name}' not found in DB. Auto-creating.")
+            position_strategy = PositionStrategy(name=strategy_name)
+            self.db_session.add(position_strategy)
+            self.db_session.commit()
 
-        except Exception as e:
-            print(f"❌ Failed to convert planned order to DB model: {e}")
-            raise
+        db_model = PlannedOrderDB(
+            symbol=planned_order.symbol,
+            security_type=planned_order.security_type.value,
+            action=planned_order.action.value,
+            order_type=planned_order.order_type.value,
+            entry_price=planned_order.entry_price,
+            stop_loss=planned_order.stop_loss,
+            risk_per_trade=planned_order.risk_per_trade,
+            risk_reward_ratio=planned_order.risk_reward_ratio,
+            priority=planned_order.priority,
+            position_strategy_id=position_strategy.id,
+            status='PENDING',
+            overall_trend=planned_order.overall_trend,       # store human-entered value
+            brief_analysis=planned_order.brief_analysis
+        )
+        return db_model
 
     def handle_order_rejection(self, planned_order_id: int, rejection_reason: str) -> bool:
         """Mark a planned order as CANCELLED with a rejection reason in the database."""
@@ -233,10 +234,22 @@ class OrderPersistenceService:
             return 50000.0
 
     def update_order_status(self, order, status: str, reason: str = "", order_ids=None) -> bool:
-        """Update the status of an order in the database with an optional reason."""
+        """
+        Update the status of a PlannedOrder in the database and synchronize all relevant fields.
+        Always overwrites with current PlannedOrder values (blind update).
+        
+        Args:
+            order: PlannedOrder domain object
+            status: New status string ('PENDING', 'LIVE', etc.)
+            reason: Optional reason for status update
+            order_ids: Optional list of IBKR order IDs
+
+        Returns:
+            True if update/create succeeded, False otherwise
+        """
         try:
             valid_statuses = ['PENDING', 'LIVE', 'LIVE_WORKING', 'FILLED', 'CANCELLED',
-                             'EXPIRED', 'LIQUIDATED', 'REPLACED']
+                            'EXPIRED', 'LIQUIDATED', 'REPLACED']
 
             if status not in valid_statuses:
                 print(f"❌ Invalid order status: '{status}'. Valid values: {valid_statuses}")
@@ -245,7 +258,20 @@ class OrderPersistenceService:
             db_order = self._find_planned_order_db_record(order)
 
             if db_order:
+                # Blindly update all relevant fields
                 db_order.status = status
+                db_order.overall_trend = getattr(order, 'overall_trend', db_order.overall_trend)
+                db_order.brief_analysis = getattr(order, 'brief_analysis', db_order.brief_analysis)
+                db_order.risk_per_trade = getattr(order, 'risk_per_trade', db_order.risk_per_trade)
+                db_order.risk_reward_ratio = getattr(order, 'risk_reward_ratio', db_order.risk_reward_ratio)
+                db_order.priority = getattr(order, 'priority', db_order.priority)
+                db_order.entry_price = getattr(order, 'entry_price', db_order.entry_price)
+                db_order.stop_loss = getattr(order, 'stop_loss', db_order.stop_loss)
+                db_order.action = getattr(order.action, 'value', db_order.action)
+                db_order.order_type = getattr(order.order_type, 'value', db_order.order_type)
+                db_order.security_type = getattr(order.security_type, 'value', db_order.security_type)
+                db_order.position_strategy_id = self.db_session.query(PositionStrategy).filter_by(
+                    name=order.position_strategy.value).first().id
                 if order_ids:
                     db_order.ibkr_order_ids = str(order_ids)
                 if reason:
@@ -255,13 +281,19 @@ class OrderPersistenceService:
                 self.db_session.commit()
                 print(f"✅ Updated {order.symbol} status to {status}: {reason}")
                 return True
+
             else:
-                print(f"❌ Order not found in database: {order.symbol}")
+                # Record does not exist, create new
                 try:
                     db_model = self.convert_to_db_model(order)
                     db_model.status = status
+                    db_model.overall_trend = getattr(order, 'overall_trend', None)
+                    db_model.brief_analysis = getattr(order, 'brief_analysis', None)
                     if reason:
                         db_model.status_reason = reason[:255]
+                    if order_ids:
+                        db_model.ibkr_order_ids = str(order_ids)
+
                     self.db_session.add(db_model)
                     self.db_session.commit()
                     print(f"✅ Created new order record for {order.symbol} with status {status}")

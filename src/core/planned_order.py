@@ -96,6 +96,10 @@ class PlannedOrder:
     trading_setup: Optional[str] = None  # Trading strategy/setup type
     core_timeframe: Optional[str] = None  # Core trading timeframe
     # Phase B Additions - End
+    # Phase 1 Additions - Begin
+    overall_trend: str = field(default='Neutral')  # Mandatory: 'Bull', 'Bear', 'Neutral'
+    brief_analysis: Optional[str] = None  # Optional free-text analysis
+    # Phase 1 Additions - End
     expiration_date: Optional[datetime.datetime] = None
     # Calculated fields (no need to store in Excel)
     _quantity: Optional[float] = None
@@ -104,6 +108,21 @@ class PlannedOrder:
     risk_per_trade: Decimal = field(default=Decimal('0.005'))
     risk_reward_ratio: Decimal = field(default=Decimal('2.0'))
     priority: int = field(default=3)
+
+    @property
+    def trend_alignment(self) -> bool:
+        """
+        Return True if action aligns with overall_trend:
+        - BUY in Bull or SELL in Bear
+        - Sideways/Neutral trend considered misaligned for strict scoring
+        """
+        if not self.overall_trend:
+            return False
+        trend = self.overall_trend.lower()
+        if (self.action == Action.BUY and trend == 'bull') or \
+        (self.action == Action.SELL and trend == 'bear'):
+            return True
+        return False
 
     def __post_init__(self) -> None:
         """Dataclass hook to validate and set expiration after initialization."""
@@ -119,12 +138,12 @@ class PlannedOrder:
             raise ValueError("Risk reward ratio cannot be None")  
         if self.priority is None:
             raise ValueError("Priority cannot be None")
+        # Phase 1 validation for overall_trend
+        allowed_trends = ['Bull', 'Bear', 'Neutral']
+        if not self.overall_trend or self.overall_trend not in allowed_trends:
+            raise ValueError(f"overall_trend must be one of {allowed_trends}, got '{self.overall_trend}'")
         # Check for None values first - End
 
-        # Risk capping now handled by RiskManagementService - Begin
-        # Removed: if self.risk_per_trade > 0.02: raise ValueError("Risk per trade cannot exceed 2%")
-        # Risk capping now handled by RiskManagementService - End
-        
         if not 1 <= self.priority <= 5:
             raise ValueError("Priority must be between 1 and 5")
         # Phase B Additions - Begin
@@ -137,7 +156,13 @@ class PlannedOrder:
             if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
                (self.action == Action.SELL and self.stop_loss <= self.entry_price):
                 raise ValueError("Stop loss must be on the correct side of the entry price for a protective order")
-            
+
+        #Make overall_trend optional or provide a default
+        if self.overall_trend is None:
+            self.overall_trend = "Neutral"  # Or make it optional
+        elif self.overall_trend not in allowed_trends:
+            raise ValueError(f"overall_trend must be one of {allowed_trends}, got '{self.overall_trend}'")
+
     def _set_expiration_date(self) -> None:
         """Set expiration date based on position strategy."""
         expiration_days = self.position_strategy.get_expiration_days()
@@ -204,7 +229,84 @@ class PlannedOrder:
 
         return order
 
-@dataclass
+class PlannedOrderManager:
+    """Static class providing utilities for loading and managing PlannedOrders."""
+
+    @staticmethod
+    def from_excel(file_path: str, config: Optional[Dict[str, Any]] = None) -> list[PlannedOrder]:
+        """Load and parse planned orders from an Excel template with configurable defaults."""
+        config = config or {}
+        order_defaults = config.get('order_defaults', {})
+
+        orders = []
+        try:
+            df = pd.read_excel(file_path)
+
+            for index, row in df.iterrows():
+                try:
+                    # Parse enums / strings
+                    security_type = SecurityType[str(row['Security Type']).strip()]
+                    action = Action[str(row['Action']).strip().upper()]
+                    order_type_str = str(row.get('Order Type', 'LMT')).strip()
+                    order_type = OrderType[order_type_str] if order_type_str and order_type_str != 'nan' else OrderType.LMT
+
+                    # FIX: Convert position strategy string to PositionStrategy enum
+                    position_strategy_str = str(row.get('Position Management Strategy', 'CORE')).strip()
+                    position_strategy = PositionStrategy(position_strategy_str)  # Convert string to enum
+
+                    # Risk and other fields
+                    risk_per_trade = float(row["Risk Per Trade"]) if pd.notna(row.get("Risk Per Trade")) else float(order_defaults.get("risk_per_trade", 0.005))
+                    entry_price = float(row["Entry Price"]) if pd.notna(row.get("Entry Price")) else None
+                    stop_loss = float(row["Stop Loss"]) if pd.notna(row.get("Stop Loss")) else None
+                    risk_reward_ratio = float(row["Risk Reward Ratio"]) if pd.notna(row.get("Risk Reward Ratio")) else float(order_defaults.get("risk_reward_ratio", 2.0))
+                    priority = int(row["Priority"]) if pd.notna(row.get("Priority")) else int(order_defaults.get("priority", 3))
+
+                    # Phase B additions - provide defaults
+                    trading_setup = str(row.get("Trading Setup", "")).strip() or None
+                    core_timeframe = str(row.get("Core Timeframe", "")).strip() or None
+
+                    # Phase 1 additions - PROVIDE DEFAULTS HERE
+                    overall_trend = str(row.get("Overall Trend", "Neutral")).strip()  # Default to "Neutral"
+                    brief_analysis = str(row.get("Brief Analysis", "")).strip() or "No analysis provided"  # Default message
+
+                    # Build PlannedOrder
+                    order = PlannedOrder(
+                        security_type=security_type,
+                        exchange=str(row['Exchange']).strip(),
+                        currency=str(row['Currency']).strip(),
+                        action=action,
+                        symbol=str(row['Symbol']).strip(),
+                        order_type=order_type,
+                        position_strategy=position_strategy,  # Use enum object, not string
+                        risk_per_trade=risk_per_trade,
+                        entry_price=entry_price,
+                        stop_loss=stop_loss,
+                        risk_reward_ratio=risk_reward_ratio,
+                        priority=priority,
+                        trading_setup=trading_setup,
+                        core_timeframe=core_timeframe,
+                        overall_trend=overall_trend,
+                        brief_analysis=brief_analysis,
+                    )
+                    orders.append(order)
+
+                except Exception as row_error:
+                    print(f"❌ ERROR processing row {index + 2}: {row_error}")
+                    import traceback
+                    traceback.print_exc()
+
+            print(f"\n✅ Successfully loaded {len(orders)} orders from Excel")
+            return orders
+
+        except FileNotFoundError:
+            print(f"❌ Excel file not found: {file_path}")
+            return []
+        except Exception as e:
+            print(f"❌ Error loading Excel file: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
 class ActiveOrder:
     """Tracks the state and metadata of an order that has been submitted to the broker."""
     planned_order: PlannedOrder
@@ -236,113 +338,3 @@ class ActiveOrder:
     def update_status(self, new_status: str) -> None:
         """Update the status of this order."""
         self.status = new_status
-
-class PlannedOrderManager:
-    """Static class providing utilities for loading and managing PlannedOrders."""
-
-    @staticmethod
-    def from_excel(file_path: str, config: Optional[Dict[str, Any]] = None) -> list[PlannedOrder]:
-        """Load and parse planned orders from an Excel template with configurable defaults."""
-        config = config or {}
-        order_defaults = config.get('order_defaults', {})
-
-        # Use configurable defaults with fallback to original hardcoded values
-        default_risk = order_defaults.get('risk_per_trade', 0.005)
-        default_rr = order_defaults.get('risk_reward_ratio', 2.0)
-        default_priority = order_defaults.get('priority', 3)
-
-        orders = []
-        try:
-            print(f"Loading Excel file: {file_path}")
-            df = pd.read_excel(file_path)
-            print(f"Excel loaded successfully. Shape: {df.shape}")
-            print(f"Columns: {list(df.columns)}")
-
-            for index, row in df.iterrows():
-                try:
-                    # Parse enums
-                    security_type_str = str(row['Security Type']).strip()
-                    security_type = SecurityType[security_type_str]
-
-                    action_str = str(row['Action']).strip().upper()
-                    action = Action[action_str]
-
-                    order_type_str = str(row.get('Order Type', 'LMT')).strip()
-                    order_type = OrderType[order_type_str] if order_type_str and order_type_str != 'nan' else OrderType.LMT
-
-                    position_strategy_str = str(row.get('Position Management Strategy', 'CORE')).strip()
-                    position_strategy = PositionStrategy[position_strategy_str]
-
-                    # Risk per trade
-                    if pd.notna(row.get("Risk Per Trade")):
-                        risk_per_trade = float(row["Risk Per Trade"])
-                    else:
-                        risk_per_trade = float(order_defaults.get("risk_per_trade", 0.005))
-
-                    # Entry price
-                    entry_price = float(row["Entry Price"]) if pd.notna(row.get("Entry Price")) else None
-
-                    # Stop loss
-                    stop_loss = float(row["Stop Loss"]) if pd.notna(row.get("Stop Loss")) else None
-
-                    # Risk reward ratio
-                    if pd.notna(row.get("Risk Reward Ratio")):
-                        risk_reward_ratio = float(row["Risk Reward Ratio"])
-                    else:
-                        risk_reward_ratio = float(order_defaults.get("risk_reward_ratio", 2.0))
-
-                    # Priority
-                    if pd.notna(row.get("Priority")):
-                        priority = int(row["Priority"])
-                    else:
-                        priority = int(order_defaults.get("priority", 3))
-
-                    # Phase B Additions
-                    trading_setup = str(row["Trading Setup"]).strip() if pd.notna(row.get("Trading Setup")) else None
-                    core_timeframe = str(row["Core Timeframe"]).strip() if pd.notna(row.get("Core Timeframe")) else None
-
-                    # Build PlannedOrder
-                    order = PlannedOrder(
-                        security_type=security_type,
-                        exchange=str(row['Exchange']).strip(),
-                        currency=str(row['Currency']).strip(),
-                        action=action,
-                        symbol=str(row['Symbol']).strip(),
-                        order_type=order_type,
-                        risk_per_trade=risk_per_trade,
-                        entry_price=entry_price,
-                        stop_loss=stop_loss,
-                        risk_reward_ratio=risk_reward_ratio,
-                        position_strategy=position_strategy,
-                        priority=priority,
-                        trading_setup=trading_setup,
-                        core_timeframe=core_timeframe,
-                    )
-                    orders.append(order)
-
-                except Exception as row_error:
-                    print(f"❌ ERROR processing row {index + 2}: {row_error}")
-                    import traceback
-                    traceback.print_exc()
-
-            print(f"\n✅ Successfully loaded {len(orders)} orders from Excel")
-            return orders
-
-        except FileNotFoundError:
-            print(f"❌ Excel file not found: {file_path}")
-            return []
-        except Exception as e:
-            print(f"❌ Error loading Excel file: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-
-    @staticmethod
-    def display_valid_values():
-        """Display all valid values for enums for debugging Excel templates."""
-        print("\n=== VALID VALUES FOR EXCEL COLUMNS ===")
-        print("Security Type options:", [e.name for e in SecurityType])
-        print("Action options:", [e.name for e in Action])
-        print("Order Type options:", [e.name for e in OrderType])
-        print("Position Management Strategy options:", [e.name for e in PositionStrategy])
-        print("=== END VALID VALUES ===\n")

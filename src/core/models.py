@@ -59,6 +59,11 @@ class PlannedOrderDB(Base):
                         'LIQUIDATED', 'LIQUIDATED_EXTERNALLY', 'REPLACED',
                         name='order_state_enum', native_enum=False),
                    default='PENDING')
+    rejection_reason = Column(Text, nullable=True)
+    
+    overall_trend = Column(String, nullable=True)       # Bull / Bear / Neutral
+    brief_analysis = Column(String, nullable=True)      # Optional free text
+
     created_at = Column(DateTime, default=datetime.datetime.now)
     planned_at = Column(DateTime, default=datetime.datetime.now)
     updated_at = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)

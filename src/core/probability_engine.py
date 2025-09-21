@@ -114,7 +114,10 @@ class FillProbabilityEngine:
             'core_timeframe': getattr(order, 'core_timeframe', None),
             'price_diff_absolute': current_price - order.entry_price if order.entry_price else None,
             'price_diff_relative': (current_price - order.entry_price) / order.entry_price if order.entry_price else None,
-            'volatility_estimate': self.estimate_volatility(order.symbol, current_data.get('history', []), order)
+            'volatility_estimate': self.estimate_volatility(order.symbol, current_data.get('history', []), order),
+            'overall_trend_human': getattr(order, 'overall_trend', None),
+            'system_trend_score': getattr(order, 'system_trend_score', None),
+            'brief_analysis': getattr(order, 'brief_analysis', None)
         }
         
         return features

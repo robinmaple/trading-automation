@@ -1,5 +1,12 @@
 # scripts/inspect_db_schema.py
+import sys
+import os
 import sqlite3
+
+# Add the project root to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+
 from src.core.database import get_db_session, Base, db_manager, init_database
 from src.core.models import PlannedOrderDB
 
