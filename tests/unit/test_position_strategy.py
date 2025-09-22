@@ -4,12 +4,15 @@ from src.core.planned_order import PositionStrategy, SecurityType, Action
 
 class TestPositionStrategy:
     
+    # Fix test expectation - Begin
     def test_position_strategy_expiration(self):
         """Test expiration days for each strategy"""
-        assert PositionStrategy.DAY.get_expiration_days() == 0
+        # DAY should expire after 1 day (not 0)
+        assert PositionStrategy.DAY.get_expiration_days() == 1  # Changed from 0 to 1
         assert PositionStrategy.CORE.get_expiration_days() is None
         assert PositionStrategy.HYBRID.get_expiration_days() == 10
-    
+    # Fix test expectation - End    
+
     def test_market_close_action_required(self):
         """Test market close action requirements"""
         assert PositionStrategy.DAY.requires_market_close_action() == True

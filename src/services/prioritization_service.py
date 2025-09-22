@@ -109,8 +109,20 @@ class PrioritizationService:
         
         return True
 
-    # Calculate capital efficiency (reward per committed dollar) - Begin
     def calculate_efficiency(self, order: PlannedOrder, total_capital: float) -> float:
+        """
+        Calculate capital efficiency (reward per committed dollar)
+        Returns 0.0 for invalid orders, None inputs, or calculation errors
+        """
+        # NULL CHECK MUST BE FIRST - BEFORE ANY ATTRIBUTE ACCESS
+        if order is None:
+            return 0.0
+            
+        # Check if object has required attributes
+        if not hasattr(order, 'entry_price') or not hasattr(order, 'stop_loss'):
+            return 0.0
+            
+        # Check if required price data is available
         if order.entry_price is None or order.stop_loss is None:
             return 0.0
             
@@ -121,7 +133,23 @@ class PrioritizationService:
             if capital_commitment <= 0:
                 return 0.0
                 
-            if order.action.value == 'BUY':
+            # ==================== SAFE ATTRIBUTE ACCESS - BEGIN ====================
+            # Get action value safely with multiple fallbacks
+            action_value = None
+            try:
+                if hasattr(order, 'action'):
+                    if hasattr(order.action, 'value'):
+                        action_value = order.action.value
+                    elif isinstance(order.action, str):
+                        action_value = order.action
+            except:
+                action_value = None
+                
+            if action_value is None:
+                return 0.0
+            # ==================== SAFE ATTRIBUTE ACCESS - END ====================
+                
+            if action_value == 'BUY':
                 profit_target = order.entry_price + (order.entry_price - order.stop_loss) * order.risk_reward_ratio
                 expected_profit_per_share = profit_target - order.entry_price
             else:
@@ -133,9 +161,8 @@ class PrioritizationService:
             
             return max(0.0, efficiency)
             
-        except (ValueError, ZeroDivisionError):
+        except (ValueError, ZeroDivisionError, AttributeError, TypeError):
             return 0.0
-    # Calculate capital efficiency (reward per committed dollar) - End
 
     # Calculate timeframe compatibility with market conditions - Begin
     def calculate_timeframe_match_score(self, order: PlannedOrder) -> float:

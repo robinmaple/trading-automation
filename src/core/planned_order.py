@@ -13,7 +13,43 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 import pandas as pd
+from pandas.tseries.offsets import BDay  # Business day offset
 import datetime
+
+# Market Hours Utility Functions - Begin
+def is_market_hours(check_time: Optional[datetime.datetime] = None) -> bool:
+    """
+    Check if a given time is within market hours (9:30 AM - 4:00 PM ET, Mon-Fri).
+    Simple implementation - adjust for timezones as needed.
+    """
+    if check_time is None:
+        check_time = datetime.datetime.now()
+    
+    # Check if weekday (0=Monday, 4=Friday)
+    is_weekday = 0 <= check_time.weekday() <= 4
+    
+    # Check if within market hours (9:30 AM - 4:00 PM)
+    market_open = check_time.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = check_time.replace(hour=16, minute=0, second=0, microsecond=0)
+    
+    return is_weekday and (market_open <= check_time <= market_close)
+
+def get_next_trading_day(reference_time: Optional[datetime.datetime] = None) -> datetime.datetime:
+    """
+    Get the next trading day from reference time.
+    If reference time is after market close, returns next business day.
+    """
+    if reference_time is None:
+        reference_time = datetime.datetime.now()
+    
+    # Use pandas Business Day offset
+    next_business_day = reference_time + BDay(1)
+    
+    # Set to market open time (9:30 AM)
+    next_trading_day = next_business_day.replace(hour=9, minute=30, second=0, microsecond=0)
+    
+    return next_trading_day
+# Market Hours Utility Functions - End
 
 class SecurityType(Enum):
     """Supported security types for trading."""
@@ -62,15 +98,31 @@ class PositionStrategy(Enum):
                 return member
         raise ValueError(f"Invalid PositionStrategy: {value}")
 
-    def get_expiration_days(self) -> Optional[int]:
+    # Modified Expiration Logic - Begin
+    def get_expiration_days(self, import_time: Optional[datetime.datetime] = None) -> Optional[int]:
         """Return the number of days until expiration for this strategy."""
+        if import_time is None:
+            import_time = datetime.datetime.now()
+        
         if self == PositionStrategy.DAY:
-            return 0
+            # For DAY strategy: if importing during market hours, expire today
+            # if after hours, expire next trading day
+            if is_market_hours(import_time):
+                return 0  # Expire same day
+            else:
+                # Calculate days until next trading day
+                next_trading_day = get_next_trading_day(import_time)
+                days_until_expiration = (next_trading_day.date() - import_time.date()).days
+                return max(0, days_until_expiration)
+                
         elif self == PositionStrategy.CORE:
-            return None
+            return None  # No expiration for CORE strategy
+            
         elif self == PositionStrategy.HYBRID:
-            return 10
+            return 10  # Fixed 10 calendar days for HYBRID
+            
         return None
+    # Modified Expiration Logic - End
 
     def requires_market_close_action(self) -> bool:
         """Check if this strategy requires closing at market close."""
@@ -104,6 +156,8 @@ class PlannedOrder:
     # Calculated fields (no need to store in Excel)
     _quantity: Optional[float] = None
     _profit_target: Optional[float] = None
+    # Import time tracking for expiration calculations
+    _import_time: Optional[datetime.datetime] = field(default=None, init=False)
 
     risk_per_trade: Decimal = field(default=Decimal('0.005'))
     risk_reward_ratio: Decimal = field(default=Decimal('2.0'))
@@ -152,6 +206,8 @@ class PlannedOrder:
         if self.core_timeframe and len(self.core_timeframe) > 50:
             raise ValueError("Core timeframe description too long")
         # Phase B Additions - End
+        if self.entry_price is None and self.stop_loss is not None:
+            raise ValueError("Stop loss requires entry price")
         if self.entry_price is not None and self.stop_loss is not None:
             if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
                (self.action == Action.SELL and self.stop_loss <= self.entry_price):
@@ -163,11 +219,21 @@ class PlannedOrder:
         elif self.overall_trend not in allowed_trends:
             raise ValueError(f"overall_trend must be one of {allowed_trends}, got '{self.overall_trend}'")
 
+    # Modified Expiration Date Calculation - Begin
     def _set_expiration_date(self) -> None:
-        """Set expiration date based on position strategy."""
-        expiration_days = self.position_strategy.get_expiration_days()
+        """Set expiration date based on position strategy and import time."""
+        # Use provided import time or current time
+        calculation_time = self._import_time or datetime.datetime.now()
+        
+        expiration_days = self.position_strategy.get_expiration_days(calculation_time)
         if expiration_days is not None:
-            self.expiration_date = datetime.datetime.now() + datetime.timedelta(days=expiration_days)
+            self.expiration_date = calculation_time + datetime.timedelta(days=expiration_days)
+            
+            # Set expiration to market close time (4 PM)
+            self.expiration_date = self.expiration_date.replace(
+                hour=16, minute=0, second=0, microsecond=0
+            )
+    # Modified Expiration Date Calculation - End
 
     def calculate_quantity(self, total_capital: float) -> float:
         """Calculate position size based on risk management. Rounds appropriately for the security type."""
@@ -237,6 +303,9 @@ class PlannedOrderManager:
         """Load and parse planned orders from an Excel template with configurable defaults."""
         config = config or {}
         order_defaults = config.get('order_defaults', {})
+        
+        # Capture import time for expiration calculations
+        import_time = datetime.datetime.now()
 
         orders = []
         try:
@@ -288,6 +357,10 @@ class PlannedOrderManager:
                         overall_trend=overall_trend,
                         brief_analysis=brief_analysis,
                     )
+                    
+                    # Set import time for proper expiration calculation
+                    order._import_time = import_time
+                    
                     orders.append(order)
 
                 except Exception as row_error:
@@ -296,6 +369,9 @@ class PlannedOrderManager:
                     traceback.print_exc()
 
             print(f"\n✅ Successfully loaded {len(orders)} orders from Excel")
+            print(f"   Import time: {import_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"   Market hours: {'Yes' if is_market_hours(import_time) else 'No'}")
+            
             return orders
 
         except FileNotFoundError:

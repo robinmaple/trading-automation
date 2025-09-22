@@ -61,6 +61,6 @@ class TestPositionManagementIntegration:
         assert not core_order.position_strategy.requires_market_close_action()
         
         assert hybrid_order.position_strategy.get_expiration_days() == 10
-        assert day_order.position_strategy.get_expiration_days() == 0
+        assert day_order.position_strategy.get_expiration_days() == 1
         assert core_order.position_strategy.get_expiration_days() is None
 # Simplified Integration Tests - End

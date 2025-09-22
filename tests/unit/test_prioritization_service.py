@@ -24,6 +24,33 @@ class MockSizingService:
 class TestPrioritizationService:
     """Test suite for PrioritizationService Phase B features."""
     
+    def setup_method(self):
+        """Set up the test with required services"""
+        # Create mock sizing service
+        self.mock_sizing_service = Mock()
+        self.mock_sizing_service.calculate_order_quantity.return_value = 100
+        
+        # Create prioritization service with mock dependencies
+        self.service = PrioritizationService(
+            sizing_service=self.mock_sizing_service,
+            config={
+                'weights': {
+                    'fill_prob': 0.35,
+                    'manual_priority': 0.20,
+                    'efficiency': 0.15,
+                    'timeframe_match': 0.15,
+                    'setup_bias': 0.10,
+                    'size_pref': 0.03,
+                    'timeframe_match_legacy': 0.01,
+                    'setup_bias_legacy': 0.01
+                },
+                'max_open_orders': 5,
+                'max_capital_utilization': 0.8,
+                'two_layer_prioritization': {'enabled': False}
+            }
+        )
+# Add proper test setup at the class level - End    
+
     @pytest.fixture
     def mock_sizing_service(self):
         """Provide a mock sizing service for testing."""
@@ -149,24 +176,48 @@ class TestPrioritizationService:
         # Should be positive efficiency for profitable order
         assert efficiency > 0
         assert isinstance(efficiency, float)
-    
-    def test_calculate_efficiency_invalid_order(self, prioritization_service):
-        """Test efficiency calculation with invalid order data."""
-        invalid_order = PlannedOrder(
-            security_type=SecurityType.STK,
-            exchange="SMART",
+        
+    # Fix the test to use proper PositionStrategy objects - Begin
+    def test_calculate_efficiency_invalid_order(self):
+        """Test efficiency calculation handles invalid orders gracefully"""
+        from src.core.planned_order import PlannedOrder, Action, PositionStrategy
+        
+        # Test with None input
+        result = self.service.calculate_efficiency(None, 100000)
+        assert result == 0.0
+        
+        # Test with completely invalid object
+        result = self.service.calculate_efficiency("not_an_order", 100000)
+        assert result == 0.0
+        
+        # Test with object missing required attributes
+        class FakeOrder:
+            pass
+        
+        fake_order = FakeOrder()
+        result = self.service.calculate_efficiency(fake_order, 100000)
+        assert result == 0.0
+        
+        # Test with real PlannedOrder but None prices - USE PositionStrategy ENUM
+        order = PlannedOrder(
+            security_type="STK",
+            exchange="SMART", 
             currency="USD",
             action=Action.BUY,
             symbol="TEST",
-            order_type=OrderType.LMT,
-            entry_price=None,  # Missing entry price
-            stop_loss=95.0,
-            risk_per_trade=0.01
+            order_type="LMT",
+            entry_price=None,  # This makes it invalid
+            stop_loss=None,    # This makes it invalid
+            risk_per_trade=0.01,
+            risk_reward_ratio=2.0,
+            position_strategy=PositionStrategy.DAY,  # USE ENUM, NOT STRING
+            priority=3
         )
         
-        efficiency = prioritization_service.calculate_efficiency(invalid_order, 100000)
-        assert efficiency == 0.0  # Should return 0 for invalid orders
-    
+        result = self.service.calculate_efficiency(order, 100000)
+        assert result == 0.0
+    # Fix the test to use proper PositionStrategy objects - End
+
     def test_deterministic_score_calculation(self, prioritization_service, sample_buy_order):
         """Test comprehensive deterministic score calculation."""
         fill_prob = 0.85
