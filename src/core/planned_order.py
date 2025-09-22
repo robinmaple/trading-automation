@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, List
 import pandas as pd
 from pandas.tseries.offsets import BDay  # Business day offset
 import datetime
+from config.trading_core_config import get_config
 
 # Market Hours Utility Functions - Begin
 def is_market_hours(check_time: Optional[datetime.datetime] = None) -> bool:
@@ -299,9 +300,13 @@ class PlannedOrderManager:
     """Static class providing utilities for loading and managing PlannedOrders."""
 
     @staticmethod
-    def from_excel(file_path: str, config: Optional[Dict[str, Any]] = None) -> list[PlannedOrder]:
+    def from_excel(file_path: str, config: Optional[Dict[str, Any]] = None) -> List[PlannedOrder]:
         """Load and parse planned orders from an Excel template with configurable defaults."""
-        config = config or {}
+        # Use provided config or get default (live environment)
+        if config is None:
+            from config.trading_core_config import get_config
+            config = get_config("live")
+        
         order_defaults = config.get('order_defaults', {})
         
         # Capture import time for expiration calculations
@@ -319,9 +324,9 @@ class PlannedOrderManager:
                     order_type_str = str(row.get('Order Type', 'LMT')).strip()
                     order_type = OrderType[order_type_str] if order_type_str and order_type_str != 'nan' else OrderType.LMT
 
-                    # FIX: Convert position strategy string to PositionStrategy enum
+                    # Convert position strategy string to PositionStrategy enum
                     position_strategy_str = str(row.get('Position Management Strategy', 'CORE')).strip()
-                    position_strategy = PositionStrategy(position_strategy_str)  # Convert string to enum
+                    position_strategy = PositionStrategy(position_strategy_str)
 
                     # Risk and other fields
                     risk_per_trade = float(row["Risk Per Trade"]) if pd.notna(row.get("Risk Per Trade")) else float(order_defaults.get("risk_per_trade", 0.005))
@@ -330,13 +335,13 @@ class PlannedOrderManager:
                     risk_reward_ratio = float(row["Risk Reward Ratio"]) if pd.notna(row.get("Risk Reward Ratio")) else float(order_defaults.get("risk_reward_ratio", 2.0))
                     priority = int(row["Priority"]) if pd.notna(row.get("Priority")) else int(order_defaults.get("priority", 3))
 
-                    # Phase B additions - provide defaults
+                    # Phase B additions
                     trading_setup = str(row.get("Trading Setup", "")).strip() or None
                     core_timeframe = str(row.get("Core Timeframe", "")).strip() or None
 
-                    # Phase 1 additions - PROVIDE DEFAULTS HERE
-                    overall_trend = str(row.get("Overall Trend", "Neutral")).strip()  # Default to "Neutral"
-                    brief_analysis = str(row.get("Brief Analysis", "")).strip() or "No analysis provided"  # Default message
+                    # Phase 1 additions
+                    overall_trend = str(row.get("Overall Trend", "Neutral")).strip()
+                    brief_analysis = str(row.get("Brief Analysis", "")).strip() or "No analysis provided"
 
                     # Build PlannedOrder
                     order = PlannedOrder(
@@ -346,7 +351,7 @@ class PlannedOrderManager:
                         action=action,
                         symbol=str(row['Symbol']).strip(),
                         order_type=order_type,
-                        position_strategy=position_strategy,  # Use enum object, not string
+                        position_strategy=position_strategy,
                         risk_per_trade=risk_per_trade,
                         entry_price=entry_price,
                         stop_loss=stop_loss,
@@ -365,12 +370,10 @@ class PlannedOrderManager:
 
                 except Exception as row_error:
                     print(f"❌ ERROR processing row {index + 2}: {row_error}")
-                    import traceback
-                    traceback.print_exc()
+                    continue
 
             print(f"\n✅ Successfully loaded {len(orders)} orders from Excel")
             print(f"   Import time: {import_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"   Market hours: {'Yes' if is_market_hours(import_time) else 'No'}")
             
             return orders
 
@@ -379,8 +382,6 @@ class PlannedOrderManager:
             return []
         except Exception as e:
             print(f"❌ Error loading Excel file: {e}")
-            import traceback
-            traceback.print_exc()
             return []
 
 class ActiveOrder:

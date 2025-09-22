@@ -1,3 +1,4 @@
+from src.core.planned_order import Action, OrderType, PositionStrategy, SecurityType
 from src.core.ibkr_client import IbkrClient
 from src.core.trading_manager import TradingManager
 from src.core.abstract_data_feed import AbstractDataFeed
@@ -7,6 +8,12 @@ from src.data_feeds.mock_feed import MockFeed
 # Database Initialization Import - 2025-09-07 19:36 - Begin
 from src.core.database import init_database
 # Database Initialization Import - 2025-09-07 19:36 - End
+
+# Market Data Debug Tool Import - Begin
+from src.core.market_data_debug import MarketDataDebugger
+import datetime
+# Market Data Debug Tool Import - End
+
 import time
 import sys
 import argparse
@@ -24,6 +31,10 @@ def main():
         parser.add_argument('--interval', choices=['1m', '5m', '15m', '30m', '1h', '1d'],
                           default='1m', help='Data interval for historical mode')
         
+        # Add debug option
+        parser.add_argument('--debug-market-data', action='store_true',
+                          help='Run market data diagnostic before starting trading')
+        
         # Phase 2 - Remove Mock Command-line Parameters - 2025-09-07 13:26 - Begin
         # Removed: --anchor-price and --mock-trend parameters
         # Phase 2 - Remove Mock Command-line Parameters - 2025-09-07 13:26 - End        
@@ -37,8 +48,14 @@ def main():
         # Load planned orders first to get mock configuration
         # Phase 2 - Load Orders Before Feed Initialization - 2025-09-07 13:26 - Begin
         from src.core.planned_order import PlannedOrderManager
-        PlannedOrderManager.display_valid_values()
-        
+
+        # Replace with this if you want to display valid values:
+        print("📋 Valid Security Types:", [st.value for st in SecurityType])
+        print("📋 Valid Actions:", [a.value for a in Action])
+        print("📋 Valid Order Types:", [ot.value for ot in OrderType])
+        print("📋 Valid Position Strategies:", [ps.value for ps in PositionStrategy])
+        # Remove or replace the invalid method call - End
+
         planned_orders = []
         try:
             planned_orders = PlannedOrderManager.from_excel("plan.xlsx")
@@ -61,6 +78,32 @@ def main():
             if not ibkr_client.connect('127.0.0.1', 7497, 0):
                 print("Failed to connect to IB")
                 return
+            
+            # ==================== MARKET DATA DIAGNOSTIC - BEGIN ====================
+            if args.debug_market_data:
+                print("\n" + "="*60)
+                print("RUNNING MARKET DATA DIAGNOSTIC FOR IBKR SUPPORT")
+                print("="*60)
+
+                # Create and run debugger
+                debugger = MarketDataDebugger(ibkr_client)
+                summary = debugger.run_comprehensive_diagnostic([
+                    "EUR", "AAPL", "TSLA", "GLD", "ES", 
+                    "GBP", "NQ", "CL", "GC", "IBM"
+                ])
+
+                # Save detailed report
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                report_file = f"ibkr_market_data_diagnostic_{timestamp}.log"
+                debugger.save_diagnostic_report(report_file)
+
+                print(f"\n✅ Diagnostic complete! Report saved to: {report_file}")
+                print("📋 Please share this file with IBKR support for investigation")
+                print("="*60 + "\n")
+
+                # Optional: Add a pause to review the diagnostic before continuing
+                input("Press Enter to continue with trading, or Ctrl+C to exit and review the diagnostic...")
+            # ==================== MARKET DATA DIAGNOSTIC - END ====================
                 
         elif args.mode == 'historical':
             # Initialize historical/replay components with configurable parameters
@@ -89,7 +132,33 @@ def main():
             if not ibkr_client.connect('127.0.0.1', 7497, 0):
                 print("Failed to connect to IB")
                 return
-                 
+            
+            # ==================== MARKET DATA DIAGNOSTIC - BEGIN ====================
+            if args.debug_market_data:
+                print("\n" + "="*60)
+                print("RUNNING MARKET DATA DIAGNOSTIC FOR IBKR SUPPORT (Hybrid Mode)")
+                print("="*60)
+
+                # Create and run debugger
+                debugger = MarketDataDebugger(ibkr_client)
+                summary = debugger.run_comprehensive_diagnostic([
+                    "EUR", "AAPL", "TSLA", "GLD", "ES", 
+                    "GBP", "NQ", "CL", "GC", "IBM"
+                ])
+
+                # Save detailed report
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                report_file = f"ibkr_market_data_diagnostic_{timestamp}.log"
+                debugger.save_diagnostic_report(report_file)
+
+                print(f"\n✅ Diagnostic complete! Report saved to: {report_file}")
+                print("📋 Please share this file with IBKR support for investigation")
+                print("="*60 + "\n")
+
+                # Optional: Add a pause to review the diagnostic before continuing
+                input("Press Enter to continue with trading, or Ctrl+C to exit and review the diagnostic...")
+            # ==================== MARKET DATA DIAGNOSTIC - END ====================
+            
             # Initialize mock data feed
             data_feed.connect()
                    

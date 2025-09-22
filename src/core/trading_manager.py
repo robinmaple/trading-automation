@@ -12,7 +12,7 @@ import time
 import pandas as pd
 import logging
 
-from core.account_utils import detect_trading_environment
+from src.core.account_utils import detect_trading_environment
 from src.core.order_execution_orchestrator import OrderExecutionOrchestrator
 from src.core.monitoring_service import MonitoringService
 from src.core.order_lifecycle_manager import OrderLifecycleManager

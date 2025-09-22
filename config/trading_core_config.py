@@ -128,7 +128,7 @@ def validate_config(config: Dict[str, Any]) -> tuple[bool, str]:
 
     # Validate order defaults
     order_defaults = config['order_defaults']
-    if not Decimal('0') < order_defaults['risk_per_trade'] <= Decimal('0.1'):  # 10% upper bound
+    if not Decimal('0') < order_defaults['risk_per_trade'] <= Decimal('0.02'):  # 2% upper bound
         return False, "risk_per_trade must be between 0 and 0.1"
     if order_defaults['risk_reward_ratio'] < Decimal('1.0'):
         return False, "risk_reward_ratio must be at least 1.0"
