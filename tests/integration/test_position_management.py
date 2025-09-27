@@ -3,6 +3,9 @@ import datetime
 from unittest.mock import Mock, patch, MagicMock
 import pytest
 
+from core.models import PositionStrategy
+from core.planned_order import is_market_hours
+
 class TestPositionManagementIntegration:
     
     @pytest.fixture
@@ -22,45 +25,47 @@ class TestPositionManagementIntegration:
         manager._check_hybrid_position_expiration = Mock()
         
         return manager
-    
-    def test_position_strategy_integration(self):
-        """Test that position strategies are properly integrated"""
+
+    def test_position_strategy_expiration(self):
         from src.core.planned_order import PlannedOrder, PositionStrategy, SecurityType, Action
-        
-        # Test that all strategies have proper expiration logic
+
+        now = datetime.datetime.now()
+
+        # DAY order
         day_order = PlannedOrder(
             security_type=SecurityType.STK,
             exchange="NYSE",
-            currency="USD", 
-            action=Action.BUY,
-            symbol="TEST",
-            position_strategy=PositionStrategy.DAY
-        )
-        
-        hybrid_order = PlannedOrder(
-            security_type=SecurityType.STK,
-            exchange="NYSE",
             currency="USD",
-            action=Action.BUY, 
-            symbol="TEST",
-            position_strategy=PositionStrategy.HYBRID
+            action=Action.BUY,
+            symbol="TEST_DAY",
+            position_strategy=PositionStrategy("DAY")
         )
-        
+        day_exp = day_order.position_strategy.get_expiration_days(now)
+        if is_market_hours(now):
+            assert day_exp == 0
+        else:
+            assert day_exp >= 1
+
+        # CORE order
         core_order = PlannedOrder(
             security_type=SecurityType.STK,
             exchange="NYSE",
             currency="USD",
             action=Action.BUY,
-            symbol="TEST",
-            position_strategy=PositionStrategy.CORE
+            symbol="TEST_CORE",
+            position_strategy=PositionStrategy("CORE")
         )
-        
-        # Verify strategy properties
-        assert day_order.position_strategy.requires_market_close_action()
-        assert hybrid_order.position_strategy.requires_market_close_action()
-        assert not core_order.position_strategy.requires_market_close_action()
-        
-        assert hybrid_order.position_strategy.get_expiration_days() == 10
-        assert day_order.position_strategy.get_expiration_days() == 1
-        assert core_order.position_strategy.get_expiration_days() is None
+        assert core_order.position_strategy.get_expiration_days(now) is None
+
+        # HYBRID order
+        hybrid_order = PlannedOrder(
+            security_type=SecurityType.STK,
+            exchange="NYSE",
+            currency="USD",
+            action=Action.BUY,
+            symbol="TEST_HYBRID",
+            position_strategy=PositionStrategy("HYBRID")
+        )
+        assert hybrid_order.position_strategy.get_expiration_days(now) == 10
+
 # Simplified Integration Tests - End

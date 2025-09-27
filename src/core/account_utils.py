@@ -36,3 +36,9 @@ def is_paper_account(account_name: Optional[str]) -> bool:
         True if paper account, False if live account
     """
     return detect_trading_environment(account_name) == 'paper'
+
+def get_ibkr_port(account_name: str) -> int:
+    """Return the IBKR API port based on account type."""
+    if is_paper_account(account_name):
+        return 7497  # Paper trading
+    return 7496  # Live trading

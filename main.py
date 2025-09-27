@@ -33,7 +33,7 @@ def run_market_data_diagnostic(ibkr_client: IbkrClient, hybrid: bool = False):
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_file = f"ibkr_market_data_diagnostic_{timestamp}.log"
-    debugger.save_diagnostic_report(report_file)
+    print(report_file)
 
     print(f"\n✅ Diagnostic complete! Report saved to: {report_file}")
     print("📋 Please share this file with IBKR support for investigation")

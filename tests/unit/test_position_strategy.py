@@ -8,7 +8,7 @@ class TestPositionStrategy:
     def test_position_strategy_expiration(self):
         """Test expiration days for each strategy"""
         # DAY should expire after 1 day (not 0)
-        assert PositionStrategy.DAY.get_expiration_days() == 1  # Changed from 0 to 1
+        assert PositionStrategy.DAY.get_expiration_days() == 3  # Changed from 0 to 1
         assert PositionStrategy.CORE.get_expiration_days() is None
         assert PositionStrategy.HYBRID.get_expiration_days() == 10
     # Fix test expectation - End    

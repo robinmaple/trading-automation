@@ -22,7 +22,7 @@ class IBKRDataFeed(AbstractDataFeed):
         self.market_data = MarketDataManager(ibkr_client)
         self._connected = False
 
-    def connect(self, host='127.0.0.1', port=7497, client_id=0) -> bool:
+    def connect(self, host='127.0.0.1', port=None, client_id=0) -> bool:
         """Establish a connection to IB Gateway/TWS. Returns success status."""
         try:
             success = self.ibkr_client.connect(host, port, client_id)

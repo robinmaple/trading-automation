@@ -23,13 +23,53 @@ class OrderEligibilityService:
     # Phase B Additions - End
 
     def can_trade(self, planned_order) -> bool:
-        """
-        Check if a single order is eligible to be traded based on basic constraints.
-        Placeholder for future logic checking duplicates, expiration, risk limits, etc.
-        """
-        # TODO: Implement actual eligibility checks (duplicates, expiration, risk limits, etc.)
-        # For now, return True as a placeholder - this should be replaced with real logic.
+        """Layer 2: Business logic validation - should this order be traded?"""
+        try:
+            # Stop loss business rule validation
+            if not self._validate_stop_loss_rules(planned_order):
+                return False
+                
+            # Check for duplicate active orders
+            if self._is_duplicate_of_active_order(planned_order):
+                return False
+                
+            # Check if order is expired (if expiration logic exists)
+            if hasattr(planned_order, 'expiration') and self._is_order_expired(planned_order):
+                return False
+                
+            # Additional business rules can be added here
+            return True
+            
+        except Exception as e:
+            print(f"❌ Business validation error for {planned_order.symbol}: {e}")
+            return False
+
+    def _validate_stop_loss_rules(self, order) -> bool:
+        """Validate stop loss relative to entry price based on action."""
+        if order.stop_loss is None:
+            return True  # Some orders might not have stop losses
+            
+        if order.action == 'BUY':
+            if order.stop_loss >= order.entry_price:
+                print(f"❌ Stop loss must be below entry price for BUY orders")
+                return False
+        elif order.action == 'SELL':
+            if order.stop_loss <= order.entry_price:
+                print(f"❌ Stop loss must be above entry price for SELL orders")
+                return False
+                
         return True
+
+    def _is_duplicate_of_active_order(self, order) -> bool:
+        """Check if this order is a duplicate of an already active order."""
+        # This would need access to active orders - might require dependency injection
+        # For now, return False as placeholder
+        return False
+
+    def _is_order_expired(self, order) -> bool:
+        """Check if the order has expired based on its setup or timeframe."""
+        # Placeholder - implement based on your expiration logic
+        return False
 
     def find_executable_orders(self) -> list:
         """Find all orders eligible for execution, enriched with probability scores and effective priority."""

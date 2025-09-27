@@ -12,12 +12,12 @@ import threading
 import datetime
 
 from src.core.ibkr_types import IbkrOrder, IbkrPosition
-from src.core.account_utils import is_paper_account  # ADD THIS IMPORT
+from src.core.account_utils import is_paper_account, get_ibkr_port
 
 class IbkrClient(EClient, EWrapper):
     """Manages the connection and all communication with the IBKR trading API."""
 
-    def __init__(self, host='127.0.0.1', port=7497, client_id=1):  # ADD DEFAULT PARAMETERS
+    def __init__(self, host='127.0.0.1', port=None, client_id=1, mode='auto'):
         """Initialize the client, connection flags, and data stores."""
         EClient.__init__(self, self)
         self.next_valid_id = None
@@ -44,25 +44,48 @@ class IbkrClient(EClient, EWrapper):
         self.positions_received_event = threading.Event()
         self.open_orders_end_received = False
         self.positions_end_received = False
+        self.market_data_manager = None
+
+        # Add port determination based on mode
+        if port is None:
+            self.port = self._get_port_from_mode(mode)
+        else:
+            self.port = port
+        self.mode = mode
 
     def connect(self, host: Optional[str] = None, port: Optional[int] = None, 
                 client_id: Optional[int] = None) -> bool:
         """Establish a connection to IB Gateway/TWS. Returns success status."""
-        try:
-            # Use provided parameters or fall back to instance defaults
-            connect_host = host or self.host
-            connect_port = port or self.port
-            connect_client_id = client_id or self.client_id
-            
-            EClient.connect(self, connect_host, connect_port, connect_client_id)
-            self.thread = threading.Thread(target=self.run, daemon=True)
-            self.thread.start()
-            print(f"Connecting to IB API at {connect_host}:{connect_port}...")
-            return self.connection_event.wait(10)
-        except Exception as e:
-            print(f"Connection failed: {e}")
+
+        # Use provided parameters or fall back to instance defaults
+        connect_host = host or self.host
+        connect_port = port or self.port
+        connect_client_id = client_id or self.client_id
+
+        EClient.connect(self, connect_host, connect_port, connect_client_id)
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+        print(f"Connecting to IB API at {connect_host}:{connect_port}...")
+
+        # Wait for both: valid ID and account info
+        ready = self.connection_event.wait(10) and self.account_ready_event.wait(10)
+        if not ready:
+            print("❌ Connection timed out waiting for account details")
             return False
 
+        # Validate account ↔ port
+        expected_port = get_ibkr_port(self.account_name)
+        if connect_port != expected_port:
+            print(f"❌ Port mismatch: account {self.account_name} "
+                  f"requires port {expected_port}, but tried {connect_port}")
+            self.disconnect()
+            return False
+
+        print(f"✅ Connected to {self.account_name} "
+              f"({ 'PAPER' if self.is_paper_account else 'LIVE' }) on port {connect_port}")
+        return True
+    
     def disconnect(self) -> None:
         """Cleanly disconnect from TWS."""
         if self.connected:
@@ -423,3 +446,28 @@ class IbkrClient(EClient, EWrapper):
         self.positions_end_received = True
         self.positions_received_event.set()
         print("📊 Positions request completed")
+
+    def tickPrice(self, reqId: int, tickType: int, price: float, attrib) -> None:
+        """Callback: Receive market data price tick and forward to MarketDataManager if set."""
+        super().tickPrice(reqId, tickType, price, attrib)
+
+        if self.market_data_manager:
+            try:
+                self.market_data_manager.on_tick_price(reqId, tickType, price, attrib)
+            except Exception as e:
+                print(f"⚠️ Error forwarding tickPrice to MarketDataManager: {e}")
+
+    # Add helper method
+    def _get_port_from_mode(self, mode: str) -> int:
+        """Determine port based on mode parameter."""
+        if mode == 'paper':
+            return 7497
+        elif mode == 'live':
+            return 7496
+        elif mode == 'auto':
+            # Default to paper for auto mode until account is detected
+            return 7497
+        else:
+            raise ValueError(f"Invalid mode: {mode}. Use 'paper', 'live', or 'auto'")
+
+    # Simplify connect method - remove port validation logic

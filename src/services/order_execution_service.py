@@ -30,6 +30,108 @@ class OrderExecutionService:
         self.order_persistence = order_persistence
         self.active_orders = active_orders
 
+ # === NEW VALIDATION METHODS ===
+    def _validate_order_basic(self, order) -> tuple[bool, str]:
+        """Layer 3a: Basic field validation as safety net before execution.
+
+        Accepts Action enums (Action.BUY / Action.SELL), plain strings ('BUY'), or objects
+        whose string representation yields 'BUY'/'SELL'. Returns (bool, message).
+        """
+        try:
+            # Symbol validation
+            symbol_str = ""
+            try:
+                symbol_str = str(order.symbol).strip()
+            except Exception:
+                symbol_str = ""
+            if not symbol_str or symbol_str in ['', '0', 'nan', 'None', 'null']:
+                return False, f"Invalid symbol: '{order.symbol}'"
+
+            # Price validation
+            if not hasattr(order, "entry_price") or order.entry_price is None or order.entry_price <= 0:
+                return False, f"Invalid entry price: {getattr(order, 'entry_price', None)}"
+
+            # Stop loss validation (basic syntax)
+            if getattr(order, "stop_loss", None) is not None and order.stop_loss <= 0:
+                return False, f"Invalid stop loss price: {order.stop_loss}"
+
+            # Action validation - accept enums or strings
+            action_val = None
+            try:
+                # Try common enum attributes first
+                action_val = getattr(order.action, "value", None) or getattr(order.action, "name", None)
+            except Exception:
+                action_val = None
+
+            if action_val is None:
+                # Fallback to string representation
+                try:
+                    action_val = str(order.action)
+                except Exception:
+                    action_val = ""
+
+            action_str = str(action_val).upper().strip()
+            if action_str not in ("BUY", "SELL"):
+                return False, f"Invalid action: {order.action}"
+
+            return True, "Basic validation passed"
+
+        except Exception as e:
+            return False, f"Basic validation error: {e}"
+
+    def _validate_market_data_available(self, order) -> tuple[bool, str]:
+        """Layer 3b: Validate market data availability for the symbol."""
+        try:
+            if not hasattr(self._trading_manager, 'data_feed'):
+                return False, "Data feed not available"
+                
+            if not self._trading_manager.data_feed.is_connected():
+                return False, "Data feed not connected"
+                
+            current_price = self._trading_manager.data_feed.get_current_price(order.symbol)
+            if current_price is None or current_price <= 0:
+                return False, f"No market data available for {order.symbol}"
+                
+            return True, "Market data available"
+            
+        except Exception as e:
+            return False, f"Market data validation error: {e}"
+
+    def _validate_broker_connection(self) -> tuple[bool, str]:
+        """Layer 3c: Validate broker connection status."""
+        if self._ibkr_client and self._ibkr_client.connected:
+            return True, "Broker connected"
+        return False, "Broker not connected"
+
+    def _validate_execution_conditions(self, order, quantity, total_capital) -> tuple[bool, str]:
+        """Layer 3: Comprehensive pre-execution validation."""
+        try:
+            # Basic field validation (safety net)
+            basic_valid, basic_message = self._validate_order_basic(order)
+            if not basic_valid:
+                return False, f"Basic validation failed: {basic_message}"
+                
+            # Market data availability
+            market_valid, market_message = self._validate_market_data_available(order)
+            if not market_valid:
+                return False, f"Market data issue: {market_message}"
+                
+            # Broker connection
+            broker_valid, broker_message = self._validate_broker_connection()
+            if not broker_valid:
+                return False, f"Broker issue: {broker_message}"
+                
+            # Margin validation (existing)
+            margin_valid, margin_message = self._validate_order_margin(order, quantity, total_capital)
+            if not margin_valid:
+                return False, f"Margin validation failed: {margin_message}"
+                
+            return True, "All execution conditions met"
+            
+        except Exception as e:
+            return False, f"Execution validation error: {e}"
+    # === END NEW VALIDATION METHODS ===
+
     # Phase B Additions - Begin
     def _record_order_attempt(self, planned_order, attempt_type, fill_probability=None,
                             effective_priority=None, quantity=None, capital_commitment=None,
@@ -134,6 +236,27 @@ class OrderExecutionService:
         Execute a single order while incorporating fill probability into ActiveOrder tracking.
         Phase B: Supports unified execution record for entry/SL/PT.
         """
+
+    # === NEW VALIDATION - ADD THIS BLOCK ===
+        exec_valid, exec_message = self._validate_execution_conditions(order, quantity, total_capital)
+        if not exec_valid:
+            print(f"❌ Order execution rejected: {exec_message}")
+            
+            db_id = self._trading_manager._find_planned_order_db_id(order)
+            if db_id:
+                self.order_persistence.handle_order_rejection(db_id, exec_message)
+            else:
+                print(f"❌ Cannot mark order as canceled: Database ID not found for {order.symbol}")
+            
+            # Record failed attempt due to validation
+            self._record_order_attempt(
+                order, 'PLACEMENT', fill_probability, effective_priority,
+                quantity, capital_commitment, 'FAILED', None, exec_message,
+                account_number
+            )
+            return False
+    # === END NEW VALIDATION BLOCK ===
+
         margin_valid, margin_message = self._validate_order_margin(order, quantity, total_capital)
         if not margin_valid:
             db_id = self._trading_manager._find_planned_order_db_id(order)
@@ -141,6 +264,7 @@ class OrderExecutionService:
                 self.order_persistence.handle_order_rejection(db_id, margin_message)
             else:
                 print(f"❌ Cannot mark order as canceled: Database ID not found for {order.symbol}")
+            
             
             # Phase B Additions - Begin
             # Record failed attempt due to margin validation

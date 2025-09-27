@@ -48,7 +48,7 @@ class OrderLoadingService:
                     continue
 
                 # Business-rule validation
-                if not self._trading_manager._validate_order_basic(excel_order):
+                if not self._validate_order_basic_fields(excel_order):
                     print(f"❌ Skipping order {excel_order.symbol}: basic validation failed")
                     invalid_count += 1
                     continue
@@ -104,3 +104,41 @@ class OrderLoadingService:
         except Exception as e:
             print(f"❌ Error checking for existing order {order.symbol}: {e}")
             return None
+
+    def _validate_order_basic_fields(self, order) -> tuple[bool, str]:
+        """Layer 1: Basic field validation for data integrity before persistence."""
+        try:
+            # Symbol validation
+            symbol_str = str(order.symbol).strip() if order.symbol else ""
+            if not symbol_str or symbol_str in ['', '0', 'nan', 'None', 'null']:
+                return False, f"Invalid symbol: '{order.symbol}'"
+            
+            # Symbol should be meaningful (at least 1 character, not just numbers)
+            if len(symbol_str) < 1 or (symbol_str.isdigit() and len(symbol_str) < 2):
+                return False, f"Symbol too short or invalid: '{order.symbol}'"
+                
+            # Price validation
+            if order.entry_price is None or order.entry_price <= 0:
+                return False, f"Invalid entry price: {order.entry_price}"
+                
+            # Stop loss validation (basic syntax only - business logic comes later)
+            if order.stop_loss is not None and order.stop_loss <= 0:
+                return False, f"Invalid stop loss price: {order.stop_loss}"
+                
+            # Action validation
+            if order.action not in ['BUY', 'SELL']:
+                return False, f"Invalid action: {order.action}"
+                
+            # Security type validation
+            if not order.security_type:
+                return False, "Security type is required"
+                
+            # Exchange validation
+            if not order.exchange:
+                return False, "Exchange is required"
+                
+            return True, "Basic validation passed"
+            
+        except Exception as e:
+            return False, f"Basic validation error: {e}"
+        
