@@ -29,7 +29,6 @@ def make_mock_planned_order(symbol="AAPL", action="BUY", order_type="LIMIT"):
     mock_order.priority = 3
     return mock_order
 
-
 def make_mock_db_order(symbol="AAPL", action="BUY", order_type="LIMIT", status="FILLED"):
     mock_db = Mock(spec=PlannedOrderDB)
     mock_db.symbol = symbol
@@ -43,6 +42,23 @@ def make_mock_db_order(symbol="AAPL", action="BUY", order_type="LIMIT", status="
     mock_db.status_message = None
     return mock_db
 
+def make_mock_planned_order(symbol="AAPL", action="BUY", order_type="LIMIT"):
+    mock_order = Mock(spec=PlannedOrder)
+    mock_order.symbol = symbol
+    mock_order.action = Mock()
+    mock_order.action.value = action
+    mock_order.order_type = Mock()
+    mock_order.order_type.value = order_type
+    mock_order.entry_price = 100.0
+    mock_order.stop_loss = 95.0
+    mock_order.risk_per_trade = 0.01
+    mock_order.risk_reward_ratio = 2.0
+    mock_order.priority = 3
+    
+    # Add validate method that throws ValueError for invalid stop loss
+    mock_order.validate = Mock()
+    
+    return mock_order
 
 # ---------------------------
 # Fixtures
@@ -254,10 +270,13 @@ def test_validate_order_valid(manager):
     assert valid
     assert msg is None
 
-
+# Then in the test, configure the mock behavior:
 def test_validate_order_invalid_stop_loss(manager):
     order = make_mock_planned_order()
     order.stop_loss = 105.0  # above entry for BUY
+    
+    # Configure the mock to throw the expected exception
+    order.validate.side_effect = ValueError("Stop loss must be below entry price for BUY orders")
     
     valid, msg = manager.validate_order(order)
     assert not valid

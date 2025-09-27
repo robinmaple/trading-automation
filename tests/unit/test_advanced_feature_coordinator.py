@@ -12,19 +12,27 @@ from src.services.position_sizing_service import PositionSizingService
 # ------------------------
 # Fixtures
 # ------------------------
+# In conftest.py or the test file, find the valid_order fixture and update it:
+
 @pytest.fixture
 def valid_order():
+    from src.core.planned_order import PlannedOrder, SecurityType, Action, PositionStrategy
+    
     return PlannedOrder(
-        symbol="AAPL",
-        priority=1,
-        risk_reward_ratio=2.0,
-        risk_per_trade=0.02,  # Max allowed
-        security_type="equity",
-        exchange="NASDAQ",
+        security_type=SecurityType.STK,
+        exchange="SMART",
         currency="USD",
-        action=Action.BUY
+        action=Action.BUY,
+        symbol="AAPL",
+        entry_price=150.0,  # ← ADD REQUIRED FIELD
+        stop_loss=145.0,    # ← ADD REQUIRED FIELD
+        overall_trend="Bull", # ← ADD REQUIRED FIELD
+        # Include other required fields as needed
+        risk_per_trade=0.01,
+        risk_reward_ratio=2.0,
+        priority=3,
+        position_strategy=PositionStrategy.DAY
     )
-
 
 @pytest.fixture
 def mock_data_feed():

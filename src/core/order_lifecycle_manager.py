@@ -1,4 +1,3 @@
-# src/core/order_lifecycle_manager.py
 """
 Manages the complete order lifecycle from loading to execution.
 Handles order validation, persistence, state transitions, and duplicate detection.
@@ -77,34 +76,35 @@ class OrderLifecycleManager:
             return False
             
     def validate_order(self, order: PlannedOrder) -> Tuple[bool, Optional[str]]:
-        """Validate an order with detailed error messages."""
-        # Basic parameter validation
-        if order.entry_price is None:
-            return False, "Entry price is required"
-        if order.stop_loss is None:
-            return False, "Stop loss is required"
-        if order.risk_per_trade is None:
-            return False, "Risk per trade is required"
+        """
+        Validate order system state - assumes data integrity already validated by PlannedOrder.
+        
+        This method checks system-level constraints, not data integrity. It assumes
+        the PlannedOrder object is internally valid (required fields present, business
+        rules satisfied). Data integrity should be enforced at object creation.
+        """
+        # <Delegate Data Integrity to PlannedOrder - Begin>
+        try:
+            # Fail fast if data integrity issues - should never happen for valid orders
+            order.validate()
+        except ValueError as e:
+            # This indicates a serious data integrity issue that should be fixed upstream
+            return False, f"Data integrity violation: {e}"
+        # <Delegate Data Integrity to PlannedOrder - End>
             
-        # Price relationship validation
-        if order.action.value == 'BUY':
-            if order.stop_loss >= order.entry_price:
-                return False, "Stop loss must be below entry price for BUY orders"
-        elif order.action.value == 'SELL':
-            if order.stop_loss <= order.entry_price:
-                return False, "Stop loss must be above entry price for SELL orders"
-        else:
-            return False, f"Invalid order action: {order.action.value}"
+        # <System State Validation - Begin>
+        # UNIQUE: Check for open positions
+        if self.state_service.has_open_position(order.symbol):
+            return False, f"Open position exists for {order.symbol}"
             
-        # Risk management validation
-        if order.risk_per_trade <= 0:
-            return False, "Risk per trade must be positive"
-        if order.risk_per_trade > 0.02:  # 2% max risk
-            return False, "Risk per trade cannot exceed 2%"
-        if order.risk_reward_ratio < 1.0:
-            return False, "Risk/reward ratio must be at least 1.0"
-        if not 1 <= order.priority <= 5:
-            return False, "Priority must be between 1 and 5"
+        # UNIQUE: Check database state for existing orders
+        existing_order = self.find_existing_order(order)
+        if existing_order:
+            if existing_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
+                return False, f"Active order already exists: {existing_order.status}"
+            # Allow re-execution of failed/cancelled orders
+            # (they remain in the system for record-keeping but can be re-tried)
+        # <System State Validation - End>
             
         return True, None
         
@@ -138,25 +138,8 @@ class OrderLifecycleManager:
         
     def is_order_executable(self, order: PlannedOrder) -> Tuple[bool, Optional[str]]:
         """Check if an order can be executed based on current state."""
-        # Basic validation first
-        is_valid, error_msg = self.validate_order(order)
-        if not is_valid:
-            return False, error_msg
-            
-        # Check if order already exists in certain states
-        existing_order = self.find_existing_order(order)
-        if existing_order:
-            if existing_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
-                return False, f"Order already in state: {existing_order.status}"
-            if existing_order.status in ['CANCELLED', 'REJECTED', 'FAILED']:
-                # Allow re-execution of failed/cancelled orders
-                pass
-                
-        # Check for open positions
-        if self.state_service.has_open_position(order.symbol):
-            return False, f"Open position exists for {order.symbol}"
-            
-        return True, None
+        # Delegate to validate_order for comprehensive checking
+        return self.validate_order(order)
         
     def update_order_status(self, order: PlannedOrder, status: OrderState, 
                           message: Optional[str] = None) -> bool:

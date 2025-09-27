@@ -1,7 +1,48 @@
 """
-Service responsible for determining if a PlannedOrder is eligible for execution.
-Evaluates criteria such as duplicates, expiration, risk limits, and market conditions
-via the ProbabilityEngine to decide if an order should be executed.
+Phase B Order Eligibility Service
+=================================
+
+Purpose:
+--------
+Determines if PlannedOrders are eligible for execution based on Phase B business logic,
+market conditions, and probability scoring. This service focuses on dynamic, real-time
+factors that affect order execution quality.
+
+Responsibilities (VALIDATE HERE):
+---------------------------------
+- Order expiration checks (time-based business rules)
+- Market condition assessments (via ProbabilityEngine)
+- Trading strategy quality evaluations
+- Real-time risk and opportunity scoring
+- Phase B specific business rules
+
+Non-Responsibilities (VALIDATE ELSEWHERE):
+------------------------------------------
+- Basic data integrity (PlannedOrder.validate())
+- Stop loss positioning (OrderLifecycleManager)
+- Duplicate order detection (OrderLifecycleManager) 
+- Risk limit compliance (OrderLifecycleManager/RiskManagementService)
+- Open position checks (OrderLifecycleManager/StateService)
+
+Architecture Context:
+--------------------
+This service operates AFTER fundamental validation. It assumes orders have already passed:
+1. PlannedOrder data integrity checks (__post_init__)
+2. OrderLifecycleManager system validation (validate_order)
+
+Usage Flow:
+----------
+1. OrderLifecycleManager validates order fundamentals
+2. This service evaluates Phase B eligibility criteria  
+3. ProbabilityEngine scores fill probability
+4. Orders are prioritized and executed accordingly
+
+Phase B Features:
+---------------
+- Machine learning probability scoring
+- Comprehensive feature logging for model training
+- Dynamic priority adjustment based on market conditions
+- Business rule enforcement for advanced strategies
 """
 
 import datetime
@@ -25,46 +66,26 @@ class OrderEligibilityService:
     def can_trade(self, planned_order) -> bool:
         """Layer 2: Business logic validation - should this order be traded?"""
         try:
-            # Stop loss business rule validation
-            if not self._validate_stop_loss_rules(planned_order):
-                return False
-                
-            # Check for duplicate active orders
-            if self._is_duplicate_of_active_order(planned_order):
-                return False
-                
+            # <Remove Duplicate Validation - Begin>
+            # STOP LOSS VALIDATION: Handled by OrderLifecycleManager.validate_order()
+            # DUPLICATE CHECKING: Handled by OrderLifecycleManager.is_order_executable()
+            # <Remove Duplicate Validation - End>
+            
             # Check if order is expired (if expiration logic exists)
             if hasattr(planned_order, 'expiration') and self._is_order_expired(planned_order):
                 return False
                 
-            # Additional business rules can be added here
+            # Additional Phase B business rules can be added here
             return True
             
         except Exception as e:
             print(f"❌ Business validation error for {planned_order.symbol}: {e}")
             return False
 
-    def _validate_stop_loss_rules(self, order) -> bool:
-        """Validate stop loss relative to entry price based on action."""
-        if order.stop_loss is None:
-            return True  # Some orders might not have stop losses
-            
-        if order.action == 'BUY':
-            if order.stop_loss >= order.entry_price:
-                print(f"❌ Stop loss must be below entry price for BUY orders")
-                return False
-        elif order.action == 'SELL':
-            if order.stop_loss <= order.entry_price:
-                print(f"❌ Stop loss must be above entry price for SELL orders")
-                return False
-                
-        return True
-
-    def _is_duplicate_of_active_order(self, order) -> bool:
-        """Check if this order is a duplicate of an already active order."""
-        # This would need access to active orders - might require dependency injection
-        # For now, return False as placeholder
-        return False
+    # <Remove Duplicate Methods - Begin>
+    # REMOVED: _validate_stop_loss_rules() - Duplicate of OrderLifecycleManager logic
+    # REMOVED: _is_duplicate_of_active_order() - Placeholder, handled by OrderLifecycleManager
+    # <Remove Duplicate Methods - End>
 
     def _is_order_expired(self, order) -> bool:
         """Check if the order has expired based on its setup or timeframe."""
@@ -77,7 +98,7 @@ class OrderEligibilityService:
 
         for order in self.planned_orders:
             if not self.can_trade(order):
-                print(f"   ⚠️  {order.symbol}: Cannot place order (basic constraints failed)")
+                print(f"   ⚠️  {order.symbol}: Cannot place order (Phase B constraints failed)")
                 continue
 
             # Phase B: compute probability score WITH comprehensive features

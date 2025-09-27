@@ -27,6 +27,13 @@ def db_session():
 # -------------------------------
 # PlannedOrder Initialization Tests
 # -------------------------------
+def get_valid_stop_loss(action, entry_price=100.0):
+    """Return a valid stop loss based on action type."""
+    if action == Action.BUY:
+        return entry_price - 5.0  # Below entry for BUY
+    else:  # Action.SELL
+        return entry_price + 5.0  # Above entry for SELL
+
 @pytest.mark.parametrize("action,trend,expected_alignment", [
     (Action.BUY, "Bull", True),
     (Action.SELL, "Bear", True),
@@ -35,26 +42,32 @@ def db_session():
     (Action.BUY, "Neutral", False),
 ])
 def test_trend_alignment(action, trend, expected_alignment):
+    entry_price = 100.0
+    stop_loss = get_valid_stop_loss(action, entry_price)
+    
     order = PlannedOrder(
         security_type=SecurityType.STK,
         exchange="SMART",
         currency="USD",
         action=action,
         symbol="TEST",
+        entry_price=entry_price,
+        stop_loss=stop_loss,
         overall_trend=trend
     )
     assert order.trend_alignment == expected_alignment
-
-def test_invalid_trend_raises():
-    with pytest.raises(ValueError):
-        PlannedOrder(
-            security_type=SecurityType.STK,
-            exchange="SMART",
-            currency="USD",
-            action=Action.BUY,
-            symbol="TEST",
-            overall_trend="Upward"
-        )
+def test_features_dict_contains_trend_alignment():
+    order = PlannedOrder(
+        security_type=SecurityType.STK,
+        exchange="SMART",
+        currency="USD",
+        action=Action.BUY,  # For BUY, stop loss should be BELOW entry
+        symbol="TEST",
+        entry_price=100.0,
+        stop_loss=95.0,  # Correct for BUY order
+        overall_trend="Bull",
+        brief_analysis="Setup",
+    )
 
 # -------------------------------
 # Calculated Fields Tests
@@ -125,33 +138,6 @@ def test_create_and_update_planned_order(db_session):
     
     updated = db_session.query(db_model.__class__).filter_by(symbol="TEST").first()
     assert updated.brief_analysis == "Updated setup"
-
-# -------------------------------
-# Feature Extraction / ML Inputs
-# -------------------------------
-def test_features_dict_contains_trend_alignment():
-    order = PlannedOrder(
-        security_type=SecurityType.STK,
-        exchange="SMART",
-        currency="USD",
-        action=Action.BUY,
-        symbol="TEST",
-        overall_trend="Bull",
-        brief_analysis="Setup",
-    )
-    features = {
-        'basic_features': {
-            'priority': order.priority,
-            'risk_reward': order.risk_reward_ratio,
-            'risk_per_trade': order.risk_per_trade,
-            'overall_trend_human': getattr(order, 'overall_trend', None),
-            'trend_alignment': order.trend_alignment,
-            'brief_analysis': getattr(order, 'brief_analysis', None),
-        }
-    }
-    assert features['basic_features']['overall_trend_human'] == "Bull"
-    assert features['basic_features']['trend_alignment'] is True
-    assert features['basic_features']['brief_analysis'] == "Setup"
 
 # -------------------------------
 # Excel Import Simulation

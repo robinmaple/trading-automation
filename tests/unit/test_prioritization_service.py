@@ -177,10 +177,9 @@ class TestPrioritizationService:
         assert efficiency > 0
         assert isinstance(efficiency, float)
         
-    # Fix the test to use proper PositionStrategy objects - Begin
     def test_calculate_efficiency_invalid_order(self):
         """Test efficiency calculation handles invalid orders gracefully"""
-        from src.core.planned_order import PlannedOrder, Action, PositionStrategy
+        from src.core.planned_order import PlannedOrder, Action, PositionStrategy, SecurityType
         
         # Test with None input
         result = self.service.calculate_efficiency(None, 100000)
@@ -198,25 +197,37 @@ class TestPrioritizationService:
         result = self.service.calculate_efficiency(fake_order, 100000)
         assert result == 0.0
         
-        # Test with real PlannedOrder but None prices - USE PositionStrategy ENUM
-        order = PlannedOrder(
-            security_type="STK",
+        # <FIXED: Test with real PlannedOrder but invalid prices - USE MOCK>
+        # We can't create an invalid PlannedOrder anymore due to validation
+        # Instead, test with a mock that simulates calculation failure
+        from unittest.mock import Mock
+        invalid_order = Mock(spec=PlannedOrder)
+        invalid_order.entry_price = None
+        invalid_order.stop_loss = None
+        invalid_order.calculate_quantity.side_effect = ValueError("Missing required prices")
+        
+        result = self.service.calculate_efficiency(invalid_order, 100000)
+        assert result == 0.0
+        
+        # <ADDITIONAL TEST: Valid order should work>
+        # Also test that valid orders calculate correctly
+        valid_order = PlannedOrder(
+            security_type=SecurityType.STK,  # USE ENUM
             exchange="SMART", 
             currency="USD",
             action=Action.BUY,
             symbol="TEST",
-            order_type="LMT",
-            entry_price=None,  # This makes it invalid
-            stop_loss=None,    # This makes it invalid
+            entry_price=100.0,  # REQUIRED
+            stop_loss=95.0,     # REQUIRED
             risk_per_trade=0.01,
             risk_reward_ratio=2.0,
-            position_strategy=PositionStrategy.DAY,  # USE ENUM, NOT STRING
-            priority=3
+            position_strategy=PositionStrategy.DAY,  # USE ENUM
+            priority=3,
+            overall_trend="Bull"  # REQUIRED
         )
         
-        result = self.service.calculate_efficiency(order, 100000)
-        assert result == 0.0
-    # Fix the test to use proper PositionStrategy objects - End
+        result = self.service.calculate_efficiency(valid_order, 100000)
+        assert result > 0.0  # Should calculate a positive efficiency
 
     def test_deterministic_score_calculation(self, prioritization_service, sample_buy_order):
         """Test comprehensive deterministic score calculation."""

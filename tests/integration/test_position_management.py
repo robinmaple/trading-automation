@@ -31,13 +31,16 @@ class TestPositionManagementIntegration:
 
         now = datetime.datetime.now()
 
-        # DAY order
+        # DAY order - ADD REQUIRED FIELDS
         day_order = PlannedOrder(
             security_type=SecurityType.STK,
             exchange="NYSE",
             currency="USD",
             action=Action.BUY,
             symbol="TEST_DAY",
+            entry_price=100.0,  # ← ADD REQUIRED FIELD
+            stop_loss=95.0,     # ← ADD REQUIRED FIELD
+            overall_trend="Bull", # ← ADD REQUIRED FIELD
             position_strategy=PositionStrategy("DAY")
         )
         day_exp = day_order.position_strategy.get_expiration_days(now)
@@ -46,24 +49,30 @@ class TestPositionManagementIntegration:
         else:
             assert day_exp >= 1
 
-        # CORE order
+        # CORE order - ADD REQUIRED FIELDS
         core_order = PlannedOrder(
             security_type=SecurityType.STK,
             exchange="NYSE",
             currency="USD",
             action=Action.BUY,
             symbol="TEST_CORE",
+            entry_price=100.0,  # ← ADD REQUIRED FIELD
+            stop_loss=95.0,     # ← ADD REQUIRED FIELD
+            overall_trend="Bull", # ← ADD REQUIRED FIELD
             position_strategy=PositionStrategy("CORE")
         )
         assert core_order.position_strategy.get_expiration_days(now) is None
 
-        # HYBRID order
+        # HYBRID order - ADD REQUIRED FIELDS
         hybrid_order = PlannedOrder(
             security_type=SecurityType.STK,
             exchange="NYSE",
             currency="USD",
             action=Action.BUY,
             symbol="TEST_HYBRID",
+            entry_price=100.0,  # ← ADD REQUIRED FIELD
+            stop_loss=95.0,     # ← ADD REQUIRED FIELD
+            overall_trend="Bull", # ← ADD REQUIRED FIELD
             position_strategy=PositionStrategy("HYBRID")
         )
         assert hybrid_order.position_strategy.get_expiration_days(now) == 10

@@ -185,40 +185,76 @@ class PlannedOrder:
         self._set_expiration_date()
 
     def validate(self) -> None:
-        """Enforce business rules on order parameters."""
-        # Check for None values first - Begin
+        """Enforce business rules and data integrity on order parameters."""
+        # <Essential Field Validation - Begin>
+        # These fields are required for any meaningful trading order
+        if self.entry_price is None:
+            raise ValueError("Entry price is required")
+        if self.stop_loss is None:
+            raise ValueError("Stop loss is required")
+        if not self.symbol or not isinstance(self.symbol, str) or self.symbol.strip() == "":
+            raise ValueError("Symbol is required and must be a non-empty string")
+        if self.action is None:
+            raise ValueError("Action is required")
+        if self.security_type is None:
+            raise ValueError("Security type is required")
+        if not self.exchange or self.exchange.strip() == "":
+            raise ValueError("Exchange is required")
+        if not self.currency or self.currency.strip() == "":
+            raise ValueError("Currency is required")
+        # <Essential Field Validation - End>
+
+        # <Business Logic Validation - Begin>
+        # Risk management validation
         if self.risk_per_trade is None:
             raise ValueError("Risk per trade cannot be None")
         if self.risk_reward_ratio is None:
             raise ValueError("Risk reward ratio cannot be None")  
         if self.priority is None:
             raise ValueError("Priority cannot be None")
-        # Phase 1 validation for overall_trend
-        allowed_trends = ['Bull', 'Bear', 'Neutral']
-        if not self.overall_trend or self.overall_trend not in allowed_trends:
-            raise ValueError(f"overall_trend must be one of {allowed_trends}, got '{self.overall_trend}'")
-        # Check for None values first - End
 
         if not 1 <= self.priority <= 5:
             raise ValueError("Priority must be between 1 and 5")
-        # Phase B Additions - Begin
+            
+        if self.risk_per_trade <= 0:
+            raise ValueError("Risk per trade must be positive")
+        if self.risk_per_trade > 0.02:  # 2% max risk
+            raise ValueError("Risk per trade cannot exceed 2%")
+        if self.risk_reward_ratio < 1.0:
+            raise ValueError("Risk/reward ratio must be at least 1.0")
+
+        # Stop loss positioning logic
+        if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
+        (self.action == Action.SELL and self.stop_loss <= self.entry_price):
+            raise ValueError("Stop loss must be on the correct side of the entry price for a protective order")
+        # <Business Logic Validation - End>
+
+        # <Phase 1 Validation - Begin>
+        # Phase 1 validation for overall_trend
+        allowed_trends = ['Bull', 'Bear', 'Neutral']
+        if self.overall_trend is None:
+            self.overall_trend = "Neutral"  # Provide default
+        elif self.overall_trend not in allowed_trends:
+            raise ValueError(f"overall_trend must be one of {allowed_trends}, got '{self.overall_trend}'")
+        # <Phase 1 Validation - End>
+
+        # <Phase B Validation - Begin>
+        # Phase B additions
         if self.trading_setup and len(self.trading_setup) > 100:
             raise ValueError("Trading setup description too long")
         if self.core_timeframe and len(self.core_timeframe) > 50:
             raise ValueError("Core timeframe description too long")
-        # Phase B Additions - End
-        if self.entry_price is None and self.stop_loss is not None:
-            raise ValueError("Stop loss requires entry price")
-        if self.entry_price is not None and self.stop_loss is not None:
-            if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
-               (self.action == Action.SELL and self.stop_loss <= self.entry_price):
-                raise ValueError("Stop loss must be on the correct side of the entry price for a protective order")
+        # <Phase B Validation - End>
 
-        #Make overall_trend optional or provide a default
-        if self.overall_trend is None:
-            self.overall_trend = "Neutral"  # Or make it optional
-        elif self.overall_trend not in allowed_trends:
-            raise ValueError(f"overall_trend must be one of {allowed_trends}, got '{self.overall_trend}'")
+        # <Data Quality Validation - Begin>
+        # Additional data quality checks
+        if self.entry_price <= 0:
+            raise ValueError("Entry price must be positive")
+        if self.stop_loss <= 0:
+            raise ValueError("Stop loss must be positive")
+        if self.entry_price == self.stop_loss:
+            raise ValueError("Entry price and stop loss cannot be equal")
+        # <Data Quality Validation - End>
 
     # Modified Expiration Date Calculation - Begin
     def _set_expiration_date(self) -> None:

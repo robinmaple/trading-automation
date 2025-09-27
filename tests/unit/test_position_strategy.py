@@ -1,18 +1,8 @@
-# Fixed Position Strategy Tests - Begin
 import pytest
 from src.core.planned_order import PositionStrategy, SecurityType, Action
 
 class TestPositionStrategy:
     
-    # Fix test expectation - Begin
-    def test_position_strategy_expiration(self):
-        """Test expiration days for each strategy"""
-        # DAY should expire after 1 day (not 0)
-        assert PositionStrategy.DAY.get_expiration_days() == 3  # Changed from 0 to 1
-        assert PositionStrategy.CORE.get_expiration_days() is None
-        assert PositionStrategy.HYBRID.get_expiration_days() == 10
-    # Fix test expectation - End    
-
     def test_market_close_action_required(self):
         """Test market close action requirements"""
         assert PositionStrategy.DAY.requires_market_close_action() == True
@@ -24,25 +14,45 @@ class TestPositionStrategy:
         assert PositionStrategy('day') == PositionStrategy.DAY
         assert PositionStrategy('CORE') == PositionStrategy.CORE
         assert PositionStrategy('Hybrid') == PositionStrategy.HYBRID
-    
+
+    def test_position_strategy_expiration(self):
+        """Test expiration days for each strategy"""
+        # Test during market hours - DAY should expire same day (0 days)
+        import datetime
+        from unittest.mock import patch
+        
+        # Mock market hours to be consistent
+        with patch('src.core.planned_order.is_market_hours') as mock_market_hours:
+            mock_market_hours.return_value = True  # Market is open
+            
+            # DAY should expire same day (0 days) during market hours
+            assert PositionStrategy.DAY.get_expiration_days() == 0
+            
+            # CORE has no expiration
+            assert PositionStrategy.CORE.get_expiration_days() is None
+            
+            # HYBRID has fixed 10 days
+            assert PositionStrategy.HYBRID.get_expiration_days() == 10
+
     def test_planned_order_expiration_date(self):
         """Test expiration date setting in PlannedOrder"""
         from src.core.planned_order import PlannedOrder
         
-        # Test HYBRID strategy sets expiration date
+        # Test HYBRID strategy sets expiration date - WITH REQUIRED FIELDS
         order = PlannedOrder(
             security_type=SecurityType.STK,
             exchange="NYSE",
             currency="USD",
             action=Action.BUY,
             symbol="TEST",
+            entry_price=100.0,  # ← ADD REQUIRED FIELD
+            stop_loss=95.0,     # ← ADD REQUIRED FIELD  
+            overall_trend="Bull", # ← ADD REQUIRED FIELD
             position_strategy=PositionStrategy.HYBRID,
-            # Omit mock_trend since it might not be required in all cases
         )
         
-        # Check if expiration_date is set (may be None if not in __post_init__)
-        # This test just verifies the strategy logic, not the actual date setting
-        
+        # Check if expiration_date is set
+        assert order.expiration_date is not None
         assert order.position_strategy.get_expiration_days() == 10
         
         # Test CORE strategy has no expiration
@@ -52,8 +62,12 @@ class TestPositionStrategy:
             currency="USD",
             action=Action.BUY,
             symbol="TEST",
+            entry_price=100.0,  # ← ADD REQUIRED FIELD
+            stop_loss=95.0,     # ← ADD REQUIRED FIELD
+            overall_trend="Bull", # ← ADD REQUIRED FIELD
             position_strategy=PositionStrategy.CORE
         )
         
         assert core_order.position_strategy.get_expiration_days() is None
-# Fixed Position Strategy Tests - End
+        # CORE orders might not set expiration_date, or it might be None
+        assert core_order.expiration_date is None
