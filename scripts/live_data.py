@@ -1,99 +1,66 @@
+#!/usr/bin/env python3
+"""
+SAFE Live Real-Time Market Data Monitoring - NO orders executed.
+Fetches real-time IBKR data for given symbols in a low-risk way.
+"""
+
+import datetime
+import time
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
-import datetime
-import time
 
-class DataTypeTestApp(EClient, EWrapper):
-    def __init__(self):
+SYMBOLS = ["META", "TSLA", "AMZN"]
+DURATION_MINUTES = 3  # monitoring duration
+DATA_TYPE_REALTIME = 1  # 1 = live real-time data
+
+
+class SafeRealTimeMonitor(EWrapper, EClient):
+    def __init__(self, symbols):
         EClient.__init__(self, self)
-        self.data_type = 3  # Start with delayed
-        self.test_count = 0
-        self.max_tests = 3
+        self.symbols = symbols
+        self.next_req_id = 1
+        self.prices = {}
+        self.subscribed = set()
+        self.end_time = None
 
     def nextValidId(self, orderId: int):
-        if self.test_count >= self.max_tests:
-            print("Testing complete.")
-            self.disconnect()
+        print(f"✅ Connected. Next valid order ID: {orderId}")
+        self.end_time = datetime.datetime.now() + datetime.timedelta(minutes=DURATION_MINUTES)
+        # Request real-time market data type
+        self.reqMarketDataType(DATA_TYPE_REALTIME)
+        for symbol in self.symbols:
+            self.subscribe_symbol(symbol)
+
+    def subscribe_symbol(self, symbol):
+        if symbol in self.subscribed:
             return
-            
-        data_types = {
-            1: "LIVE (Real-time - requires subscription)",
-            2: "FROZEN (Last traded when market closed)", 
-            3: "DELAYED (15-20 min delayed - free)",
-            4: "DELAYED FROZEN"
-        }
-        
-        print(f"\n{'='*50}")
-        print(f"TEST {self.test_count + 1}: {data_types[self.data_type]}")
-        print(f"{'='*50}")
-        
-        # Request the market data type
-        self.reqMarketDataType(self.data_type)
-        
-        # Create AAPL contract
         contract = Contract()
-        contract.symbol = "AAPL"
-        contract.secType = "STK" 
+        contract.symbol = symbol
+        contract.secType = "STK"
         contract.exchange = "SMART"
         contract.currency = "USD"
-        
-        self.reqMktData(orderId, contract, "", False, False, [])
-        
+
+        self.reqMktData(self.next_req_id, contract, "", False, False, [])
+        print(f"🔍 Subscribed to {symbol} with reqId {self.next_req_id}")
+        self.subscribed.add(symbol)
+        self.next_req_id += 1
+
     def tickPrice(self, reqId, tickType, price, attrib):
-        # Use the correct attribute names for newer API versions
-        print(f"Price: ${price}")
-        print(f"TickAttrib fields: {dir(attrib)}")  # Show available attributes
-        
-        # Check available attributes (these vary by API version)
-        if hasattr(attrib, 'pastLimit'):
-            print(f"Past Limit: {attrib.pastLimit}")
-        if hasattr(attrib, 'preOpen'):
-            print(f"Pre-open: {attrib.preOpen}")
-        if hasattr(attrib, 'canAutoExecute'):
-            print(f"Can Auto Execute: {attrib.canAutoExecute}")
-        
-        # Test next data type after receiving data
-        self.cancelMktData(reqId)
-        self.test_count += 1
-        self.data_type += 1
-        if self.data_type <= 4:
-            time.sleep(2)
-            self.nextValidId(reqId + 1)
-        else:
-            self.disconnect()
+        if price != 0:
+            symbol = list(self.subscribed)[reqId - 1]  # map reqId to symbol
+            self.prices[symbol] = price
+            print(f"{datetime.datetime.now().strftime('%H:%M:%S')} - {symbol}: ${price:.2f}")
 
-    def tickString(self, reqId, tickType, value):
-        if tickType == 45:  # LAST_TIMESTAMP
-            timestamp = int(value)
-            dt = datetime.datetime.fromtimestamp(timestamp)
-            now = datetime.datetime.now()
-            time_diff = (now - dt).total_seconds() / 60  # in minutes
-            print(f"Last trade was at: {dt}")
-            print(f"Current time is:   {now}")
-            print(f"Time difference: {time_diff:.1f} minutes")
-            
-            # Determine data type based on time difference
-            if time_diff > 20:
-                print("🎯 CONCLUSION: DELAYED DATA (more than 20 minutes old)")
-            elif time_diff > 2:
-                print("🎯 CONCLUSION: LIKELY DELAYED (2-20 minutes old)")
-            else:
-                print("🎯 CONCLUSION: REAL-TIME or near real-time data!")
+    def run_monitor(self):
+        while datetime.datetime.now() < self.end_time:
+            time.sleep(1)  # loop delay
+        self.disconnect()
+        print("✅ Monitoring complete. Disconnected safely.")
 
-    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
-        if errorCode == 10167:  # No market data permissions
-            print(f"❌ No permissions for data type {self.data_type}")
-            # Skip to next test
-            self.test_count += 1
-            self.data_type += 1
-            if self.data_type <= 4:
-                time.sleep(1)
-                self.nextValidId(reqId + 1)
-        elif errorCode not in [2104, 2106, 2158]:
-            print(f"Error {errorCode}: {errorString}")
 
-# Run the test
-app = DataTypeTestApp()
-app.connect("127.0.0.1", 7496, 0)
-app.run()
+if __name__ == "__main__":
+    print("⚠️ SAFE: No orders will be executed. Monitoring real-time market data.")
+    app = SafeRealTimeMonitor(SYMBOLS)
+    app.connect("127.0.0.1", 7496, clientId=999)  # live account
+    app.run()

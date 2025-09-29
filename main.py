@@ -85,7 +85,14 @@ def main():
             print("Failed to connect to IB")
             return
 
+        # Create data feed with already-connected client
         data_feed = IBKRDataFeed(ibkr_client)
+        # data_feed.connect()  # ← REMOVE THIS LINE (redundant)
+
+        # Verify the data feed is properly initialized
+        print(f"✅ Data feed status: {data_feed.is_connected()}")
+        print(f"✅ IBKR client connected: {ibkr_client.connected}")
+
         trading_mgr = TradingManager(data_feed, "plan.xlsx", ibkr_client)
 
         # Run diagnostic if requested
@@ -101,14 +108,39 @@ def main():
             print(f"Warning: Could not register planned orders: {e}")
             print("Continuing without planned orders...")
 
-        # Start monitoring
-        trading_mgr.start_monitoring(interval_seconds=30)
+
+
+        # Start monitoring with debug output
+        print("🚀 Starting trading monitoring...")
+
+        # Temporary debug - check system state
+        print(f"🔍 Data feed connected: {data_feed.is_connected()}")
+        print(f"🔍 IBKR client connected: {ibkr_client.connected}")
+        print(f"🔍 Planned orders count: {len(trading_mgr.planned_orders)}")
+
+        # Try to get a test price
+        try:
+            test_price = data_feed.get_current_price("AAPL")
+            print(f"🔍 Test AAPL price: {test_price}")
+        except Exception as e:
+            print(f"🔍 Price check failed: {e}")
+
+        # Start monitoring with result check
+        success = trading_mgr.start_monitoring(interval_seconds=30)
+        if success:
+            print("✅ Monitoring started successfully")
+            print("📡 Now listening for market data updates...")
+        else:
+            print("❌ Failed to start monitoring - check logs above")
+            print("💡 Possible issues: data feed not connected, no planned orders, or initialization failed")
+            return  # Exit if monitoring failed
 
         try:
             while True:
+                print("💤 Monitoring loop running... (Ctrl+C to stop)")
                 time.sleep(60)
-        except KeyboardInterrupt:
-            print("\nShutting down...")
+        except Exception as e:
+            print(f"Fatal error: {e}")
 
     except Exception as e:
         print(f"Fatal error: {e}")

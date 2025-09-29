@@ -572,28 +572,8 @@ class TradingManager:
                 except Exception:
                     pass
 
-    def start_monitoring(self, interval_seconds: Optional[int] = None) -> bool:
-        """Start the continuous monitoring loop with automatic initialization."""
-        if not self._initialize():
-            return False
-
-        if self.ibkr_client and self.ibkr_client.connected:
-            self.reconciliation_engine.start()
-
-        if not self.data_feed.is_connected():
-            raise Exception("Data feed not connected")
-
-        # Use configured interval if not explicitly provided
-        monitoring_config = self.trading_config.get('monitoring', {})
-        interval = interval_seconds or monitoring_config.get('interval_seconds', 5)
-        
-        return self.monitoring_service.start_monitoring(
-            check_callback=self._check_and_execute_orders,
-            label_callback=self._label_completed_orders,
-            interval_seconds=interval
-        )
-
     def _monitoring_loop(self, interval_seconds: int) -> None:
+
         """Main monitoring loop for Phase A with error handling and recovery."""
         monitoring_config = self.trading_config.get('monitoring', {})
         max_errors = monitoring_config.get('max_errors', 10)
@@ -614,3 +594,59 @@ class TradingManager:
                 error_count += 1
                 backoff_time = min(error_backoff_base * error_count, max_backoff)
                 time.sleep(backoff_time)
+
+    def start_monitoring(self, interval_seconds: Optional[int] = None) -> bool:
+        """Start the continuous monitoring loop with automatic initialization."""
+        if not self._initialize():
+            return False
+
+        if self.ibkr_client and self.ibkr_client.connected:
+            self.reconciliation_engine.start()
+
+        if not self.data_feed.is_connected():
+            raise Exception("Data feed not connected")
+
+        # ADD SYMBOL SUBSCRIPTION HERE
+        self._subscribe_to_planned_order_symbols()
+
+        # Use configured interval if not explicitly provided
+        monitoring_config = self.trading_config.get('monitoring', {})
+        interval = interval_seconds or monitoring_config.get('interval_seconds', 5)
+        
+        return self.monitoring_service.start_monitoring(
+            check_callback=self._check_and_execute_orders,
+            label_callback=self._label_completed_orders,
+            interval_seconds=interval
+        )
+
+    # ADD NEW METHOD TO TradingManager
+    def _subscribe_to_planned_order_symbols(self) -> None:
+        """Subscribe to market data for all planned order symbols."""
+        if not self.planned_orders:
+            print("⚠️  No planned orders to subscribe to")
+            return
+            
+        from ibapi.contract import Contract
+        
+        subscribed_count = 0
+        for order in self.planned_orders:
+            try:
+                contract = Contract()
+                contract.symbol = order.symbol
+                contract.secType = order.security_type.value
+                contract.exchange = order.exchange
+                contract.currency = order.currency
+                
+                print(f"📡 Subscribing to market data for {order.symbol}...")
+                success = self.data_feed.subscribe(order.symbol, contract)
+                
+                if success:
+                    subscribed_count += 1
+                    print(f"✅ Subscribed to {order.symbol}")
+                else:
+                    print(f"❌ Failed to subscribe to {order.symbol}")
+                    
+            except Exception as e:
+                print(f"❌ Error subscribing to {order.symbol}: {e}")
+        
+        print(f"📊 Market data subscriptions: {subscribed_count}/{len(self.planned_orders)} symbols")

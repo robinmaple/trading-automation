@@ -46,12 +46,63 @@ class IbkrClient(EClient, EWrapper):
         self.positions_end_received = False
         self.market_data_manager = None
 
+        # <Market Data Manager Thread Safety - Begin>
+        self._manager_lock = threading.RLock()
+        self._tick_errors = 0
+        self._last_tick_time = None
+        self._total_ticks_processed = 0
+        # <Market Data Manager Thread Safety - End>
+
         # Add port determination based on mode
         if port is None:
             self.port = self._get_port_from_mode(mode)
         else:
             self.port = port
         self.mode = mode
+
+    # <Market Data Manager Connection Methods - Begin>
+    def set_market_data_manager(self, manager) -> None:
+        """
+        Thread-safe method to set the MarketDataManager instance.
+        
+        Args:
+            manager: MarketDataManager instance to receive price ticks
+        """
+        with self._manager_lock:
+            self.market_data_manager = manager
+            print(f"✅ MarketDataManager connected to IbkrClient")
+            if manager:
+                print(f"   - Manager type: {type(manager).__name__}")
+            else:
+                print("   ⚠️  Manager set to None - data forwarding disabled")
+
+    def get_market_data_health(self) -> dict:
+        """
+        Get health metrics for market data flow monitoring.
+        
+        Returns:
+            Dictionary with health metrics for troubleshooting
+        """
+        with self._manager_lock:
+            health = {
+                'manager_connected': self.market_data_manager is not None,
+                'total_ticks_processed': self._total_ticks_processed,
+                'tick_errors': self._tick_errors,
+                'last_tick_time': self._last_tick_time,
+                'connection_status': 'Connected' if self.connected else 'Disconnected',
+                'manager_type': type(self.market_data_manager).__name__ if self.market_data_manager else 'None'
+            }
+            
+            # Calculate error rate if we have processed ticks
+            if self._total_ticks_processed > 0:
+                health['error_rate_percent'] = round(
+                    (self._tick_errors / self._total_ticks_processed) * 100, 2
+                )
+            else:
+                health['error_rate_percent'] = 0.0
+                
+            return health
+    # <Market Data Manager Connection Methods - End>
 
     def connect(self, host: Optional[str] = None, port: Optional[int] = None, 
                 client_id: Optional[int] = None) -> bool:
@@ -447,15 +498,43 @@ class IbkrClient(EClient, EWrapper):
         self.positions_received_event.set()
         print("📊 Positions request completed")
 
+    # <Enhanced tickPrice with Thread Safety and Error Handling - Begin>
     def tickPrice(self, reqId: int, tickType: int, price: float, attrib) -> None:
-        """Callback: Receive market data price tick and forward to MarketDataManager if set."""
+        """
+        Callback: Receive market data price tick and forward to MarketDataManager if set.
+        Enhanced with thread safety and comprehensive error handling.
+        """
         super().tickPrice(reqId, tickType, price, attrib)
 
-        if self.market_data_manager:
-            try:
-                self.market_data_manager.on_tick_price(reqId, tickType, price, attrib)
-            except Exception as e:
-                print(f"⚠️ Error forwarding tickPrice to MarketDataManager: {e}")
+        # Update health metrics
+        self._last_tick_time = datetime.datetime.now()
+        self._total_ticks_processed += 1
+
+        # Thread-safe access to market data manager
+        with self._manager_lock:
+            if self.market_data_manager:
+                try:
+                    self.market_data_manager.on_tick_price(reqId, tickType, price, attrib)
+                    
+                    # Log first successful tick for debugging
+                    if self._total_ticks_processed == 1:
+                        tick_type_name = {1: 'BID', 2: 'ASK', 4: 'LAST'}.get(tickType, f'UNKNOWN({tickType})')
+                        print(f"💰 FIRST TICK PROCESSED: Type {tick_type_name}, Price ${price}")
+                        
+                except Exception as e:
+                    self._tick_errors += 1
+                    error_count = self._tick_errors
+                    
+                    # Only log periodic errors to avoid spam
+                    if error_count <= 3 or error_count % 10 == 0:
+                        print(f"⚠️  Error in market data processing (Error #{error_count}): {e}")
+                        
+                    # Don't re-raise - keep IBKR connection alive
+            else:
+                # Only log missing manager occasionally to avoid spam
+                if self._total_ticks_processed <= 5 or self._total_ticks_processed % 50 == 0:
+                    print(f"📊 Tick received but no MarketDataManager connected (Total ticks: {self._total_ticks_processed})")
+    # <Enhanced tickPrice with Thread Safety and Error Handling - End>
 
     # Add helper method
     def _get_port_from_mode(self, mode: str) -> int:
