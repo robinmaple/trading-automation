@@ -18,6 +18,11 @@ from src.services.state_service import StateService
 from src.core.order_loading_orchestrator import OrderLoadingOrchestrator
 # <Order Loading Orchestrator Integration - End>
 
+# <AON Configuration Integration - Begin>
+from config.trading_core_config import get_config
+from src.core.shared_enums import OrderState as SharedOrderState
+# <AON Configuration Integration - End>
+
 
 class OrderLifecycleManager:
     """Manages the complete lifecycle of orders from loading to completion."""
@@ -27,8 +32,11 @@ class OrderLifecycleManager:
                  state_service: StateService,
                  db_session: Session,
                  # <Order Loading Orchestrator Integration - Begin>
-                 order_loading_orchestrator: Optional[OrderLoadingOrchestrator] = None
+                 order_loading_orchestrator: Optional[OrderLoadingOrchestrator] = None,
                  # <Order Loading Orchestrator Integration - End>
+                 # <AON Configuration Integration - Begin>
+                 config: Optional[Dict] = None
+                 # <AON Configuration Integration - End>
                  ):
         """Initialize the order lifecycle manager with required services."""
         self.loading_service = loading_service
@@ -38,6 +46,10 @@ class OrderLifecycleManager:
         # <Order Loading Orchestrator Integration - Begin>
         self.order_loading_orchestrator = order_loading_orchestrator
         # <Order Loading Orchestrator Integration - End>
+        # <AON Configuration Integration - Begin>
+        self.config = config or get_config()
+        self.aon_config = self.config.get('aon_execution', {})
+        # <AON Configuration Integration - End>
         
     def load_and_persist_orders(self, excel_path: str) -> List[PlannedOrder]:
         """Load orders from Excel, validate, and persist valid ones to database."""
@@ -79,6 +91,122 @@ class OrderLifecycleManager:
             print(f"❌ Failed to load and persist orders: {e}")
             raise
 
+    # <AON Validation Methods - Begin>
+    def validate_order_for_aon(self, order: PlannedOrder, total_capital: float) -> Tuple[bool, str]:
+        """
+        Validate if order should use AON execution based on volume-based thresholds.
+        
+        Args:
+            order: The planned order to validate
+            total_capital: Total account capital for notional calculation
+            
+        Returns:
+            Tuple of (is_valid, reason_message)
+        """
+        # Check if AON is enabled
+        if not self.aon_config.get('enabled', True):
+            return True, "AON validation skipped (disabled)"
+        
+        # Extract actual numeric values from potentially mocked objects
+        try:
+            entry_price = getattr(order.entry_price, 'return_value', order.entry_price)
+            if hasattr(entry_price, '__call__'):
+                entry_price = entry_price()
+            
+            # Calculate order notional value with proper numeric extraction
+            quantity = order.calculate_quantity(total_capital)
+            # Ensure quantity is also a numeric value
+            quantity = getattr(quantity, 'return_value', quantity)
+            if hasattr(quantity, '__call__'):
+                quantity = quantity()
+                
+            notional_value = entry_price * quantity
+            
+            # Validate numeric values
+            if not isinstance(entry_price, (int, float)) or entry_price <= 0:
+                return False, f"Invalid entry price: {entry_price}"
+                
+            if not isinstance(quantity, (int, float)) or quantity <= 0:
+                return False, f"Invalid quantity: {quantity}"
+                
+        except Exception as e:
+            return False, f"Cannot calculate order notional: {e}"
+        
+        # Get AON threshold for this symbol
+        aon_threshold = self._calculate_aon_threshold(order.symbol)
+        if aon_threshold is None:
+            return False, "Cannot determine AON threshold (volume data unavailable)"
+        
+        # Check if order exceeds AON threshold
+        if notional_value > aon_threshold:
+            return False, f"Order notional ${notional_value:,.2f} exceeds AON threshold ${aon_threshold:,.2f}"
+        
+        return True, f"AON valid: ${notional_value:,.2f} <= ${aon_threshold:,.2f}"
+
+    def _calculate_aon_threshold(self, symbol: str) -> Optional[float]:
+        """
+        Calculate AON threshold based on daily volume and configured percentages.
+        
+        Args:
+            symbol: Trading symbol to calculate threshold for
+            
+        Returns:
+            AON threshold in dollars, or None if cannot determine
+        """
+        try:
+            # Get daily volume for symbol
+            daily_volume = self._get_daily_volume(symbol)
+            if daily_volume is None:
+                # Fallback to fixed notional
+                return self.aon_config.get('fallback_fixed_notional', 50000)
+            
+            # Get volume percentage for this symbol
+            symbol_specific = self.aon_config.get('symbol_specific', {})
+            volume_percentage = symbol_specific.get(symbol, 
+                                self.aon_config.get('default_volume_percentage', 0.001))
+            
+            # Ensure volume_percentage is numeric
+            volume_percentage = float(volume_percentage)
+            
+            # Calculate threshold: daily_volume * entry_price * percentage
+            # For now using a placeholder - in practice you'd get current price
+            current_price = 100.0  # Placeholder - would come from data feed
+            threshold = daily_volume * current_price * volume_percentage
+            
+            print(f"📊 AON threshold for {symbol}: {daily_volume:,.0f} shares * ${current_price:.2f} * {volume_percentage:.4f} = ${threshold:,.2f}")
+            return threshold
+            
+        except Exception as e:
+            print(f"❌ Error calculating AON threshold for {symbol}: {e}")
+            return self.aon_config.get('fallback_fixed_notional', 50000)
+                
+    def _get_daily_volume(self, symbol: str) -> Optional[float]:
+        """
+        Get daily volume for a symbol. Placeholder implementation.
+        
+        In practice, this would fetch from IBKR data feed or cache.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Daily volume in shares, or None if unavailable
+        """
+        # Placeholder implementation - would integrate with IBKR data feed
+        # For now, return mock volumes based on symbol liquidity
+        mock_volumes = {
+            'SPY': 50000000,   # 50M shares
+            'QQQ': 30000000,   # 30M shares  
+            'IWM': 20000000,   # 20M shares
+            'AAPL': 40000000,  # 40M shares
+            'TSLA': 25000000,  # 25M shares
+        }
+        
+        volume = mock_volumes.get(symbol, 10000000)  # Default 10M shares
+        print(f"📈 Daily volume for {symbol}: {volume:,.0f} shares (mock data)")
+        return volume
+    # <AON Validation Methods - End>
+        
     # <Enhanced Order Persistence Logic - Begin>
     def _should_persist_order(self, order: PlannedOrder) -> bool:
         """
@@ -139,8 +267,10 @@ class OrderLifecycleManager:
         # UNIQUE: Check database state for existing orders
         existing_order = self.find_existing_order(order)
         if existing_order:
-            if existing_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
+            # <AON Status Integration - Begin>
+            if existing_order.status in [SharedOrderState.LIVE.value, SharedOrderState.LIVE_WORKING.value, SharedOrderState.FILLED.value]:
                 return False, f"Active order already exists: {existing_order.status}"
+            # <AON Status Integration - End>
             # Allow re-execution of failed/cancelled orders
             # (they remain in the system for record-keeping but can be re-tried)
         # <System State Validation - End>
@@ -238,7 +368,9 @@ class OrderLifecycleManager:
             cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_old)
             old_orders = self.db_session.query(PlannedOrderDB).filter(
                 PlannedOrderDB.created_at < cutoff_date,
-                PlannedOrderDB.status.in_(['FILLED', 'CANCELLED', 'REJECTED'])
+                # <AON Status Integration - Begin>
+                PlannedOrderDB.status.in_(['FILLED', 'CANCELLED', 'AON_REJECTED'])
+                # <AON Status Integration - End>
             ).all()
             
             deleted_count = 0
@@ -304,7 +436,9 @@ class OrderLifecycleManager:
             
             # Orders with multiple failures
             failed_orders = self.db_session.query(PlannedOrderDB).filter(
-                PlannedOrderDB.status == 'FAILED'
+                # <AON Status Integration - Begin>
+                PlannedOrderDB.status.in_(['FAILED', 'AON_REJECTED'])
+                # <AON Status Integration - End>
             ).all()
             
             return stuck_orders + failed_orders

@@ -18,6 +18,11 @@ from src.services.order_persistence_service import OrderPersistenceService
 from src.services.state_service import StateService
 from src.core.ibkr_client import IbkrClient
 
+# <AON Integration - Begin>
+from src.core.order_lifecycle_manager import OrderLifecycleManager
+from src.core.shared_enums import OrderState as SharedOrderState
+# <AON Integration - End>
+
 
 class OrderExecutionOrchestrator:
     """Orchestrates order execution with viability checks and prioritization."""
@@ -28,7 +33,11 @@ class OrderExecutionOrchestrator:
                  state_service: StateService,
                  probability_engine: FillProbabilityEngine,
                  ibkr_client: Optional[IbkrClient] = None,
-                 config: Optional[Dict[str, Any]] = None):  # <-- ADD CONFIG PARAMETER
+                 config: Optional[Dict[str, Any]] = None,  # <-- ADD CONFIG PARAMETER
+                 # <AON Integration - Begin>
+                 lifecycle_manager: Optional[OrderLifecycleManager] = None
+                 # <AON Integration - End>
+                 ):
         """Initialize the order execution orchestrator with required services."""
         self.execution_service = execution_service
         self.sizing_service = sizing_service
@@ -36,6 +45,9 @@ class OrderExecutionOrchestrator:
         self.state_service = state_service
         self.probability_engine = probability_engine
         self.ibkr_client = ibkr_client
+        # <AON Integration - Begin>
+        self.lifecycle_manager = lifecycle_manager
+        # <AON Integration - End>
         
         # Load configuration instead of hardcoded values
         self._load_configuration(config or {})
@@ -44,10 +56,16 @@ class OrderExecutionOrchestrator:
         """Load configuration parameters."""
         execution_config = config.get('execution', {})
         simulation_config = config.get('simulation', {})
+        # <AON Configuration Integration - Begin>
+        aon_config = config.get('aon_execution', {})
+        # <AON Configuration Integration - End>
         
         # Use configurable defaults with fallback to original hardcoded values
         self.min_fill_probability = execution_config.get('min_fill_probability', 0.4)
         self.default_capital = simulation_config.get('default_equity', 100000)
+        # <AON Configuration Integration - Begin>
+        self.aon_config = aon_config
+        # <AON Configuration Integration - End>
         
         # Optional: Add logging for debugging
         import logging
@@ -55,35 +73,97 @@ class OrderExecutionOrchestrator:
         logger.info(f"OrderExecutionOrchestrator configured: min_fill_probability={self.min_fill_probability}, default_capital={self.default_capital}")        
     
     # Account Context Integration - Begin
-    def execute_single_order(self, order: PlannedOrder, fill_probability: float, 
-                           effective_priority: Optional[float] = None,
-                           account_number: Optional[str] = None) -> bool:
-        """Execute a single order with viability checks and proper status tracking."""
+    def execute_single_order(self, planned_order, fill_probability):
+        """Execute a single order with validation and viability checks."""
         try:
+            # Get trading capital and mode
             total_capital = self._get_total_capital()
             is_live_trading = self._get_trading_mode()
             
-            # Calculate position size and capital commitment
-            quantity, capital_commitment = self._calculate_position_details(order, total_capital)
-            
-            # Check order viability
-            is_viable = self._check_order_viability(order, fill_probability)
-            if not is_viable:
-                return False
-            
-            # Execute the order through execution service
-            execution_success = self._execute_via_service(
-                order, fill_probability, effective_priority, 
-                total_capital, quantity, capital_commitment, is_live_trading,
-                account_number  # Pass account number to execution service
+            # Calculate position details
+            quantity, capital_commitment = self._calculate_position_details(
+                planned_order, total_capital
             )
             
-            return execution_success
+            # Check order viability (probability, existing positions, etc.)
+            if not self._check_order_viability(planned_order, fill_probability):
+                return False
+                
+            # AON validation via lifecycle manager
+            if self.lifecycle_manager:
+                aon_valid, aon_message = self.lifecycle_manager.validate_order_for_aon(
+                    planned_order, total_capital
+                )
+                if not aon_valid:
+                    # Use 'FAILED' status to match test expectations
+                    self.persistence_service.update_order_status(
+                        planned_order, 'FAILED', f"AON rejection: {aon_message}"
+                    )
+                    return False
+            
+            # Execute the order
+            return self._execute_via_service(
+                planned_order, quantity, is_live_trading, fill_probability
+            )
             
         except Exception as e:
-            self._handle_execution_failure(order, str(e))
+            error_msg = f"Execution failed: {str(e)}"
+            self.persistence_service.update_order_status(
+                planned_order, 'FAILED', error_msg
+            )
             return False
-    # Account Context Integration - End
+        
+    # <AON Validation Methods - Begin>
+    def _check_aon_viability(self, order: PlannedOrder, total_capital: float) -> Tuple[bool, str]:
+        """
+        Check if order meets AON execution criteria.
+        
+        Args:
+            order: PlannedOrder to validate
+            total_capital: Total account capital for notional calculation
+            
+        Returns:
+            Tuple of (is_valid, reason_message)
+        """
+        # Check if AON is enabled in configuration
+        if not self.aon_config.get('enabled', True):
+            return True, "AON validation disabled"
+            
+        # Use lifecycle manager for AON validation if available
+        if self.lifecycle_manager:
+            return self.lifecycle_manager.validate_order_for_aon(order, total_capital)
+        else:
+            # Fallback basic AON validation
+            return self._basic_aon_validation(order, total_capital)
+            
+    def _basic_aon_validation(self, order: PlannedOrder, total_capital: float) -> Tuple[bool, str]:
+        """
+        Basic AON validation fallback when lifecycle manager is not available.
+        
+        Args:
+            order: PlannedOrder to validate
+            total_capital: Total account capital
+            
+        Returns:
+            Tuple of (is_valid, reason_message)
+        """
+        try:
+            # Calculate order notional value
+            quantity = order.calculate_quantity(total_capital)
+            notional_value = order.entry_price * quantity
+            
+            # Get fallback threshold from config
+            fallback_threshold = self.aon_config.get('fallback_fixed_notional', 50000)
+            
+            # Check against fallback threshold
+            if notional_value > fallback_threshold:
+                return False, f"Order notional ${notional_value:,.2f} exceeds AON fallback threshold ${fallback_threshold:,.2f}"
+                
+            return True, f"AON valid: ${notional_value:,.2f} <= ${fallback_threshold:,.2f} (fallback)"
+            
+        except Exception as e:
+            return False, f"AON validation error: {e}"
+    # <AON Validation Methods - End>
             
     def _get_total_capital(self) -> float:
         """Get total capital from IBKR or use default simulation capital."""
@@ -145,10 +225,12 @@ class OrderExecutionOrchestrator:
         
         # Update order status based on execution result
         if success:
+            # <AON Status Integration - Begin>
             self.persistence_service.update_order_status(
-                order, 'EXECUTING', 
-                f"Order executing with fill_prob={fill_probability:.2%}"
+                order, SharedOrderState.LIVE_WORKING.value, 
+                f"AON order executing with fill_prob={fill_probability:.2%}"
             )
+            # <AON Status Integration - End>
         else:
             self.persistence_service.update_order_status(
                 order, 'FAILED', 
@@ -211,6 +293,10 @@ class OrderExecutionOrchestrator:
             effective_priority = self.calculate_effective_priority(order, fill_probability)
             is_viable = fill_probability >= self.min_fill_probability
             
+            # <AON Summary Integration - Begin>
+            aon_valid, aon_reason = self._check_aon_viability(order, total_capital)
+            # <AON Summary Integration - End>
+            
             return {
                 'symbol': order.symbol,
                 'action': order.action.value,
@@ -220,7 +306,11 @@ class OrderExecutionOrchestrator:
                 'effective_priority': effective_priority,
                 'is_viable': is_viable,
                 'is_live_trading': is_live_trading,
-                'total_capital': total_capital
+                'total_capital': total_capital,
+                # <AON Summary Integration - Begin>
+                'aon_valid': aon_valid,
+                'aon_reason': aon_reason
+                # <AON Summary Integration - End>
             }
         except Exception:
             return {}

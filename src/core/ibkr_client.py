@@ -60,6 +60,121 @@ class IbkrClient(EClient, EWrapper):
             self.port = port
         self.mode = mode
 
+    # <AON Order Methods - Begin>
+    def submit_aon_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
+                               risk_per_trade, risk_reward_ratio, total_capital) -> Optional[List[int]]:
+        """
+        Place a complete bracket order with All-or-Nothing (AON) execution.
+        
+        Args:
+            contract: IBKR Contract object
+            action: BUY or SELL
+            order_type: Order type (LMT, MKT, etc.)
+            security_type: Security type (STK, OPT, etc.)
+            entry_price: Entry price for the order
+            stop_loss: Stop loss price
+            risk_per_trade: Risk percentage per trade
+            risk_reward_ratio: Risk/reward ratio for profit target
+            total_capital: Total account capital for position sizing
+            
+        Returns:
+            List of order IDs for the bracket order, or None if failed
+        """
+        if not self.connected or self.next_valid_id is None:
+            print("❌ Not connected to IBKR or no valid order ID for AON order")
+            return None
+
+        try:
+            orders = self._create_aon_bracket_order(
+                action, order_type, security_type, entry_price, stop_loss,
+                risk_per_trade, risk_reward_ratio, total_capital, self.next_valid_id
+            )
+
+            print(f"🎯 AON Bracket Order:")
+            print(f"   Entry: {action} {orders[0].totalQuantity} @ {entry_price} (AON)")
+            print(f"   Take Profit: {orders[1].action} @ {orders[1].lmtPrice}")
+            print(f"   Stop Loss: {orders[2].action} @ {orders[2].auxPrice}")
+
+            order_ids = []
+            for order in orders:
+                self.placeOrder(order.orderId, contract, order)
+                order_ids.append(order.orderId)
+                self.order_history.append({
+                    'order_id': order.orderId,
+                    'type': order.orderType,
+                    'action': order.action,
+                    'price': getattr(order, 'lmtPrice', getattr(order, 'auxPrice', None)),
+                    'quantity': order.totalQuantity,
+                    'status': 'PendingSubmit',
+                    'parent_id': getattr(order, 'parentId', None),
+                    'aon': getattr(order, 'allOrNone', False),
+                    'timestamp': datetime.datetime.now()
+                })
+
+            self.next_valid_id += 3
+            return order_ids
+
+        except Exception as e:
+            print(f"❌ Failed to place AON bracket order: {e}")
+            return None
+
+    def _create_aon_bracket_order(self, action, order_type, security_type, entry_price, stop_loss,
+                                risk_per_trade, risk_reward_ratio, total_capital, starting_order_id) -> List[Any]:
+        """
+        Create IBKR Order objects for AON bracket order.
+        
+        Returns:
+            List of [parent, take_profit, stop_loss] orders with AON flag set
+        """
+        from ibapi.order import Order
+
+        parent_id = starting_order_id
+        quantity = self._calculate_quantity(security_type, entry_price, stop_loss,
+                                          total_capital, risk_per_trade)
+        profit_target = self._calculate_profit_target(action, entry_price, stop_loss, risk_reward_ratio)
+
+        # 1. PARENT ORDER (Entry) - WITH AON FLAG
+        parent = Order()
+        parent.orderId = parent_id
+        parent.action = action
+        parent.orderType = order_type
+        parent.totalQuantity = quantity
+        parent.lmtPrice = round(entry_price, 5)
+        parent.transmit = False
+        parent.allOrNone = True  # <-- AON FLAG SET HERE
+
+        # Determine opposite action for closing orders
+        closing_action = "SELL" if action == "BUY" else "BUY"
+
+        # 2. TAKE-PROFIT ORDER (child - inherits AON characteristics from parent execution)
+        take_profit = Order()
+        take_profit.orderId = parent_id + 1
+        take_profit.action = closing_action
+        take_profit.orderType = "LMT"
+        take_profit.totalQuantity = quantity
+        take_profit.lmtPrice = round(profit_target, 5)
+        take_profit.parentId = parent_id
+        take_profit.transmit = False
+        take_profit.openClose = "C"
+        take_profit.origin = 0
+        # Note: Child orders don't need AON flag - they execute based on parent fill
+
+        # 3. STOP-LOSS ORDER (child - inherits AON characteristics from parent execution)
+        stop_loss_order = Order()
+        stop_loss_order.orderId = parent_id + 2
+        stop_loss_order.action = closing_action
+        stop_loss_order.orderType = "STP"
+        stop_loss_order.totalQuantity = quantity
+        stop_loss_order.auxPrice = round(stop_loss, 5)
+        stop_loss_order.parentId = parent_id
+        stop_loss_order.transmit = True
+        stop_loss_order.openClose = "C"
+        stop_loss_order.origin = 0
+        # Note: Child orders don't need AON flag - they execute based on parent fill
+
+        return [parent, take_profit, stop_loss_order]
+    # <AON Order Methods - End>
+
     # <Market Data Manager Connection Methods - Begin>
     def set_market_data_manager(self, manager) -> None:
         """

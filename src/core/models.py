@@ -10,6 +10,10 @@ import datetime
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
+# <Shared Enum Integration - Begin>
+from .shared_enums import OrderState
+# <Shared Enum Integration - End>
+
 Base = declarative_base()
 
 class PositionStrategy(Base):
@@ -55,10 +59,11 @@ class PlannedOrderDB(Base):
     risk_reward_ratio = Column(Float, nullable=False)
     priority = Column(Integer, nullable=False, default=3)
 
-    status = Column(Enum('PENDING', 'LIVE', 'LIVE_WORKING', 'FILLED', 'CANCELLED', 'EXPIRED',
-                        'LIQUIDATED', 'LIQUIDATED_EXTERNALLY', 'REPLACED',
+    # <Shared Enum Integration - Begin>
+    status = Column(Enum(*(state.value for state in OrderState), 
                         name='order_state_enum', native_enum=False),
-                   default='PENDING')
+                   default=OrderState.PENDING.value)
+    # <Shared Enum Integration - End>
     rejection_reason = Column(Text, nullable=True)
     
     overall_trend = Column(String, nullable=True)       # Bull / Bear / Neutral
