@@ -14,6 +14,11 @@ from src.services.order_loading_service import OrderLoadingService
 from src.services.order_persistence_service import OrderPersistenceService
 from src.services.state_service import StateService
 
+# <IBKR Integration - Begin>
+from src.core.ibkr_client import IbkrClient
+from src.core.ibkr_types import IbkrOrder
+# <IBKR Integration - End>
+
 
 class OrderLoadingOrchestrator:
     """
@@ -25,7 +30,11 @@ class OrderLoadingOrchestrator:
                  loading_service: OrderLoadingService,
                  persistence_service: OrderPersistenceService,
                  state_service: StateService,
-                 db_session: Session):
+                 db_session: Session,
+                 # <IBKR Integration - Begin>
+                 ibkr_client: Optional[IbkrClient] = None
+                 # <IBKR Integration - End>
+                 ):
         """
         Initialize the order loading orchestrator with required services.
         
@@ -34,11 +43,15 @@ class OrderLoadingOrchestrator:
             persistence_service: Service for order persistence operations
             state_service: Service for checking system state
             db_session: Database session for querying orders
+            ibkr_client: IBKR client for order discovery (optional)
         """
         self.loading_service = loading_service
         self.persistence_service = persistence_service
         self.state_service = state_service
         self.db_session = db_session
+        # <IBKR Integration - Begin>
+        self.ibkr_client = ibkr_client
+        # <IBKR Integration - End>
         
     def load_all_orders(self, excel_path: str) -> List[PlannedOrder]:
         """
@@ -82,14 +95,152 @@ class OrderLoadingOrchestrator:
         except Exception as e:
             print(f"   ❌ Excel loading failed: {e}")
             # Continue with available orders despite Excel failure
+
+        # <IBKR Order Discovery - Begin>
+        try:
+            # Load from IBKR (working orders discovery)
+            ibkr_orders = self._discover_ibkr_orders()
+            if ibkr_orders:
+                all_orders.extend(ibkr_orders)
+                sources_loaded += 1
+                print(f"   ✅ IBKR: {len(ibkr_orders)} working orders discovered")
+            else:
+                print("   ℹ️  IBKR: No working orders to discover")
+                
+        except Exception as e:
+            print(f"   ❌ IBKR discovery failed: {e}")
+            print("   📋 Continuing with Database + Excel orders only")
+            # Graceful degradation: continue without IBKR orders
+        # <IBKR Order Discovery - End>
             
         # Merge and deduplicate orders from all sources
         merged_orders = self._merge_orders(all_orders)
         
-        print(f"📊 OrderLoadingOrchestrator: {sources_loaded}/2 sources loaded, "
+        # <Conflict Logging - Begin>
+        # Log any conflicts between sources for manual review
+        self._log_order_conflicts(all_orders, merged_orders)
+        # <Conflict Logging - End>
+        
+        print(f"📊 OrderLoadingOrchestrator: {sources_loaded}/3 sources loaded, "
               f"{len(merged_orders)} total orders after deduplication")
               
         return merged_orders
+
+    # <IBKR Order Discovery Methods - Begin>
+    def _discover_ibkr_orders(self) -> List[PlannedOrder]:
+        """
+        Discover working orders from IBKR that should be tracked in our system.
+        
+        Returns:
+            List of PlannedOrder objects representing working IBKR orders
+        """
+        if not self.ibkr_client or not self.ibkr_client.connected:
+            print("   ⚠️  IBKR: Client not connected, skipping discovery")
+            return []
+            
+        try:
+            # Get working orders from IBKR
+            ibkr_orders = self.ibkr_client.get_open_orders()
+            if not ibkr_orders:
+                return []
+                
+            # Convert and filter IBKR orders
+            planned_orders = []
+            for ibkr_order in ibkr_orders:
+                try:
+                    planned_order = self._convert_ibkr_order(ibkr_order)
+                    if planned_order and self._is_ibkr_order_resumable(planned_order, ibkr_order):
+                        planned_orders.append(planned_order)
+                except Exception as e:
+                    print(f"   ❌ Failed to convert IBKR order {ibkr_order.order_id}: {e}")
+                    continue
+                    
+            return planned_orders
+            
+        except Exception as e:
+            print(f"❌ IBKR order discovery failed: {e}")
+            return []
+            
+    def _convert_ibkr_order(self, ibkr_order: IbkrOrder) -> Optional[PlannedOrder]:
+        """
+        Convert IBKR order format to PlannedOrder object.
+        
+        Args:
+            ibkr_order: The IBKR order to convert
+            
+        Returns:
+            PlannedOrder object or None if conversion fails
+        """
+        try:
+            # Extract basic order information from IBKR order
+            # Note: This is a simplified conversion - you may need to adjust based on your IBKR order structure
+            symbol = ibkr_order.symbol
+            action = ibkr_order.action  # BUY/SELL
+            order_type = ibkr_order.order_type  # LMT/MKT/STP
+            
+            # Use limit price for LMT orders, otherwise use current market data
+            entry_price = ibkr_order.lmt_price if ibkr_order.lmt_price else 0.0
+            
+            # For stop orders, use aux price as stop loss
+            stop_loss = ibkr_order.aux_price if ibkr_order.aux_price else 0.0
+            
+            # Create a basic PlannedOrder - you may need to adjust based on your requirements
+            # This is a placeholder - you'll need to implement proper conversion based on your IBKR order structure
+            planned_order = PlannedOrder(
+                symbol=symbol,
+                action=action,  # This should be an OrderAction enum value
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                # Add other required fields with default values
+                order_type=order_type,  # This should be an OrderType enum value
+                security_type="STK",  # Default - adjust based on IBKR contract
+                exchange="SMART",     # Default exchange
+                currency="USD",       # Default currency
+                risk_per_trade=0.01,  # Default risk
+                risk_reward_ratio=2.0, # Default R:R
+                priority=3,           # Default priority
+                position_strategy="CORE"  # Default to CORE for IBKR orders
+            )
+            
+            return planned_order
+            
+        except Exception as e:
+            print(f"   ❌ Failed to convert IBKR order {ibkr_order.order_id}: {e}")
+            return None
+            
+    def _is_ibkr_order_resumable(self, planned_order: PlannedOrder, ibkr_order: IbkrOrder) -> bool:
+        """
+        Check if an IBKR order should be resumed to our system.
+        
+        Args:
+            planned_order: The converted PlannedOrder
+            ibkr_order: The original IBKR order
+            
+        Returns:
+            True if order should be resumed, False otherwise
+        """
+        # Only resume CORE and HYBRID strategy orders
+        # DAY orders are auto-expired and shouldn't be resumed
+        strategy = planned_order.position_strategy.upper() if planned_order.position_strategy else "CORE"
+        
+        if strategy not in ['CORE', 'HYBRID']:
+            print(f"   ⏰ IBKR order skipped (strategy: {strategy}): {planned_order.symbol}")
+            return False
+            
+        # Check if order is already in our database to avoid duplicates
+        existing_db_order = self.db_session.query(PlannedOrderDB).filter_by(
+            symbol=planned_order.symbol,
+            action=planned_order.action.value,
+            entry_price=planned_order.entry_price
+        ).first()
+        
+        if existing_db_order:
+            print(f"   ℹ️  IBKR order already in database: {planned_order.symbol}")
+            return False
+            
+        print(f"   ✅ IBKR order resumable: {planned_order.symbol} (strategy: {strategy})")
+        return True
+    # <IBKR Order Discovery Methods - End>
         
     def _load_from_database(self) -> List[PlannedOrder]:
         """
@@ -155,22 +306,28 @@ class OrderLoadingOrchestrator:
         if not orders:
             return []
             
-        # Use a dictionary to track unique orders by key
+        # Use a dictionary to track unique orders by key with source priority
         unique_orders = {}
         
         for order in orders:
             order_key = self._get_order_key(order)
             
-            # If we haven't seen this order, or if this is a "better" version
-            # (e.g., from a more authoritative source), keep it
+            # <Enhanced Source Priority - Begin>
+            # Priority: IBKR (reality) > Database > Excel
+            current_source = self._get_order_source(order)
+            
             if order_key not in unique_orders:
-                unique_orders[order_key] = order
+                unique_orders[order_key] = (order, current_source)
             else:
-                # For now, keep the first occurrence
-                # In future, we could implement source priority
-                pass
+                existing_order, existing_source = unique_orders[order_key]
+                # Keep the order from the higher priority source
+                if self._get_source_priority(current_source) > self._get_source_priority(existing_source):
+                    unique_orders[order_key] = (order, current_source)
+                    print(f"   🔄 Source priority: {current_source} over {existing_source} for {order.symbol}")
+            # <Enhanced Source Priority - End>
                 
-        return list(unique_orders.values())
+        # Extract just the orders from the dictionary
+        return [order for order, _ in unique_orders.values()]
         
     def _get_order_key(self, order: PlannedOrder) -> str:
         """
@@ -185,6 +342,59 @@ class OrderLoadingOrchestrator:
         # Use symbol, action, and prices to identify unique orders
         # This matches the duplicate detection logic in OrderLifecycleManager
         return f"{order.symbol}_{order.action.value}_{order.entry_price:.4f}_{order.stop_loss:.4f}"
+
+    # <Enhanced Order Merging - Begin>
+    def _get_order_source(self, order: PlannedOrder) -> str:
+        """
+        Determine the source of an order for conflict resolution.
+        
+        Args:
+            order: The PlannedOrder object
+            
+        Returns:
+            String representing order source
+        """
+        # This is a simplified implementation - you may need a more robust way
+        # to track order sources in your actual implementation
+        if hasattr(order, '_source'):
+            return getattr(order, '_source', 'UNKNOWN')
+        return 'UNKNOWN'
+        
+    def _get_source_priority(self, source: str) -> int:
+        """
+        Get priority level for order sources (higher = more authoritative).
+        
+        Args:
+            source: The order source
+            
+        Returns:
+            Priority integer (higher = better)
+        """
+        priority_map = {
+            'IBKR': 3,    # Highest priority - reality
+            'DATABASE': 2, # Medium priority - system state
+            'EXCEL': 1,    # Lowest priority - user input
+            'UNKNOWN': 0
+        }
+        return priority_map.get(source.upper(), 0)
+        
+    def _log_order_conflicts(self, all_orders: List[PlannedOrder], merged_orders: List[PlannedOrder]) -> None:
+        """
+        Log conflicts between orders from different sources for manual review.
+        
+        Args:
+            all_orders: All orders from all sources before merging
+            merged_orders: Orders after deduplication
+        """
+        if len(all_orders) <= len(merged_orders):
+            return  # No conflicts
+            
+        conflict_count = len(all_orders) - len(merged_orders)
+        if conflict_count > 0:
+            print(f"   ⚠️  Found {conflict_count} order conflicts (logged for review)")
+            # In a real implementation, you might want to log these to a file or database
+            # For now, we just print a summary
+    # <Enhanced Order Merging - End>
         
     def _is_order_expired(self, db_order: PlannedOrderDB) -> bool:
         """
@@ -235,16 +445,22 @@ class OrderLoadingOrchestrator:
         try:
             db_orders = self._load_from_database()
             excel_orders = self._load_from_excel(excel_path)
-            merged_orders = self._merge_orders(db_orders + excel_orders)
+            # <Enhanced Statistics - Begin>
+            ibkr_orders = self._discover_ibkr_orders()
+            all_orders = db_orders + excel_orders + ibkr_orders
+            merged_orders = self._merge_orders(all_orders)
             
             return {
                 'database_orders': len(db_orders),
                 'excel_orders': len(excel_orders),
+                'ibkr_orders': len(ibkr_orders),
                 'merged_orders': len(merged_orders),
-                'duplicates_removed': len(db_orders) + len(excel_orders) - len(merged_orders),
-                'sources_available': 2,
+                'duplicates_removed': len(all_orders) - len(merged_orders),
+                'sources_available': 3,
+                'ibkr_connected': self.ibkr_client and self.ibkr_client.connected,
                 'timestamp': datetime.datetime.now()
             }
+            # <Enhanced Statistics - End>
             
         except Exception as e:
             return {

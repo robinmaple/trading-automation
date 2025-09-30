@@ -21,6 +21,13 @@ class IbkrOrder:
     parent_id: Optional[int] = None
     why_held: Optional[str] = None
     last_update_time: Optional[datetime] = None
+    # <Enhanced IBKR Order Fields - Begin>
+    symbol: Optional[str] = None  # Symbol for the order
+    security_type: Optional[str] = None  # STK, OPT, FUT, CASH, etc.
+    exchange: Optional[str] = None  # Exchange where order is placed
+    currency: Optional[str] = None  # Currency of the order
+    time_in_force: Optional[str] = None  # GTC, DAY, IOC, etc.
+    # <Enhanced IBKR Order Fields - End>
 
 
 @dataclass
