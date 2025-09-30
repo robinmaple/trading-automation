@@ -263,9 +263,12 @@ def test_find_orders_needing_attention(manager):
     assert stuck_order in result
     assert failed_order in result
 
-
 def test_validate_order_valid(manager):
     order = make_mock_planned_order()
+    # <Fix Missing Mock - Begin>
+    # Mock that no existing order is found in database
+    manager.find_existing_order = Mock(return_value=None)
+    # <Fix Missing Mock - End>
     valid, msg = manager.validate_order(order)
     assert valid
     assert msg is None

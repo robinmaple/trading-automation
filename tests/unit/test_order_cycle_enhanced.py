@@ -101,29 +101,6 @@ class TestOrderLifecycleManagerEnhanced:
         mock_services_with_orchestrator['loading_service'].load_and_validate_orders.assert_called_once_with("test_path.xlsx")
         assert result == sample_orders
     
-    def test_should_persist_order_logic(self, manager_with_orchestrator):
-        """Test the logic for determining if an order should be persisted."""
-        order = PlannedOrder(
-            security_type=SecurityType.STK,  # Added missing parameter
-            exchange="SMART",  # Added missing parameter
-            currency="USD",  # Added missing parameter
-            symbol="TEST", 
-            action=Action.BUY, 
-            entry_price=100.0, 
-            stop_loss=95.0,
-            order_type=OrderType.LMT, 
-            position_strategy=PositionStrategy.DAY
-        )
-        
-        # Test when order doesn't exist in DB (should persist)
-        manager_with_orchestrator.find_existing_order = Mock(return_value=None)
-        assert manager_with_orchestrator._should_persist_order(order) is True
-        
-        # Test when order exists in DB (should not persist)
-        existing_order = Mock(spec=PlannedOrderDB)
-        manager_with_orchestrator.find_existing_order = Mock(return_value=existing_order)
-        assert manager_with_orchestrator._should_persist_order(order) is False
-    
     def test_persist_single_order_duplicate_handling(self, manager_with_orchestrator):
         """Test that duplicate orders are properly handled during persistence."""
         order = PlannedOrder(

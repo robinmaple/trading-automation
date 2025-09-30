@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from src.core.events import OrderState
 from src.core.database import get_db_session
 from src.core.models import ExecutedOrderDB, PlannedOrderDB, PositionStrategy
-
+from src.core.shared_enums import OrderState as SharedOrderState
 
 class OrderPersistenceService:
     """Encapsulates all database operations for order persistence and validation."""
@@ -21,6 +21,29 @@ class OrderPersistenceService:
     def __init__(self, db_session: Optional[Session] = None):
         """Initialize the service with an optional database session."""
         self.db_session = db_session or get_db_session()
+
+    def get_active_orders(self) -> List[PlannedOrderDB]:
+        """
+        Get all active orders from database that should be resumed.
+        
+        Returns:
+            List of PlannedOrderDB objects with active status
+        """
+        try:
+            active_db_orders = self.db_session.query(PlannedOrderDB).filter(
+                PlannedOrderDB.status.in_([
+                    SharedOrderState.PENDING.value,
+                    SharedOrderState.LIVE.value, 
+                    SharedOrderState.LIVE_WORKING.value
+                ])
+            ).all()
+            
+            return active_db_orders
+            
+        except Exception as e:
+            print(f"❌ Failed to get active orders from database: {e}")
+            return []
+    # <Active Orders Query - End>
 
     # Account Tracking Implementation - Begin
     def record_order_execution(self, planned_order, filled_price: float,

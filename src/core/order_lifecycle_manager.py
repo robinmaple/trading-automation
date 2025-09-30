@@ -71,18 +71,28 @@ class OrderLifecycleManager:
                 return []
                 
             # <Enhanced Persistence Logic - Begin>
-            # Only persist orders that are new (from Excel) and not duplicates
+            # Handle order persistence with session awareness
             persisted_count = 0
+            updated_count = 0
+            
             for order in all_orders:
-                # Only attempt persistence for orders that likely came from Excel
-                # (DB-resumed orders are already persisted)
-                if self._should_persist_order(order):
+                # Determine if this order needs persistence or updating
+                persistence_action = self._determine_persistence_action(order)
+                
+                if persistence_action == 'CREATE':
                     if self._persist_single_order(order):
                         persisted_count += 1
+                elif persistence_action == 'UPDATE':
+                    if self._update_existing_order(order):
+                        updated_count += 1
+                elif persistence_action == 'SKIP':
+                    print(f"⏩ Skipping order: {order.symbol} (already active)")
+                else:
+                    print(f"⚠️  Unknown persistence action for {order.symbol}: {persistence_action}")
             # <Enhanced Persistence Logic - End>
             
             self.db_session.commit()
-            print(f"💾 Persisted {persisted_count} new orders to database")
+            print(f"💾 Order persistence: {persisted_count} new, {updated_count} updated")
             
             return all_orders
             
@@ -90,6 +100,191 @@ class OrderLifecycleManager:
             self.db_session.rollback()
             print(f"❌ Failed to load and persist orders: {e}")
             raise
+
+    # <Enhanced Persistence Logic - Begin>
+    def _determine_persistence_action(self, order: PlannedOrder) -> str:
+        """
+        Determine what persistence action to take for an order.
+        
+        Args:
+            order: The PlannedOrder to evaluate
+            
+        Returns:
+            'CREATE' for new orders, 'UPDATE' for Excel updates, 'SKIP' for DB-resumed orders
+        """
+        # Check if order already exists in database
+        existing_order = self.find_existing_order(order)
+        
+        if not existing_order:
+            return 'CREATE'  # New order - create in database
+            
+        # Order exists - determine if this is an Excel update or DB-resumed order
+        existing_status = existing_order.status
+        
+        # If order is active (not filled/expired), treat Excel version as update
+        if existing_status in [SharedOrderState.PENDING.value, SharedOrderState.LIVE.value, 
+                             SharedOrderState.LIVE_WORKING.value]:
+            # Check if this appears to be an Excel update (prices changed)
+            if self._is_excel_update(order, existing_order):
+                return 'UPDATE'
+            else:
+                return 'SKIP'  # DB-resumed order, no changes
+        else:
+            # Order is filled/expired - create new order for same trading idea
+            return 'CREATE'
+            
+    def _is_excel_update(self, excel_order: PlannedOrder, db_order: PlannedOrderDB) -> bool:
+        """
+        Check if Excel order represents an update to existing database order.
+        
+        Args:
+            excel_order: Order from Excel
+            db_order: Existing database order
+            
+        Returns:
+            True if Excel order has meaningful changes, False otherwise
+        """
+        # Check for price changes that would indicate an update
+        price_changed = (abs(excel_order.entry_price - db_order.entry_price) > 0.0001 or
+                        abs(excel_order.stop_loss - db_order.stop_loss) > 0.0001)
+        
+        # Check for other meaningful field changes
+        priority_changed = (excel_order.priority != db_order.priority)
+        risk_changed = (abs(excel_order.risk_per_trade - db_order.risk_per_trade) > 0.0001)
+        
+        return price_changed or priority_changed or risk_changed
+        
+    def _update_existing_order(self, order: PlannedOrder) -> bool:
+        """
+        Update an existing database order with Excel changes.
+        
+        Args:
+            order: PlannedOrder with updated values
+            
+        Returns:
+            True if update successful, False otherwise
+        """
+        try:
+            existing_order = self.find_existing_order(order)
+            if not existing_order:
+                print(f"⚠️  Cannot update: Order not found for {order.symbol}")
+                return False
+                
+            # Update order fields with Excel values
+            existing_order.entry_price = order.entry_price
+            existing_order.stop_loss = order.stop_loss
+            existing_order.risk_per_trade = order.risk_per_trade
+            existing_order.risk_reward_ratio = order.risk_reward_ratio
+            existing_order.priority = order.priority
+            existing_order.updated_at = datetime.datetime.now()
+            
+            print(f"🔄 Updated order: {order.symbol} (Excel changes applied)")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed to update order {order.symbol}: {e}")
+            return False
+    # <Enhanced Persistence Logic - End>
+            
+    def _persist_single_order(self, order: PlannedOrder) -> bool:
+        """Persist a single order to database with duplicate checking."""
+        try:
+            # Check for existing order with same parameters
+            existing_order = self.find_existing_order(order)
+            if existing_order and self._is_duplicate_order(order, existing_order):
+                print(f"⏩ Skipping duplicate order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
+                return False
+                
+            # Convert to database model and persist
+            db_order = self.persistence_service.convert_to_db_model(order)
+            self.db_session.add(db_order)
+            print(f"✅ Persisted order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed to persist order {order.symbol}: {e}")
+            return False
+
+    # <Enhanced Order Validation - Begin>
+    def validate_order(self, order: PlannedOrder) -> Tuple[bool, Optional[str]]:
+        """
+        Validate order system state with session-aware duplicate detection.
+        
+        This method checks system-level constraints, not data integrity. It assumes
+        the PlannedOrder object is internally valid (required fields present, business
+        rules satisfied). Data integrity should be enforced at object creation.
+        """
+        # <Delegate Data Integrity to PlannedOrder - Begin>
+        try:
+            # Fail fast if data integrity issues - should never happen for valid orders
+            order.validate()
+        except ValueError as e:
+            # This indicates a serious data integrity issue that should be fixed upstream
+            return False, f"Data integrity violation: {e}"
+        # <Delegate Data Integrity to PlannedOrder - End>
+            
+        # <System State Validation - Begin>
+        # UNIQUE: Check for open positions
+        if self.state_service.has_open_position(order.symbol):
+            return False, f"Open position exists for {order.symbol}"
+            
+        # UNIQUE: Check database state for existing orders with session awareness
+        existing_order = self.find_existing_order(order)
+        if existing_order:
+            return self._validate_existing_order_scenario(order, existing_order)
+        # <System State Validation - End>
+            
+        return True, None
+        
+    def _validate_existing_order_scenario(self, new_order: PlannedOrder, existing_order: PlannedOrderDB) -> Tuple[bool, str]:
+        """
+        Validate scenarios involving existing database orders.
+        
+        Args:
+            new_order: The new order being validated
+            existing_order: Existing database order
+            
+        Returns:
+            Tuple of (is_valid, reason_message)
+        """
+        existing_status = existing_order.status
+        
+        # Active orders block new identical orders
+        if existing_status in [SharedOrderState.LIVE.value, SharedOrderState.LIVE_WORKING.value, SharedOrderState.FILLED.value]:
+            return False, f"Active order already exists: {existing_status}"
+            
+        # Allow re-execution of failed/cancelled/expired orders (same trading idea)
+        if existing_status in [SharedOrderState.CANCELLED.value, SharedOrderState.EXPIRED.value, 
+                             SharedOrderState.AON_REJECTED.value]:
+            # Check if this is the same trading idea (prices unchanged)
+            if self._is_same_trading_idea(new_order, existing_order):
+                return True, f"Re-executing {existing_status} order"
+            else:
+                return False, f"Different trading idea for {existing_status} order"
+                
+        # PENDING orders can be updated/replaced
+        if existing_status == SharedOrderState.PENDING.value:
+            return True, "Updating PENDING order"
+            
+        return False, f"Unknown order status: {existing_status}"
+        
+    def _is_same_trading_idea(self, order1: PlannedOrder, order2: PlannedOrderDB) -> bool:
+        """
+        Check if two orders represent the same trading idea (same symbol, action, similar prices).
+        
+        Args:
+            order1: First order (PlannedOrder)
+            order2: Second order (PlannedOrderDB)
+            
+        Returns:
+            True if same trading idea, False otherwise
+        """
+        same_action = order2.action == order1.action.value
+        similar_entry = abs(order2.entry_price - order1.entry_price) < 0.0001
+        similar_stop = abs(order2.stop_loss - order1.stop_loss) < 0.0001
+        
+        return same_action and similar_entry and similar_stop
+    # <Enhanced Order Validation - End>
 
     # <AON Validation Methods - Begin>
     def validate_order_for_aon(self, order: PlannedOrder, total_capital: float) -> Tuple[bool, str]:
@@ -206,76 +401,6 @@ class OrderLifecycleManager:
         print(f"📈 Daily volume for {symbol}: {volume:,.0f} shares (mock data)")
         return volume
     # <AON Validation Methods - End>
-        
-    # <Enhanced Order Persistence Logic - Begin>
-    def _should_persist_order(self, order: PlannedOrder) -> bool:
-        """
-        Determine if an order should be persisted to database.
-        Only persist orders that are new (likely from Excel) and not duplicates.
-        """
-        # Check if order already exists in database
-        existing_order = self.find_existing_order(order)
-        if existing_order:
-            return False  # Already persisted
-            
-        # Additional logic could be added here to distinguish between
-        # DB-resumed orders vs new Excel orders
-        return True
-    # <Enhanced Order Persistence Logic - End>
-            
-    def _persist_single_order(self, order: PlannedOrder) -> bool:
-        """Persist a single order to database with duplicate checking."""
-        try:
-            # Check for existing order with same parameters
-            existing_order = self.find_existing_order(order)
-            if existing_order and self._is_duplicate_order(order, existing_order):
-                print(f"⏩ Skipping duplicate order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
-                return False
-                
-            # Convert to database model and persist
-            db_order = self.persistence_service.convert_to_db_model(order)
-            self.db_session.add(db_order)
-            print(f"✅ Persisted order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Failed to persist order {order.symbol}: {e}")
-            return False
-            
-    def validate_order(self, order: PlannedOrder) -> Tuple[bool, Optional[str]]:
-        """
-        Validate order system state - assumes data integrity already validated by PlannedOrder.
-        
-        This method checks system-level constraints, not data integrity. It assumes
-        the PlannedOrder object is internally valid (required fields present, business
-        rules satisfied). Data integrity should be enforced at object creation.
-        """
-        # <Delegate Data Integrity to PlannedOrder - Begin>
-        try:
-            # Fail fast if data integrity issues - should never happen for valid orders
-            order.validate()
-        except ValueError as e:
-            # This indicates a serious data integrity issue that should be fixed upstream
-            return False, f"Data integrity violation: {e}"
-        # <Delegate Data Integrity to PlannedOrder - End>
-            
-        # <System State Validation - Begin>
-        # UNIQUE: Check for open positions
-        if self.state_service.has_open_position(order.symbol):
-            return False, f"Open position exists for {order.symbol}"
-            
-        # UNIQUE: Check database state for existing orders
-        existing_order = self.find_existing_order(order)
-        if existing_order:
-            # <AON Status Integration - Begin>
-            if existing_order.status in [SharedOrderState.LIVE.value, SharedOrderState.LIVE_WORKING.value, SharedOrderState.FILLED.value]:
-                return False, f"Active order already exists: {existing_order.status}"
-            # <AON Status Integration - End>
-            # Allow re-execution of failed/cancelled orders
-            # (they remain in the system for record-keeping but can be re-tried)
-        # <System State Validation - End>
-            
-        return True, None
         
     def find_existing_order(self, order: PlannedOrder) -> Optional[PlannedOrderDB]:
         """Find an existing order in database with matching parameters."""

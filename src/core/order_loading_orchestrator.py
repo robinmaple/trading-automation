@@ -19,6 +19,10 @@ from src.core.ibkr_client import IbkrClient
 from src.core.ibkr_types import IbkrOrder
 # <IBKR Integration - End>
 
+# <Session Awareness Integration - Begin>
+from src.core.shared_enums import OrderState as SharedOrderState
+# <Session Awareness Integration - End>
+
 
 class OrderLoadingOrchestrator:
     """
@@ -69,7 +73,7 @@ class OrderLoadingOrchestrator:
         sources_loaded = 0
         
         try:
-            # Load from database (order resumption)
+            # Load from database (order resumption) - FIXED: Load active orders FIRST
             db_orders = self._load_from_database()
             if db_orders:
                 all_orders.extend(db_orders)
@@ -83,14 +87,14 @@ class OrderLoadingOrchestrator:
             # Continue with other sources despite database failure
             
         try:
-            # Load from Excel (new orders)
+            # Load from Excel (new orders and updates)
             excel_orders = self._load_from_excel(excel_path)
             if excel_orders:
                 all_orders.extend(excel_orders)
                 sources_loaded += 1
-                print(f"   ✅ Excel: {len(excel_orders)} new orders loaded")
+                print(f"   ✅ Excel: {len(excel_orders)} orders loaded")
             else:
-                print("   ℹ️  Excel: No new orders found")
+                print("   ℹ️  Excel: No orders found")
                 
         except Exception as e:
             print(f"   ❌ Excel loading failed: {e}")
@@ -113,7 +117,7 @@ class OrderLoadingOrchestrator:
             # Graceful degradation: continue without IBKR orders
         # <IBKR Order Discovery - End>
             
-        # Merge and deduplicate orders from all sources
+        # Merge and deduplicate orders from all sources with session awareness
         merged_orders = self._merge_orders(all_orders)
         
         # <Conflict Logging - Begin>
@@ -125,6 +129,265 @@ class OrderLoadingOrchestrator:
               f"{len(merged_orders)} total orders after deduplication")
               
         return merged_orders
+
+    # <Session-Aware Database Loading - Begin>
+    def _load_from_database(self) -> List[PlannedOrder]:
+        """
+        Load and resume active orders from database with session awareness.
+        
+        Returns:
+            List of PlannedOrder objects representing active database orders
+        """
+        try:
+            # Query for active orders that should be resumed
+            # FIXED: Include LIVE_WORKING status and filter by expiration
+            active_db_orders = self.db_session.query(PlannedOrderDB).filter(
+                PlannedOrderDB.status.in_([
+                    SharedOrderState.PENDING.value,
+                    SharedOrderState.LIVE.value, 
+                    SharedOrderState.LIVE_WORKING.value
+                ])
+            ).all()
+            
+            if not active_db_orders:
+                return []
+                
+            # Convert to PlannedOrder objects and filter out expired orders
+            planned_orders = []
+            resumed_count = 0
+            expired_count = 0
+            
+            for db_order in active_db_orders:
+                try:
+                    planned_order = self.persistence_service.convert_to_planned_order(db_order)
+                    
+                    # Check if order should be resumed based on session and expiration
+                    should_resume, reason = self._should_resume_order(db_order, planned_order)
+                    
+                    if should_resume:
+                        planned_orders.append(planned_order)
+                        resumed_count += 1
+                        print(f"   🔄 Resuming: {db_order.symbol} ({reason})")
+                    else:
+                        expired_count += 1
+                        print(f"   ⏰ Not resuming: {db_order.symbol} ({reason})")
+                        
+                except Exception as e:
+                    print(f"   ❌ Failed to convert DB order {db_order.symbol}: {e}")
+                    continue
+                    
+            print(f"   📋 Database resume summary: {resumed_count} resumed, {expired_count} expired/skipped")
+            return planned_orders
+            
+        except Exception as e:
+            print(f"❌ Database order loading failed: {e}")
+            return []
+            
+    def _should_resume_order(self, db_order: PlannedOrderDB, planned_order: PlannedOrder) -> tuple[bool, str]:
+        """
+        Determine if a database order should be resumed based on session and expiration.
+        
+        Args:
+            db_order: Database order record
+            planned_order: Converted PlannedOrder object
+            
+        Returns:
+            Tuple of (should_resume, reason)
+        """
+        # Check if order is expired based on position strategy
+        if self._is_order_expired(db_order):
+            return False, f"Expired {db_order.position_strategy} strategy"
+            
+        # Check if this is a cross-session scenario (order from previous day)
+        is_cross_session = self._is_cross_session_order(db_order)
+        
+        if is_cross_session:
+            # Cross-session rules
+            if db_order.position_strategy.upper() == 'DAY':
+                return False, "DAY strategy expired (cross-session)"
+            elif db_order.position_strategy.upper() == 'HYBRID':
+                # HYBRID orders can resume across sessions within 10-day window
+                days_old = (datetime.datetime.now().date() - db_order.created_at.date()).days
+                if days_old <= 10:
+                    return True, f"HYBRID strategy valid ({days_old}/10 days)"
+                else:
+                    return False, f"HYBRID strategy expired ({days_old}/10 days)"
+            else:  # CORE strategy
+                return True, "CORE strategy (cross-session)"
+        else:
+            # Same-session rules - resume all non-expired orders
+            return True, "Active order (same-session)"
+            
+    def _is_cross_session_order(self, db_order: PlannedOrderDB) -> bool:
+        """
+        Check if an order is from a previous trading session.
+        
+        Args:
+            db_order: Database order to check
+            
+        Returns:
+            True if order is from previous session, False if same session
+        """
+        if not db_order.created_at:
+            return False
+            
+        order_date = db_order.created_at.date()
+        current_date = datetime.datetime.now().date()
+        
+        # Simple implementation: consider cross-session if created before today
+        # In production, you might want more sophisticated session detection
+        return order_date < current_date
+    # <Session-Aware Database Loading - End>
+            
+    def _load_from_excel(self, excel_path: str) -> List[PlannedOrder]:
+        """
+        Load new orders from Excel file.
+        
+        Args:
+            excel_path: Path to Excel file
+            
+        Returns:
+            List of PlannedOrder objects from Excel
+        """
+        try:
+            return self.loading_service.load_and_validate_orders(excel_path)
+        except Exception as e:
+            print(f"❌ Excel order loading failed: {e}")
+            return []
+            
+    def _merge_orders(self, orders: List[PlannedOrder]) -> List[PlannedOrder]:
+        """
+        Merge and deduplicate orders from multiple sources with session awareness.
+        
+        Args:
+            orders: List of orders from all sources
+            
+        Returns:
+            Deduplicated list of orders
+        """
+        if not orders:
+            return []
+            
+        # Use a dictionary to track unique orders by key with enhanced merging logic
+        unique_orders = {}
+        
+        for order in orders:
+            order_key = self._get_order_key(order)
+            current_source = self._get_order_source(order)
+            
+            if order_key not in unique_orders:
+                # New order - add to unique orders
+                unique_orders[order_key] = (order, current_source)
+            else:
+                # Duplicate order - apply enhanced merging logic
+                existing_order, existing_source = unique_orders[order_key]
+                unique_orders[order_key] = self._resolve_order_conflict(
+                    existing_order, existing_source, order, current_source
+                )
+                
+        # Extract just the orders from the dictionary
+        return [order for order, _ in unique_orders.values()]
+        
+    def _get_order_key(self, order: PlannedOrder) -> str:
+        """
+        Generate a unique key for an order for deduplication.
+        
+        Args:
+            order: The PlannedOrder object
+            
+        Returns:
+            String key representing order uniqueness
+        """
+        # Use symbol, action, and prices to identify unique orders
+        # This matches the duplicate detection logic in OrderLifecycleManager
+        return f"{order.symbol}_{order.action.value}_{order.entry_price:.4f}_{order.stop_loss:.4f}"
+
+    def _get_order_source(self, order: PlannedOrder) -> str:
+        """
+        Determine the source of an order for conflict resolution.
+        
+        Args:
+            order: The PlannedOrder object
+            
+        Returns:
+            String representing order source
+        """
+        # This is a simplified implementation - you may need a more robust way
+        # to track order sources in your actual implementation
+        if hasattr(order, '_source'):
+            return getattr(order, '_source', 'UNKNOWN')
+        return 'UNKNOWN'
+        
+    def _get_source_priority(self, source: str) -> int:
+        """
+        Get priority level for order sources (higher = more authoritative).
+        
+        Args:
+            source: The order source
+            
+        Returns:
+            Priority integer (higher = better)
+        """
+        priority_map = {
+            'IBKR': 3,    # Highest priority - reality
+            'DATABASE': 2, # Medium priority - system state
+            'EXCEL': 1,    # Lowest priority - user input
+            'UNKNOWN': 0
+        }
+        return priority_map.get(source.upper(), 0)
+        
+    def _log_order_conflicts(self, all_orders: List[PlannedOrder], merged_orders: List[PlannedOrder]) -> None:
+        """
+        Log conflicts between orders from different sources for manual review.
+        
+        Args:
+            all_orders: All orders from all sources before merging
+            merged_orders: Orders after deduplication
+        """
+        if len(all_orders) <= len(merged_orders):
+            return  # No conflicts
+            
+        conflict_count = len(all_orders) - len(merged_orders)
+        if conflict_count > 0:
+            print(f"   ⚠️  Found {conflict_count} order conflicts (logged for review)")
+            # In a real implementation, you might want to log these to a file or database
+            # For now, we just print a summary
+        
+    def _is_order_expired(self, db_order: PlannedOrderDB) -> bool:
+        """
+        Check if a database order should be considered expired based on position strategy.
+        
+        Args:
+            db_order: The database order to check
+            
+        Returns:
+            True if order is expired, False otherwise
+        """
+        if not db_order.position_strategy:
+            return False  # No strategy = never expire (conservative)
+            
+        strategy = db_order.position_strategy.name if hasattr(db_order.position_strategy, 'name') else str(db_order.position_strategy).upper()
+        created_date = db_order.created_at.date() if db_order.created_at else datetime.datetime.now().date()
+        current_date = datetime.datetime.now().date()
+        
+        if strategy == 'DAY':
+            # DAY orders expire at the end of the trading day
+            # For simplicity, consider expired if created before today
+            return created_date < current_date
+            
+        elif strategy == 'CORE':
+            # CORE orders never expire (manual intervention only)
+            return False
+            
+        elif strategy == 'HYBRID':
+            # HYBRID orders expire after 10 days
+            expiry_date = created_date + datetime.timedelta(days=10)
+            return current_date > expiry_date
+            
+        else:
+            # Unknown strategy - default to not expired
+            print(f"   ⚠️  Unknown position strategy: {strategy} for {db_order.symbol}")
+            return False
 
     # <IBKR Order Discovery Methods - Begin>
     def _discover_ibkr_orders(self) -> List[PlannedOrder]:
@@ -241,196 +504,6 @@ class OrderLoadingOrchestrator:
         print(f"   ✅ IBKR order resumable: {planned_order.symbol} (strategy: {strategy})")
         return True
     # <IBKR Order Discovery Methods - End>
-        
-    def _load_from_database(self) -> List[PlannedOrder]:
-        """
-        Load and resume active orders from database.
-        
-        Returns:
-            List of PlannedOrder objects representing active database orders
-        """
-        try:
-            # Query for active orders (PENDING or LIVE status)
-            active_db_orders = self.db_session.query(PlannedOrderDB).filter(
-                PlannedOrderDB.status.in_(['PENDING', 'LIVE'])
-            ).all()
-            
-            if not active_db_orders:
-                return []
-                
-            # Convert to PlannedOrder objects and filter out expired orders
-            planned_orders = []
-            for db_order in active_db_orders:
-                try:
-                    planned_order = self.persistence_service.convert_to_planned_order(db_order)
-                    if not self._is_order_expired(db_order):
-                        planned_orders.append(planned_order)
-                    else:
-                        print(f"   ⏰ Order expired: {db_order.symbol} (strategy: {db_order.position_strategy})")
-                except Exception as e:
-                    print(f"   ❌ Failed to convert DB order {db_order.symbol}: {e}")
-                    continue
-                    
-            return planned_orders
-            
-        except Exception as e:
-            print(f"❌ Database order loading failed: {e}")
-            return []
-            
-    def _load_from_excel(self, excel_path: str) -> List[PlannedOrder]:
-        """
-        Load new orders from Excel file.
-        
-        Args:
-            excel_path: Path to Excel file
-            
-        Returns:
-            List of PlannedOrder objects from Excel
-        """
-        try:
-            return self.loading_service.load_and_validate_orders(excel_path)
-        except Exception as e:
-            print(f"❌ Excel order loading failed: {e}")
-            return []
-            
-    def _merge_orders(self, orders: List[PlannedOrder]) -> List[PlannedOrder]:
-        """
-        Merge and deduplicate orders from multiple sources.
-        
-        Args:
-            orders: List of orders from all sources
-            
-        Returns:
-            Deduplicated list of orders
-        """
-        if not orders:
-            return []
-            
-        # Use a dictionary to track unique orders by key with source priority
-        unique_orders = {}
-        
-        for order in orders:
-            order_key = self._get_order_key(order)
-            
-            # <Enhanced Source Priority - Begin>
-            # Priority: IBKR (reality) > Database > Excel
-            current_source = self._get_order_source(order)
-            
-            if order_key not in unique_orders:
-                unique_orders[order_key] = (order, current_source)
-            else:
-                existing_order, existing_source = unique_orders[order_key]
-                # Keep the order from the higher priority source
-                if self._get_source_priority(current_source) > self._get_source_priority(existing_source):
-                    unique_orders[order_key] = (order, current_source)
-                    print(f"   🔄 Source priority: {current_source} over {existing_source} for {order.symbol}")
-            # <Enhanced Source Priority - End>
-                
-        # Extract just the orders from the dictionary
-        return [order for order, _ in unique_orders.values()]
-        
-    def _get_order_key(self, order: PlannedOrder) -> str:
-        """
-        Generate a unique key for an order for deduplication.
-        
-        Args:
-            order: The PlannedOrder object
-            
-        Returns:
-            String key representing order uniqueness
-        """
-        # Use symbol, action, and prices to identify unique orders
-        # This matches the duplicate detection logic in OrderLifecycleManager
-        return f"{order.symbol}_{order.action.value}_{order.entry_price:.4f}_{order.stop_loss:.4f}"
-
-    # <Enhanced Order Merging - Begin>
-    def _get_order_source(self, order: PlannedOrder) -> str:
-        """
-        Determine the source of an order for conflict resolution.
-        
-        Args:
-            order: The PlannedOrder object
-            
-        Returns:
-            String representing order source
-        """
-        # This is a simplified implementation - you may need a more robust way
-        # to track order sources in your actual implementation
-        if hasattr(order, '_source'):
-            return getattr(order, '_source', 'UNKNOWN')
-        return 'UNKNOWN'
-        
-    def _get_source_priority(self, source: str) -> int:
-        """
-        Get priority level for order sources (higher = more authoritative).
-        
-        Args:
-            source: The order source
-            
-        Returns:
-            Priority integer (higher = better)
-        """
-        priority_map = {
-            'IBKR': 3,    # Highest priority - reality
-            'DATABASE': 2, # Medium priority - system state
-            'EXCEL': 1,    # Lowest priority - user input
-            'UNKNOWN': 0
-        }
-        return priority_map.get(source.upper(), 0)
-        
-    def _log_order_conflicts(self, all_orders: List[PlannedOrder], merged_orders: List[PlannedOrder]) -> None:
-        """
-        Log conflicts between orders from different sources for manual review.
-        
-        Args:
-            all_orders: All orders from all sources before merging
-            merged_orders: Orders after deduplication
-        """
-        if len(all_orders) <= len(merged_orders):
-            return  # No conflicts
-            
-        conflict_count = len(all_orders) - len(merged_orders)
-        if conflict_count > 0:
-            print(f"   ⚠️  Found {conflict_count} order conflicts (logged for review)")
-            # In a real implementation, you might want to log these to a file or database
-            # For now, we just print a summary
-    # <Enhanced Order Merging - End>
-        
-    def _is_order_expired(self, db_order: PlannedOrderDB) -> bool:
-        """
-        Check if a database order should be considered expired.
-        
-        Args:
-            db_order: The database order to check
-            
-        Returns:
-            True if order is expired, False otherwise
-        """
-        if not db_order.position_strategy:
-            return False  # No strategy = never expire (conservative)
-            
-        strategy = db_order.position_strategy.upper()
-        created_date = db_order.created_at.date() if db_order.created_at else datetime.datetime.now().date()
-        current_date = datetime.datetime.now().date()
-        
-        if strategy == 'DAY':
-            # DAY orders expire at the end of the trading day
-            # For simplicity, consider expired if created before today
-            return created_date < current_date
-            
-        elif strategy == 'CORE':
-            # CORE orders never expire
-            return False
-            
-        elif strategy == 'HYBRID':
-            # HYBRID orders expire after 10 days
-            expiry_date = created_date + datetime.timedelta(days=10)
-            return current_date > expiry_date
-            
-        else:
-            # Unknown strategy - default to not expired
-            print(f"   ⚠️  Unknown position strategy: {strategy} for {db_order.symbol}")
-            return False
             
     def get_loading_statistics(self, excel_path: str) -> Dict[str, Any]:
         """
@@ -445,7 +518,6 @@ class OrderLoadingOrchestrator:
         try:
             db_orders = self._load_from_database()
             excel_orders = self._load_from_excel(excel_path)
-            # <Enhanced Statistics - Begin>
             ibkr_orders = self._discover_ibkr_orders()
             all_orders = db_orders + excel_orders + ibkr_orders
             merged_orders = self._merge_orders(all_orders)
@@ -460,10 +532,71 @@ class OrderLoadingOrchestrator:
                 'ibkr_connected': self.ibkr_client and self.ibkr_client.connected,
                 'timestamp': datetime.datetime.now()
             }
-            # <Enhanced Statistics - End>
             
         except Exception as e:
             return {
                 'error': str(e),
                 'timestamp': datetime.datetime.now()
             }
+    
+    # ... (Existing code above change)
+
+    # <Enhanced Order Conflict Resolution - Begin>
+    def _resolve_order_conflict(self, existing_order: PlannedOrder, existing_source: str,
+                              new_order: PlannedOrder, new_source: str) -> tuple[PlannedOrder, str]:
+        """
+        Resolve conflicts between duplicate orders from different sources.
+        
+        Args:
+            existing_order: The order already in unique_orders
+            existing_source: Source of existing order
+            new_order: The new order with same key
+            new_source: Source of new order
+            
+        Returns:
+            Tuple of (selected_order, selected_source)
+        """
+        existing_priority = self._get_source_priority(existing_source)
+        new_priority = self._get_source_priority(new_source)
+        
+        # Priority-based resolution
+        if new_priority > existing_priority:
+            print(f"   🔄 Source priority: {new_source} over {existing_source} for {new_order.symbol}")
+            return (new_order, new_source)
+        elif new_priority < existing_priority:
+            return (existing_order, existing_source)
+        else:
+            # Same priority - use more sophisticated conflict resolution
+            return self._resolve_same_priority_conflict(existing_order, new_order, existing_source)
+            
+    def _resolve_same_priority_conflict(self, order1: PlannedOrder, order2: PlannedOrder, 
+                                      source: str) -> tuple[PlannedOrder, str]:
+        """
+        Resolve conflicts when orders have same source priority.
+        
+        Args:
+            order1: First order
+            order2: Second order  
+            source: Common source
+            
+        Returns:
+            Tuple of (selected_order, source)
+        """
+        # For same source conflicts, prefer the order with more recent data
+        # This handles Excel updates to existing DB orders
+        # <Fix NoneType Comparison - Begin>
+        order1_import_time = getattr(order1, '_import_time', None)
+        order2_import_time = getattr(order2, '_import_time', None)
+        
+        # Only compare if both have import times and order2 is newer
+        if (order1_import_time is not None and 
+            order2_import_time is not None and 
+            order2_import_time > order1_import_time):
+            print(f"   🔄 Excel update: {order2.symbol} (newer data)")
+            return (order2, source)
+        else:
+            # Default to first order if import times are not comparable
+            return (order1, source)
+        # <Fix NoneType Comparison - End>
+    # <Enhanced Order Conflict Resolution - End>
+
