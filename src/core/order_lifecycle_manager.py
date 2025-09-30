@@ -14,6 +14,10 @@ from src.services.order_loading_service import OrderLoadingService
 from src.services.order_persistence_service import OrderPersistenceService
 from src.services.state_service import StateService
 
+# <Order Loading Orchestrator Integration - Begin>
+from src.core.order_loading_orchestrator import OrderLoadingOrchestrator
+# <Order Loading Orchestrator Integration - End>
+
 
 class OrderLifecycleManager:
     """Manages the complete lifecycle of orders from loading to completion."""
@@ -21,40 +25,75 @@ class OrderLifecycleManager:
     def __init__(self, loading_service: OrderLoadingService,
                  persistence_service: OrderPersistenceService,
                  state_service: StateService,
-                 db_session: Session):
+                 db_session: Session,
+                 # <Order Loading Orchestrator Integration - Begin>
+                 order_loading_orchestrator: Optional[OrderLoadingOrchestrator] = None
+                 # <Order Loading Orchestrator Integration - End>
+                 ):
         """Initialize the order lifecycle manager with required services."""
         self.loading_service = loading_service
         self.persistence_service = persistence_service
         self.state_service = state_service
         self.db_session = db_session
+        # <Order Loading Orchestrator Integration - Begin>
+        self.order_loading_orchestrator = order_loading_orchestrator
+        # <Order Loading Orchestrator Integration - End>
         
     def load_and_persist_orders(self, excel_path: str) -> List[PlannedOrder]:
         """Load orders from Excel, validate, and persist valid ones to database."""
         print(f"📥 Loading orders from: {excel_path}")
         
         try:
-            # Load and validate orders from Excel
-            valid_orders = self.loading_service.load_and_validate_orders(excel_path)
-            print(f"✅ Found {len(valid_orders)} valid orders in Excel")
+            # <Multi-Source Order Loading - Begin>
+            if self.order_loading_orchestrator:
+                # Use orchestrator for multi-source loading (DB resumption + Excel)
+                all_orders = self.order_loading_orchestrator.load_all_orders(excel_path)
+                print(f"✅ Loaded {len(all_orders)} orders from all sources")
+            else:
+                # Fallback to original Excel-only loading
+                all_orders = self.loading_service.load_and_validate_orders(excel_path)
+                print(f"✅ Found {len(all_orders)} valid orders in Excel")
+            # <Multi-Source Order Loading - End>
             
-            if not valid_orders:
+            if not all_orders:
                 return []
                 
-            # Persist each valid order to database
+            # <Enhanced Persistence Logic - Begin>
+            # Only persist orders that are new (from Excel) and not duplicates
             persisted_count = 0
-            for order in valid_orders:
-                if self._persist_single_order(order):
-                    persisted_count += 1
+            for order in all_orders:
+                # Only attempt persistence for orders that likely came from Excel
+                # (DB-resumed orders are already persisted)
+                if self._should_persist_order(order):
+                    if self._persist_single_order(order):
+                        persisted_count += 1
+            # <Enhanced Persistence Logic - End>
             
             self.db_session.commit()
-            print(f"💾 Persisted {persisted_count}/{len(valid_orders)} orders to database")
+            print(f"💾 Persisted {persisted_count} new orders to database")
             
-            return valid_orders
+            return all_orders
             
         except Exception as e:
             self.db_session.rollback()
             print(f"❌ Failed to load and persist orders: {e}")
             raise
+
+    # <Enhanced Order Persistence Logic - Begin>
+    def _should_persist_order(self, order: PlannedOrder) -> bool:
+        """
+        Determine if an order should be persisted to database.
+        Only persist orders that are new (likely from Excel) and not duplicates.
+        """
+        # Check if order already exists in database
+        existing_order = self.find_existing_order(order)
+        if existing_order:
+            return False  # Already persisted
+            
+        # Additional logic could be added here to distinguish between
+        # DB-resumed orders vs new Excel orders
+        return True
+    # <Enhanced Order Persistence Logic - End>
             
     def _persist_single_order(self, order: PlannedOrder) -> bool:
         """Persist a single order to database with duplicate checking."""

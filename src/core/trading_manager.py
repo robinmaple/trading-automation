@@ -39,6 +39,10 @@ from src.services.historical_performance_service import HistoricalPerformanceSer
 from config.trading_core_config import get_config as get_trading_core_config
 from src.services.risk_management_service import RiskManagementService
 
+# <Order Loading Orchestrator Integration - Begin>
+from src.core.order_loading_orchestrator import OrderLoadingOrchestrator
+# <Order Loading Orchestrator Integration - End>
+
 logger = logging.getLogger(__name__)
 
 class TradingManager:
@@ -165,6 +169,10 @@ class TradingManager:
 
     def _initialize_components(self, enable_advanced_features: bool) -> None:
         """Initialize all component managers and coordinators."""
+        # Get monitoring interval from config
+        monitoring_config = self.trading_config.get('monitoring', {})
+        interval_seconds = monitoring_config.get('interval_seconds', 5)
+        
         # Order execution orchestrator
         self.execution_orchestrator = OrderExecutionOrchestrator(
             execution_service=self.execution_service,
@@ -176,15 +184,28 @@ class TradingManager:
             config=self.trading_config
         )
 
-        # Monitoring service
-        self.monitoring_service = MonitoringService(self.data_feed)
+        # Monitoring service - FIXED: Pass interval_seconds during initialization
+        self.monitoring_service = MonitoringService(self.data_feed, interval_seconds)
 
-        # Order lifecycle manager
-        self.order_lifecycle_manager = OrderLifecycleManager(
+        # <Order Loading Orchestrator Integration - Begin>
+        # Initialize OrderLoadingOrchestrator for multi-source order loading
+        self.order_loading_orchestrator = OrderLoadingOrchestrator(
             loading_service=self.loading_service,
             persistence_service=self.order_persistence_service,
             state_service=self.state_service,
             db_session=self.db_session
+        )
+        # <Order Loading Orchestrator Integration - End>
+
+        # Order lifecycle manager - UPDATED with orchestrator injection
+        self.order_lifecycle_manager = OrderLifecycleManager(
+            loading_service=self.loading_service,
+            persistence_service=self.order_persistence_service,
+            state_service=self.state_service,
+            db_session=self.db_session,
+            # <Order Loading Orchestrator Integration - Begin>
+            order_loading_orchestrator=self.order_loading_orchestrator
+            # <Order Loading Orchestrator Integration - End>
         )
 
         # Advanced feature coordinator
@@ -606,18 +627,20 @@ class TradingManager:
         if not self.data_feed.is_connected():
             raise Exception("Data feed not connected")
 
+        # Update monitoring interval if provided
+        if interval_seconds is not None:
+            self.monitoring_service.set_monitoring_interval(interval_seconds)
+
         # ADD SYMBOL SUBSCRIPTION HERE
         self._subscribe_to_planned_order_symbols()
 
-        # Use configured interval if not explicitly provided
-        monitoring_config = self.trading_config.get('monitoring', {})
-        interval = interval_seconds or monitoring_config.get('interval_seconds', 5)
+        self.debug_order_status()
         
+        # FIX: Remove interval_seconds parameter
         return self.monitoring_service.start_monitoring(
             check_callback=self._check_and_execute_orders,
-            label_callback=self._label_completed_orders,
-            interval_seconds=interval
-        )
+            label_callback=self._label_completed_orders
+        )    
 
     # ADD NEW METHOD TO TradingManager
     def _subscribe_to_planned_order_symbols(self) -> None:
@@ -650,3 +673,19 @@ class TradingManager:
                 print(f"❌ Error subscribing to {order.symbol}: {e}")
         
         print(f"📊 Market data subscriptions: {subscribed_count}/{len(self.planned_orders)} symbols")
+
+    def debug_order_status(self):
+        """Debug method to check order status"""
+        from src.core.models import PlannedOrderDB
+        from sqlalchemy import select
+        
+        # Check what's in the database
+        db_orders = self.db_session.scalars(select(PlannedOrderDB)).all()
+        print(f"📋 Database has {len(db_orders)} orders:")
+        for db_order in db_orders:
+            print(f"  - {db_order.symbol} {db_order.action} @ ${db_order.entry_price} (Status: {db_order.status})")
+        
+        # Check planned orders in memory
+        print(f"🧠 Memory has {len(self.planned_orders)} planned orders:")
+        for planned in self.planned_orders:
+            print(f"  - {planned.symbol} {planned.action.value} @ ${planned.entry_price}")

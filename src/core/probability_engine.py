@@ -124,7 +124,29 @@ class FillProbabilityEngine:
 
     # Placeholder for volatility estimation
     def estimate_volatility(self, symbol, price_history, order) -> float:
-        return 0.001
+        """Calculate real volatility from IBKR market data."""
+        if not price_history or len(price_history) < 2:
+            return 0.01  # Default 1% if no history
+        
+        # Calculate from recent price movements
+        recent_prices = [p['price'] for p in price_history[-20:]]  # Last 20 ticks
+        if len(recent_prices) < 2:
+            return 0.01
+        
+        returns = []
+        for i in range(1, len(recent_prices)):
+            if recent_prices[i-1] != 0:
+                returns.append((recent_prices[i] - recent_prices[i-1]) / recent_prices[i-1])
+        
+        if not returns:
+            return 0.01
+        
+        # Annualized volatility (assuming 252 trading days)
+        import numpy as np
+        daily_volatility = np.std(returns)
+        annualized_volatility = daily_volatility * np.sqrt(252)
+        
+        return annualized_volatility
 
     # Placeholder for outcome probability scoring
     def score_outcome_stub(self, order):

@@ -550,3 +550,7 @@ class IbkrClient(EClient, EWrapper):
             raise ValueError(f"Invalid mode: {mode}. Use 'paper', 'live', or 'auto'")
 
     # Simplify connect method - remove port validation logic
+
+    def get_account_number(self) -> Optional[str]:
+        """Get the current account number for order placement."""
+        return self.account_number
