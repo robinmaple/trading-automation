@@ -6,7 +6,7 @@ Coordinates between data feeds, the IBKR client, service layer, and database.
 """
 import datetime
 from decimal import Decimal
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 import threading
 import time
 import pandas as pd
@@ -42,6 +42,10 @@ from src.services.risk_management_service import RiskManagementService
 # <Order Loading Orchestrator Integration - Begin>
 from src.core.order_loading_orchestrator import OrderLoadingOrchestrator
 # <Order Loading Orchestrator Integration - End>
+# <Event Bus Integration - Begin>
+from src.core.event_bus import EventBus
+from src.core.events import PriceUpdateEvent, EventType
+# <Event Bus Integration - End>
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +56,14 @@ class TradingManager:
                 ibkr_client: Optional[IbkrClient] = None,
                 order_persistence_service: Optional[OrderPersistenceService] = None,
                 enable_advanced_features: bool = False,
-                risk_config: Optional[Dict] = None):
+                risk_config: Optional[Dict] = None,
+                event_bus: EventBus = None):
         """Initialize the trading manager with all necessary dependencies and services."""
         # Core dependencies
         self.data_feed = data_feed
         self.excel_path = excel_path
         self.ibkr_client = ibkr_client
+        self.event_bus = event_bus  # <Event Bus Dependency - Begin>
         self.planned_orders: List[PlannedOrder] = []
         self.active_orders: Dict[int, ActiveOrder] = {}
         self.monitoring = False
@@ -92,16 +98,21 @@ class TradingManager:
             trading_manager=self,
             db_session=self.db_session,
             config=self.trading_config  # <-- PASS CONFIG HERE
-)        
+        )        
         # Initialize probability engine early to avoid attribute errors
         self.probability_engine = FillProbabilityEngine(
             data_feed=self.data_feed,
             config=self.trading_config  # <-- PASS CONFIG HERE
-)        
-        # Initialize eligibility service with probability engine
+        )        
+        # <Fix OrderEligibilityService Parameter Order - Begin>
+        # Initialize eligibility service with CORRECT parameter order
         self.eligibility_service = OrderEligibilityService(
-            self.probability_engine, self.db_session
+            self.planned_orders,           # planned_orders parameter (first)
+            self.probability_engine,       # probability_engine parameter (second)  
+            self.db_session                # db_session parameter (third)
         )
+        
+        # <Fix OrderEligibilityService Parameter Order - End>
 
         # Risk Management Service - UPDATED WITH CONFIG
         self.risk_service = RiskManagementService(
@@ -140,6 +151,62 @@ class TradingManager:
             self._initialize_advanced_services()
 
         self._initialize_components(enable_advanced_features)
+
+        # <Event Bus Subscription - Begin>
+        # Subscribe to price events if event bus is available
+        if self.event_bus:
+            self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update)
+            logger.info("✅ TradingManager subscribed to PRICE_UPDATE events")
+        # <Event Bus Subscription - End>
+
+    # <Price Event Handler - Begin>
+    def _handle_price_update(self, event: PriceUpdateEvent) -> None:
+        """Handle price update events and trigger order execution checks."""
+        try:
+            # Only process if we have planned orders and the symbol is being monitored
+            if not self.planned_orders:
+                return
+                
+            # Check if this symbol is in our planned orders
+            symbol_monitored = any(order.symbol == event.symbol for order in self.planned_orders)
+            if symbol_monitored:
+                logger.debug(f"📈 Price update for monitored symbol {event.symbol}: ${event.price}")
+                self._check_and_execute_orders()
+                
+        except Exception as e:
+            logger.error(f"Error handling price update for {event.symbol}: {e}")
+    # <Price Event Handler - End>
+
+    # <Monitored Symbols Management - Begin>
+    def _update_monitored_symbols(self) -> None:
+        """
+        Update MarketDataManager with symbols that need price events.
+        Includes symbols from planned orders and current positions.
+        """
+        if not hasattr(self.data_feed, 'market_data_manager') or not self.data_feed.market_data_manager:
+            return
+            
+        monitored_symbols: Set[str] = set()
+        
+        # Add symbols from planned orders
+        for order in self.planned_orders:
+            monitored_symbols.add(order.symbol)
+            
+        # Add symbols from current positions
+        try:
+            positions = self.state_service.get_all_positions()
+            for position in positions:
+                monitored_symbols.add(position.symbol)
+        except Exception as e:
+            logger.warning(f"Could not fetch positions for symbol monitoring: {e}")
+            
+        # Update MarketDataManager
+        if monitored_symbols:
+            self.data_feed.market_data_manager.set_monitored_symbols(monitored_symbols)
+            logger.info(f"🔍 Monitoring {len(monitored_symbols)} symbols for price events")
+        else:
+            logger.warning("⚠️  No symbols to monitor - no planned orders or positions")
+    # <Monitored Symbols Management - End>
 
     # Account Context Methods - Begin
     def _get_current_account_number(self) -> Optional[str]:
@@ -284,6 +351,12 @@ class TradingManager:
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persisting valid ones to the database."""
         self.planned_orders = self.order_lifecycle_manager.load_and_persist_orders(self.excel_path)
+        
+        # <Update Monitored Symbols After Loading Orders - Begin>
+        # Update the monitored symbols after loading new planned orders
+        self._update_monitored_symbols()
+        # <Update Monitored Symbols After Loading Orders - End>
+        
         return self.planned_orders
 
     def stop_monitoring(self) -> None:
@@ -592,6 +665,12 @@ class TradingManager:
                     self.advanced_features.label_completed_orders(hours_back=hours_back)
                 except Exception:
                     pass
+        
+        # <Update Monitored Symbols on Position Changes - Begin>
+        # Update monitored symbols when positions change (new fills or closes)
+        if event.new_state in ['FILLED', 'CANCELLED', 'CLOSED']:
+            self._update_monitored_symbols()
+        # <Update Monitored Symbols on Position Changes - End>
 
     def _monitoring_loop(self, interval_seconds: int) -> None:
 
@@ -631,8 +710,15 @@ class TradingManager:
         if interval_seconds is not None:
             self.monitoring_service.set_monitoring_interval(interval_seconds)
 
-        # ADD SYMBOL SUBSCRIPTION HERE
+        # <Initialize Monitored Symbols at Startup - Begin>
+        # Initialize monitored symbols before starting monitoring
+        self._update_monitored_symbols()
+        # <Initialize Monitored Symbols at Startup - End>
+
+        # <Event-Driven Symbol Subscription - Begin>
+        # Symbol subscription is now handled by event system - keep for backward compatibility
         self._subscribe_to_planned_order_symbols()
+        # <Event-Driven Symbol Subscription - End>
 
         self.debug_order_status()
         

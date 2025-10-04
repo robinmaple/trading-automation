@@ -54,8 +54,33 @@ BASE_TRADING_CORE_CONFIG: Dict[str, Any] = {
         },
         'fallback_fixed_notional': 50000, # Fixed fallback if volume data unavailable
         'track_metrics': True             # Enable AON performance tracking
-    }
+    },
     # <AON Execution Configuration - End>
+    # <Event System Configuration - Begin>
+    'event_system': {
+        'event_bus': {
+            'enabled': True,              # Enable Event Bus system
+            'enable_logging': True,       # Log event publishing/subscriptions
+            'max_subscribers': 50,        # Maximum subscribers per event type
+            'log_level': 'INFO'           # DEBUG, INFO, WARNING
+        },
+        'events': {
+            'price_update': {
+                'enabled': True,          # Enable price update events
+                'min_price_change': 0.01, # Minimum price change to trigger event ($0.01)
+                'log_level': 'INFO'
+            },
+            'order_executed': {
+                'enabled': True,          # Enable order executed events
+                'log_level': 'INFO'
+            },
+            'system_health': {
+                'enabled': True,          # Enable system health events
+                'log_level': 'WARNING'
+            }
+        }
+    }
+    # <Event System Configuration - End>
 }
 
 # Paper trading configuration - same as base but with explicit name
@@ -191,6 +216,25 @@ def validate_config(config: Dict[str, Any]) -> tuple[bool, str]:
                 return False, "fallback_fixed_notional must be positive"
     # <AON Configuration Validation - End>
 
+    # <Event System Configuration Validation - Begin>
+    # Validate event system settings if present
+    if 'event_system' in config:
+        event_config = config['event_system']
+        
+        # Validate event bus settings
+        if 'event_bus' in event_config:
+            event_bus_config = event_config['event_bus']
+            if 'max_subscribers' in event_bus_config and event_bus_config['max_subscribers'] <= 0:
+                return False, "event_bus.max_subscribers must be positive"
+        
+        # Validate individual event settings
+        if 'events' in event_config:
+            events_config = event_config['events']
+            for event_name, event_settings in events_config.items():
+                if 'min_price_change' in event_settings and event_settings['min_price_change'] < 0:
+                    return False, f"events.{event_name}.min_price_change must be non-negative"
+    # <Event System Configuration Validation - End>
+
     return True, "Configuration is valid"
 
 
@@ -220,6 +264,12 @@ if __name__ == "__main__":
                     print(f"  AON: enabled={aon['enabled']}, default_volume_pct={aon['default_volume_percentage']}")
                     if aon['symbol_specific']:
                         print(f"  AON symbol-specific: {list(aon['symbol_specific'].keys())[:3]}...")
+                
+                # Show Event System settings
+                if 'event_system' in config:
+                    event_sys = config['event_system']
+                    print(f"  Event System: enabled={event_sys['event_bus']['enabled']}")
+                    print(f"  Events enabled: {list(event_sys['events'].keys())}")
             else:
                 print(f"✗ {env} configuration validation failed: {message}")
                 

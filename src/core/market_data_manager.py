@@ -10,14 +10,23 @@ import time
 # <Market Hours Service Import - Begin>
 from src.services.market_hours_service import MarketHoursService
 # <Market Hours Service Import - End>
+# <Event Bus Integration - Begin>
+from src.core.event_bus import EventBus
+from src.core.events import PriceUpdateEvent
+# <Event Bus Integration - End>
+# <Price Filtering Import - Begin>
+from decimal import Decimal
+from typing import Set
+# <Price Filtering Import - End>
 
 
 class MarketDataManager:
     """Manages subscriptions to market data and tracks current prices for symbols."""
 
-    def __init__(self, order_executor):
+    def __init__(self, order_executor, event_bus: EventBus = None):
         """Initialize the manager, auto-detecting data type based on account type."""
         self.executor = order_executor
+        self.event_bus = event_bus  # <Event Bus Dependency - Begin>
         self.prices = {}  # symbol -> {'price': float, 'timestamp': datetime, 'history': list}
         self.subscriptions = {}  # symbol -> req_id
         self.lock = threading.RLock()
@@ -32,7 +41,90 @@ class MarketDataManager:
         print(f"📊 Auto-detected: {env} account environment")
         # <Enhanced Data Type Detection - End>
         
+        # <Price Filtering Configuration - Begin>
+        # Default filtering configuration
+        self.filter_config = {
+            'min_percent_change': Decimal('0.01'),  # 0.01% minimum change
+            'min_absolute_change': Decimal('0.05'),  # $0.05 minimum change
+            'enabled': True  # Enable filtering by default
+        }
+        # Track symbols that should receive events (PlannedOrder symbols + positions)
+        self.monitored_symbols: Set[str] = set()
+        # <Price Filtering Configuration - End>
+        
         # <Data Type Configuration Removed - Will be determined per subscription>
+
+    # <Price Filtering Methods - Begin>
+    def update_filter_config(self, config: dict) -> None:
+        """Update price filtering configuration."""
+        with self.lock:
+            if 'min_percent_change' in config:
+                self.filter_config['min_percent_change'] = Decimal(str(config['min_percent_change']))
+            if 'min_absolute_change' in config:
+                self.filter_config['min_absolute_change'] = Decimal(str(config['min_absolute_change']))
+            if 'enabled' in config:
+                self.filter_config['enabled'] = config['enabled']
+            
+            print(f"🔧 Price filter updated: {self.filter_config}")
+
+    def set_monitored_symbols(self, symbols: Set[str]) -> None:
+        """Set the symbols that should receive price events (PlannedOrder symbols + positions)."""
+        with self.lock:
+            self.monitored_symbols = symbols.copy()
+            print(f"🔍 Monitoring {len(self.monitored_symbols)} symbols for price events: {sorted(list(symbols))}")
+
+    def add_monitored_symbol(self, symbol: str) -> None:
+        """Add a symbol to the monitored set."""
+        with self.lock:
+            self.monitored_symbols.add(symbol)
+
+    def remove_monitored_symbol(self, symbol: str) -> None:
+        """Remove a symbol from the monitored set."""
+        with self.lock:
+            self.monitored_symbols.discard(symbol)
+
+    def _should_publish_price_update(self, symbol: str, new_price: float, old_price: float) -> bool:
+        """
+        Determine if a price update should be published based on filtering rules.
+        
+        Rules:
+        1. If filtering is disabled, publish all updates
+        2. Only publish for monitored symbols
+        3. Publish if price change meets either percentage OR absolute threshold (whichever is higher)
+        4. Always publish first price (old_price == 0)
+        """
+        # If filtering is disabled, publish all updates
+        if not self.filter_config['enabled']:
+            return True
+            
+        # Only publish for monitored symbols
+        if symbol not in self.monitored_symbols:
+            return False
+            
+        # Always publish first price
+        if old_price == 0.0:
+            return True
+            
+        # Calculate changes
+        price_change = abs(new_price - old_price)
+        percent_change = (Decimal(str(price_change)) / Decimal(str(old_price))) * Decimal('100')
+        
+        # Check if change meets either threshold
+        min_absolute = self.filter_config['min_absolute_change']
+        min_percent = self.filter_config['min_percent_change']
+        
+        meets_absolute = price_change >= float(min_absolute)
+        meets_percent = percent_change >= min_percent
+        
+        should_publish = meets_absolute or meets_percent
+        
+        # Debug logging for significant changes
+        if should_publish and price_change > 0:
+            print(f"📈 Significant price change for {symbol}: ${old_price:.2f} → ${new_price:.2f} "
+                  f"(Δ${price_change:.2f}, {percent_change:.2f}%)")
+        
+        return should_publish
+    # <Price Filtering Methods - End>
 
     def subscribe(self, symbol, contract) -> None:
         """Subscribe to market data for a symbol, with fallback to snapshot data on failure."""
@@ -208,6 +300,24 @@ class MarketDataManager:
                             data_type = data.get('data_type', 'unknown')
                             print(f"💰 FIRST PRICE UPDATE for {symbol}: ${price} ({tick_type_name}) - Data type: {data_type}")
                         # <Enhanced Price Update Logging - End>
+                        
+                        # <Price Event Publishing with Filtering - Begin>
+                        # Publish price update event if event bus is available and price is valid
+                        if self.event_bus and price > 0:
+                            # Apply filtering logic
+                            if self._should_publish_price_update(symbol, price, old_price):
+                                event = PriceUpdateEvent(
+                                    symbol=symbol,
+                                    price=price,
+                                    price_type=tick_type_name,
+                                    source="MarketDataManager"
+                                )
+                                self.event_bus.publish(event)
+                                if old_price == 0.0:  # Log first event publication
+                                    print(f"📢 Published FIRST price event for {symbol}: ${price}")
+                            # else: # Debug logging for filtered events
+                            #     print(f"🔇 Filtered price update for {symbol}: ${old_price} → ${price}")
+                        # <Price Event Publishing with Filtering - End>
                         break
 
     def subscribe_with_retry(self, symbol, contract, retries=2) -> bool:

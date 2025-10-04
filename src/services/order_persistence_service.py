@@ -14,6 +14,7 @@ from src.core.events import OrderState
 from src.core.database import get_db_session
 from src.core.models import ExecutedOrderDB, PlannedOrderDB, PositionStrategy
 from src.core.shared_enums import OrderState as SharedOrderState
+from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy as PositionStrategyEnum
 
 class OrderPersistenceService:
     """Encapsulates all database operations for order persistence and validation."""
@@ -485,3 +486,72 @@ class OrderPersistenceService:
             print(f"Error getting setup performance summary for account {account_number}: {e}")
             return {}
     # <Advanced Feature Integration - End>
+
+    # <Database to Domain Conversion - Begin>
+    def convert_to_planned_order(self, db_order: PlannedOrderDB) -> PlannedOrder:
+        """
+        Convert a PlannedOrderDB entity back to a PlannedOrder domain object.
+        
+        Args:
+            db_order: Database order entity
+            
+        Returns:
+            PlannedOrder domain object
+        """
+        try:
+            # Convert string values back to enums using proper enum lookup
+            action = self._string_to_enum(Action, db_order.action)
+            order_type = self._string_to_enum(OrderType, db_order.order_type)
+            security_type = self._string_to_enum(SecurityType, db_order.security_type)
+            
+            # Get position strategy from database - use SQLAlchemy model
+            position_strategy_entity = self.db_session.query(PositionStrategy).filter_by(id=db_order.position_strategy_id).first()
+            position_strategy = self._string_to_enum(PositionStrategyEnum, position_strategy_entity.name) if position_strategy_entity else PositionStrategyEnum.CORE
+            
+            # Create PlannedOrder with all required fields
+            planned_order = PlannedOrder(
+                symbol=db_order.symbol,
+                security_type=security_type,
+                action=action,
+                order_type=order_type,
+                entry_price=db_order.entry_price,
+                stop_loss=db_order.stop_loss,
+                risk_per_trade=db_order.risk_per_trade,
+                risk_reward_ratio=db_order.risk_reward_ratio,
+                priority=db_order.priority,
+                position_strategy=position_strategy,
+                overall_trend=db_order.overall_trend,
+                brief_analysis=db_order.brief_analysis,
+                exchange=getattr(db_order, 'exchange', 'SMART'),
+                currency=getattr(db_order, 'currency', 'USD')
+            )
+            
+            return planned_order
+            
+        except Exception as e:
+            print(f"❌ Failed to convert DB order to PlannedOrder: {e}")
+            raise
+
+    def _string_to_enum(self, enum_class, value: str):
+        """Convert string value to enum member, handling case variations and spaces."""
+        if value is None:
+            return enum_class(list(enum_class)[0])  # Return first enum member as default
+            
+        # Clean up the string value
+        clean_value = str(value).strip().upper().replace(' ', '_')
+        
+        # Try direct match first
+        try:
+            return enum_class[clean_value]
+        except KeyError:
+            pass
+            
+        # Try value-based lookup
+        for member in enum_class:
+            if member.value.upper() == clean_value or member.name.upper() == clean_value:
+                return member
+                
+        # Fallback to first member
+        print(f"⚠️  Could not map '{value}' to {enum_class.__name__}, using default")
+        return enum_class(list(enum_class)[0])
+    # <Database to Domain Conversion - End>
