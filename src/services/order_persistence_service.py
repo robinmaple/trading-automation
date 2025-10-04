@@ -16,12 +16,23 @@ from src.core.models import ExecutedOrderDB, PlannedOrderDB, PositionStrategy
 from src.core.shared_enums import OrderState as SharedOrderState
 from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy as PositionStrategyEnum
 
+# Minimal safe logging import
+from src.core.simple_logger import get_simple_logger
+logger = get_simple_logger(__name__)
+
+
 class OrderPersistenceService:
     """Encapsulates all database operations for order persistence and validation."""
 
     def __init__(self, db_session: Optional[Session] = None):
         """Initialize the service with an optional database session."""
+        if logger:
+            logger.debug("Initializing OrderPersistenceService")
+            
         self.db_session = db_session or get_db_session()
+        
+        if logger:
+            logger.info("OrderPersistenceService initialized successfully")
 
     def get_active_orders(self) -> List[PlannedOrderDB]:
         """
@@ -30,6 +41,9 @@ class OrderPersistenceService:
         Returns:
             List of PlannedOrderDB objects with active status
         """
+        if logger:
+            logger.debug("Getting active orders from database")
+            
         try:
             active_db_orders = self.db_session.query(PlannedOrderDB).filter(
                 PlannedOrderDB.status.in_([
@@ -39,10 +53,13 @@ class OrderPersistenceService:
                 ])
             ).all()
             
+            if logger:
+                logger.info(f"Found {len(active_db_orders)} active orders in database")
             return active_db_orders
             
         except Exception as e:
-            print(f"❌ Failed to get active orders from database: {e}")
+            if logger:
+                logger.error(f"Failed to get active orders from database: {e}")
             return []
     # <Active Orders Query - End>
 
@@ -51,15 +68,21 @@ class OrderPersistenceService:
                              filled_quantity: float, account_number: str,
                              commission: float = 0.0, status: str = 'FILLED') -> Optional[int]:
         """Record an order execution in the database with account context. Returns the ID of the new record or None."""
+        if logger:
+            logger.info(f"Recording order execution: {planned_order.symbol}, account: {account_number}")
+            
         try:
             planned_order_id = self._find_planned_order_id(planned_order)
             if planned_order_id is None:
-                print(f"❌ Cannot record execution: Planned order not found in database for {planned_order.symbol}")
-                print(f"   Searching for: {planned_order.symbol}, {planned_order.entry_price}, {planned_order.stop_loss}")
+                if logger:
+                    logger.error(f"Cannot record execution: Planned order not found in database for {planned_order.symbol}")
+                    logger.debug(f"Searching for: {planned_order.symbol}, {planned_order.entry_price}, {planned_order.stop_loss}")
+                    
                 existing_orders = self.db_session.query(PlannedOrderDB).filter_by(symbol=planned_order.symbol).all()
-                print(f"   Existing orders for {planned_order.symbol}: {len(existing_orders)}")
-                for order in existing_orders:
-                    print(f"     - {order.symbol}: entry={order.entry_price}, stop={order.stop_loss}, status={order.status}")
+                if logger:
+                    logger.debug(f"Existing orders for {planned_order.symbol}: {len(existing_orders)}")
+                    for order in existing_orders:
+                        logger.debug(f"  - {order.symbol}: entry={order.entry_price}, stop={order.stop_loss}, status={order.status}")
                 return None
 
             executed_order = ExecutedOrderDB(
@@ -76,29 +99,34 @@ class OrderPersistenceService:
             if planned_order.position_strategy.value == 'HYBRID':
                 expiration_date = datetime.datetime.now() + datetime.timedelta(days=10)
                 executed_order.expiration_date = expiration_date
-                print(f"📅 HYBRID order expiration set: {expiration_date.strftime('%Y-%m-%d %H:%M')}")
+                if logger:
+                    logger.debug(f"HYBRID order expiration set: {expiration_date.strftime('%Y-%m-%d %H:%M')}")
 
             self.db_session.add(executed_order)
             self.db_session.commit()
 
-            print(f"✅ Execution recorded for {planned_order.symbol} (Account: {account_number}): "
-                  f"{filled_quantity} @ {filled_price}, Status: {status}")
+            if logger:
+                logger.info(f"Execution recorded for {planned_order.symbol} (Account: {account_number}): "
+                          f"{filled_quantity} @ {filled_price}, Status: {status}, ID: {executed_order.id}")
 
             return executed_order.id
 
         except Exception as e:
             self.db_session.rollback()
-            print(f"❌ Failed to record order execution: {e}")
-            import traceback
-            traceback.print_exc()
+            if logger:
+                logger.error(f"Failed to record order execution: {e}")
             return None
 
     def create_executed_order(self, planned_order, fill_info, account_number: str) -> Optional[ExecutedOrderDB]:
         """Create an ExecutedOrderDB record from a PlannedOrder and fill information with account context."""
+        if logger:
+            logger.info(f"Creating executed order: {planned_order.symbol}, account: {account_number}")
+            
         try:
             planned_order_id = self._find_planned_order_id(planned_order)
             if not planned_order_id:
-                print(f"❌ Cannot create executed order: Planned order not found for {planned_order.symbol}")
+                if logger:
+                    logger.error(f"Cannot create executed order: Planned order not found for {planned_order.symbol}")
                 return None
 
             executed_order = ExecutedOrderDB(
@@ -116,16 +144,21 @@ class OrderPersistenceService:
             self.db_session.add(executed_order)
             self.db_session.commit()
 
-            print(f"✅ Created executed order for {planned_order.symbol} (Account: {account_number})")
+            if logger:
+                logger.info(f"Created executed order for {planned_order.symbol} (Account: {account_number}), ID: {executed_order.id}")
             return executed_order
 
         except Exception as e:
             self.db_session.rollback()
-            print(f"❌ Failed to create executed order: {e}")
+            if logger:
+                logger.error(f"Failed to create executed order: {e}")
             return None
 
     def get_realized_pnl_period(self, account_number: str, days: int) -> Decimal:
         """Get realized P&L for specific account for the last N calendar days."""
+        if logger:
+            logger.debug(f"Getting realized P&L for account {account_number}, last {days} days")
+            
         start_date = datetime.datetime.now() - datetime.timedelta(days=days)
         
         result = self.db_session.execute(
@@ -137,29 +170,47 @@ class OrderPersistenceService:
             {'start_date': start_date, 'account_number': account_number}
         ).scalar()
         
-        return Decimal(str(result or '0'))
+        pnl = Decimal(str(result or '0'))
+        
+        if logger:
+            logger.debug(f"Realized P&L for account {account_number}: ${pnl:,.2f}")
+            
+        return pnl
 
     def record_realized_pnl(self, order_id: int, symbol: str, pnl: Decimal, 
                           exit_date: datetime, account_number: str):
         """Record realized P&L for a closed trade with account context."""
-        self.db_session.execute(
-            text("""
-                INSERT INTO executed_orders (order_id, symbol, realized_pnl, exit_time, account_number)
-                VALUES (:order_id, :symbol, :pnl, :exit_time, :account_number)
-            """),
-            {
-                'order_id': order_id,
-                'symbol': symbol,
-                'pnl': float(pnl),
-                'exit_time': exit_date,
-                'account_number': account_number
-            }
-        )
-        self.db_session.commit()
+        if logger:
+            logger.info(f"Recording realized P&L: {symbol}, P&L: ${pnl:,.2f}, account: {account_number}")
+            
+        try:
+            self.db_session.execute(
+                text("""
+                    INSERT INTO executed_orders (order_id, symbol, realized_pnl, exit_time, account_number)
+                    VALUES (:order_id, :symbol, :pnl, :exit_time, :account_number)
+                """),
+                {
+                    'order_id': order_id,
+                    'symbol': symbol,
+                    'pnl': float(pnl),
+                    'exit_time': exit_date,
+                    'account_number': account_number
+                }
+            )
+            self.db_session.commit()
+            if logger:
+                logger.debug(f"Successfully recorded P&L for {symbol}")
+        except Exception as e:
+            if logger:
+                logger.error(f"Failed to record P&L for {symbol}: {e}")
+            raise
     # Account Tracking Implementation - End
 
     def _find_planned_order_id(self, planned_order) -> Optional[int]:
         """Find the database ID for a planned order based on its parameters."""
+        if logger:
+            logger.debug(f"Finding planned order ID for {planned_order.symbol}")
+            
         try:
             db_order = self.db_session.query(PlannedOrderDB).filter_by(
                 symbol=planned_order.symbol,
@@ -168,20 +219,32 @@ class OrderPersistenceService:
                 action=planned_order.action.value,
                 order_type=planned_order.order_type.value
             ).first()
-            return db_order.id if db_order else None
+            
+            order_id = db_order.id if db_order else None
+            if logger:
+                if order_id:
+                    logger.debug(f"Found planned order ID: {order_id} for {planned_order.symbol}")
+                else:
+                    logger.warning(f"No planned order found for {planned_order.symbol}")
+                    
+            return order_id
         except Exception as e:
-            print(f"❌ Error finding planned order in database: {e}")
+            if logger:
+                logger.error(f"Error finding planned order in database for {planned_order.symbol}: {e}")
             return None
 
     def convert_to_db_model(self, planned_order) -> PlannedOrderDB:
         """Convert a domain PlannedOrder object to a PlannedOrderDB entity."""
+        if logger:
+            logger.debug(f"Converting PlannedOrder to DB model: {planned_order.symbol}")
 
         # Resolve DB row; create if missing
         strategy_name = getattr(planned_order.position_strategy, 'value', str(planned_order.position_strategy))
         position_strategy = self.db_session.query(PositionStrategy).filter_by(name=strategy_name).first()
 
         if not position_strategy:
-            print(f"⚠ Position strategy '{strategy_name}' not found in DB. Auto-creating.")
+            if logger:
+                logger.warning(f"Position strategy '{strategy_name}' not found in DB. Auto-creating.")
             position_strategy = PositionStrategy(name=strategy_name)
             self.db_session.add(position_strategy)
             self.db_session.commit()
@@ -201,30 +264,42 @@ class OrderPersistenceService:
             overall_trend=planned_order.overall_trend,       # store human-entered value
             brief_analysis=planned_order.brief_analysis
         )
+        
+        if logger:
+            logger.debug(f"Successfully converted PlannedOrder to DB model: {planned_order.symbol}")
         return db_model
 
     def handle_order_rejection(self, planned_order_id: int, rejection_reason: str) -> bool:
         """Mark a planned order as CANCELLED with a rejection reason in the database."""
+        if logger:
+            logger.info(f"Handling order rejection: {planned_order_id}, reason: {rejection_reason}")
+            
         try:
             order = self.db_session.query(PlannedOrderDB).filter_by(id=planned_order_id).first()
             if order:
                 order.status = 'CANCELLED'
                 order.rejection_reason = rejection_reason
-                order.updated_at =datetime.datetime.now()
+                order.updated_at = datetime.datetime.now()
                 self.db_session.commit()
-                print(f"✅ Order {planned_order_id} canceled due to rejection: {rejection_reason}")
+                if logger:
+                    logger.info(f"Order {planned_order_id} canceled due to rejection: {rejection_reason}")
                 return True
             else:
-                print(f"❌ Order {planned_order_id} not found for rejection handling")
+                if logger:
+                    logger.error(f"Order {planned_order_id} not found for rejection handling")
                 return False
         except Exception as e:
             self.db_session.rollback()
-            print(f"❌ Failed to cancel rejected order {planned_order_id}: {e}")
+            if logger:
+                logger.error(f"Failed to cancel rejected order {planned_order_id}: {e}")
             return False
 
     def validate_sufficient_margin(self, symbol: str, quantity: float, entry_price: float,
                                 currency: str = 'USD') -> Tuple[bool, str]:
         """Validate if the account has sufficient margin for a proposed trade. Returns (is_valid, message)."""
+        if logger:
+            logger.debug(f"Validating margin for {symbol}, quantity: {quantity}, price: {entry_price}")
+            
         try:
             account_value = self.get_account_value()
             trade_value = quantity * entry_price
@@ -240,21 +315,30 @@ class OrderPersistenceService:
                 message = (f"Insufficient margin. Required: ${margin_requirement:,.2f}, "
                         f"Available: ${max_allowed_margin:,.2f}, "
                         f"Account Value: ${account_value:,.2f}")
+                if logger:
+                    logger.warning(f"Margin validation failed: {message}")
                 return False, message
 
+            if logger:
+                logger.debug(f"Margin validation passed for {symbol}")
             return True, "Sufficient margin available"
 
         except Exception as e:
-            return False, f"Margin validation error: {e}"
+            error_msg = f"Margin validation error: {e}"
+            if logger:
+                logger.error(error_msg)
+            return False, error_msg
 
     def get_account_value(self, account_id: str = None) -> float:
         """Get the current account value. Currently a mock implementation."""
         try:
             mock_account_value = 100000.0
-            print(f"📊 Current account value (mock): ${mock_account_value:,.2f}")
+            if logger:
+                logger.debug(f"Current account value (mock): ${mock_account_value:,.2f}")
             return mock_account_value
         except Exception as e:
-            print(f"❌ Failed to get account value: {e}")
+            if logger:
+                logger.error(f"Failed to get account value: {e}")
             return 50000.0
 
     def update_order_status(self, order, status: str, reason: str = "", order_ids=None) -> bool:
@@ -271,12 +355,16 @@ class OrderPersistenceService:
         Returns:
             True if update/create succeeded, False otherwise
         """
+        if logger:
+            logger.info(f"Updating order status: {order.symbol} -> {status}, reason: {reason}")
+            
         try:
             valid_statuses = ['PENDING', 'LIVE', 'LIVE_WORKING', 'FILLED', 'CANCELLED',
                             'EXPIRED', 'LIQUIDATED', 'REPLACED']
 
             if status not in valid_statuses:
-                print(f"❌ Invalid order status: '{status}'. Valid values: {valid_statuses}")
+                if logger:
+                    logger.error(f"Invalid order status: '{status}'. Valid values: {valid_statuses}")
                 return False
 
             db_order = self._find_planned_order_db_record(order)
@@ -303,7 +391,8 @@ class OrderPersistenceService:
                 db_order.updated_at = datetime.datetime.now()
 
                 self.db_session.commit()
-                print(f"✅ Updated {order.symbol} status to {status}: {reason}")
+                if logger:
+                    logger.info(f"Updated {order.symbol} status to {status}: {reason}")
                 return True
 
             else:
@@ -320,29 +409,44 @@ class OrderPersistenceService:
 
                     self.db_session.add(db_model)
                     self.db_session.commit()
-                    print(f"✅ Created new order record for {order.symbol} with status {status}")
+                    if logger:
+                        logger.info(f"Created new order record for {order.symbol} with status {status}")
                     return True
                 except Exception as create_error:
-                    print(f"❌ Failed to create order record: {create_error}")
+                    if logger:
+                        logger.error(f"Failed to create order record: {create_error}")
                     return False
 
         except Exception as e:
             self.db_session.rollback()
-            print(f"❌ Failed to update order status: {e}")
+            if logger:
+                logger.error(f"Failed to update order status: {e}")
             return False
 
     def _find_planned_order_db_record(self, order) -> Optional[PlannedOrderDB]:
         """Find a PlannedOrderDB record in the database based on its parameters."""
+        if logger:
+            logger.debug(f"Finding planned order DB record for {order.symbol}")
+            
         try:
-            return self.db_session.query(PlannedOrderDB).filter_by(
+            db_order = self.db_session.query(PlannedOrderDB).filter_by(
                 symbol=order.symbol,
                 entry_price=order.entry_price,
                 stop_loss=order.stop_loss,
                 action=order.action.value,
                 order_type=order.order_type.value
             ).first()
+            
+            if logger:
+                if db_order:
+                    logger.debug(f"Found planned order DB record for {order.symbol}")
+                else:
+                    logger.debug(f"No planned order DB record found for {order.symbol}")
+                    
+            return db_order
         except Exception as e:
-            print(f"❌ Error finding planned order in database: {e}")
+            if logger:
+                logger.error(f"Error finding planned order in database for {order.symbol}: {e}")
             return None
 
     # <Advanced Feature Integration - Begin>
@@ -359,6 +463,9 @@ class OrderPersistenceService:
         Returns:
             List of trade dictionaries with performance data
         """
+        if logger:
+            logger.debug(f"Getting trades for setup: {setup_name}, account: {account_number}, days: {days_back}")
+            
         try:
             cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_back)
             
@@ -420,10 +527,13 @@ class OrderPersistenceService:
                 
                 trades.append(trade_data)
                 
+            if logger:
+                logger.debug(f"Found {len(trades)} trades for setup {setup_name}")
             return trades
             
         except Exception as e:
-            print(f"Error getting trades for setup {setup_name} on account {account_number}: {e}")
+            if logger:
+                logger.error(f"Error getting trades for setup {setup_name} on account {account_number}: {e}")
             return []
 
     def get_all_trading_setups(self, account_number: str, days_back: int = 90) -> List[str]:
@@ -437,6 +547,9 @@ class OrderPersistenceService:
         Returns:
             List of unique setup names
         """
+        if logger:
+            logger.debug(f"Getting all trading setups for account: {account_number}, days: {days_back}")
+            
         try:
             cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_back)
             
@@ -453,10 +566,15 @@ class OrderPersistenceService:
             ).distinct()
             
             results = query.all()
-            return [result[0] for result in results if result[0]]
+            setups = [result[0] for result in results if result[0]]
+            
+            if logger:
+                logger.debug(f"Found {len(setups)} trading setups for account {account_number}")
+            return setups
             
         except Exception as e:
-            print(f"Error getting trading setups for account {account_number}: {e}")
+            if logger:
+                logger.error(f"Error getting trading setups for account {account_number}: {e}")
             return []
 
     def get_setup_performance_summary(self, account_number: str, days_back: int = 90) -> Dict[str, Dict]:
@@ -470,6 +588,9 @@ class OrderPersistenceService:
         Returns:
             Dictionary with setup names as keys and performance metrics as values
         """
+        if logger:
+            logger.debug(f"Getting setup performance summary for account: {account_number}, days: {days_back}")
+            
         try:
             setups = self.get_all_trading_setups(account_number, days_back)
             performance_summary = {}
@@ -480,10 +601,13 @@ class OrderPersistenceService:
                     performance = self._calculate_setup_performance(trades)
                     performance_summary[setup] = performance
                     
+            if logger:
+                logger.debug(f"Generated performance summary for {len(performance_summary)} setups")
             return performance_summary
             
         except Exception as e:
-            print(f"Error getting setup performance summary for account {account_number}: {e}")
+            if logger:
+                logger.error(f"Error getting setup performance summary for account {account_number}: {e}")
             return {}
     # <Advanced Feature Integration - End>
 
@@ -498,6 +622,9 @@ class OrderPersistenceService:
         Returns:
             PlannedOrder domain object
         """
+        if logger:
+            logger.debug(f"Converting DB order to PlannedOrder: {db_order.symbol}")
+            
         try:
             # Convert string values back to enums using proper enum lookup
             action = self._string_to_enum(Action, db_order.action)
@@ -526,15 +653,20 @@ class OrderPersistenceService:
                 currency=getattr(db_order, 'currency', 'USD')
             )
             
+            if logger:
+                logger.debug(f"Successfully converted DB order to PlannedOrder: {db_order.symbol}")
             return planned_order
             
         except Exception as e:
-            print(f"❌ Failed to convert DB order to PlannedOrder: {e}")
+            if logger:
+                logger.error(f"Failed to convert DB order to PlannedOrder: {e}")
             raise
 
     def _string_to_enum(self, enum_class, value: str):
         """Convert string value to enum member, handling case variations and spaces."""
         if value is None:
+            if logger:
+                logger.debug(f"Using default enum member for {enum_class.__name__} (value was None)")
             return enum_class(list(enum_class)[0])  # Return first enum member as default
             
         # Clean up the string value
@@ -552,6 +684,7 @@ class OrderPersistenceService:
                 return member
                 
         # Fallback to first member
-        print(f"⚠️  Could not map '{value}' to {enum_class.__name__}, using default")
+        if logger:
+            logger.warning(f"Could not map '{value}' to {enum_class.__name__}, using default")
         return enum_class(list(enum_class)[0])
     # <Database to Domain Conversion - End>

@@ -8,26 +8,39 @@ from src.core.abstract_data_feed import AbstractDataFeed
 from typing import Dict, Any, Optional
 import datetime
 
+# Minimal safe logging import
+from src.core.simple_logger import get_simple_logger
+logger = get_simple_logger(__name__)
+
 
 class FillProbabilityEngine:
     def __init__(self, data_feed: AbstractDataFeed, config: Optional[Dict[str, Any]] = None):
+        if logger:
+            logger.debug("Initializing FillProbabilityEngine")
+            
         self.data_feed = data_feed
         self._load_configuration(config or {})
+        
+        if logger:
+            logger.info("FillProbabilityEngine initialized successfully")
     
     def _load_configuration(self, config: Dict[str, Any]) -> None:
         """Load configuration parameters."""
         execution_config = config.get('execution', {})
         self.execution_threshold = execution_config.get('fill_probability_threshold', 0.7)
         
-        # Optional logging
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"ProbabilityEngine configured: execution_threshold={self.execution_threshold}")
+        if logger:
+            logger.debug(f"ProbabilityEngine configured: execution_threshold={self.execution_threshold}")
 
     # Compute fill probability score with optional feature extraction
     def score_fill(self, order, return_features=False) -> float:
+        if logger:
+            logger.debug(f"Calculating fill probability for {order.symbol}")
+            
         current_data = self.data_feed.get_current_price(order.symbol)
         if not current_data:
+            if logger:
+                logger.warning(f"No market data available for {order.symbol}, using default probability")
             return 0.5 if not return_features else (0.5, {})
 
         current_price = current_data['price']
@@ -49,6 +62,9 @@ class FillProbabilityEngine:
 
         final_score = max(0.0, min(1.0, score))
         
+        if logger:
+            logger.debug(f"Fill probability for {order.symbol}: {final_score:.3f} (Current: ${current_price:.2f}, Target: ${order.entry_price:.2f})")
+        
         if return_features:
             features = self.extract_features(order, current_data)
             return final_score, features
@@ -57,17 +73,22 @@ class FillProbabilityEngine:
 
     # Compatibility wrapper for execution decisions
     def should_execute_order(self, order) -> tuple[bool, float]:
+        if logger:
+            logger.debug(f"Checking execution viability for {order.symbol}")
+            
         fill_prob = self.score_fill(order)
         execute = fill_prob >= self.execution_threshold
 
-        print(f"🔍 {order.symbol}: Entry={order.entry_price:.5f}, "
-            f"FillProb={fill_prob:.3f}, Threshold={self.execution_threshold:.3f}, "
-            f"Execute={execute}")
+        if logger:
+            logger.info(f"Execution decision for {order.symbol}: FillProb={fill_prob:.3f}, Threshold={self.execution_threshold:.3f}, Execute={execute}")
 
         return execute, fill_prob
 
     # Calculate fill probability for limit orders
     def calculate_fill_probability(self, order, current_price, volatility) -> float:
+        if logger:
+            logger.debug(f"Calculating fill probability for {order.symbol} with price ${current_price:.2f}")
+            
         if order.order_type.value == 'LMT':
             if order.action.value == 'BUY':
                 if current_price <= order.entry_price:
@@ -84,7 +105,12 @@ class FillProbabilityEngine:
 
     # Extract comprehensive features for ML foundation
     def extract_features(self, order, current_data) -> dict:
+        if logger:
+            logger.debug(f"Extracting features for {order.symbol}")
+            
         if not current_data:
+            if logger:
+                logger.warning(f"No current data for feature extraction on {order.symbol}")
             return {}
         
         current_price = current_data['price']
@@ -120,12 +146,20 @@ class FillProbabilityEngine:
             'brief_analysis': getattr(order, 'brief_analysis', None)
         }
         
+        if logger:
+            logger.debug(f"Extracted {len(features)} features for {order.symbol}")
+        
         return features
 
     # Placeholder for volatility estimation
     def estimate_volatility(self, symbol, price_history, order) -> float:
         """Calculate real volatility from IBKR market data."""
+        if logger:
+            logger.debug(f"Estimating volatility for {symbol}")
+            
         if not price_history or len(price_history) < 2:
+            if logger:
+                logger.debug(f"Insufficient price history for {symbol}, using default volatility")
             return 0.01  # Default 1% if no history
         
         # Calculate from recent price movements
@@ -146,8 +180,13 @@ class FillProbabilityEngine:
         daily_volatility = np.std(returns)
         annualized_volatility = daily_volatility * np.sqrt(252)
         
+        if logger:
+            logger.debug(f"Calculated volatility for {symbol}: {annualized_volatility:.3f}")
+        
         return annualized_volatility
 
     # Placeholder for outcome probability scoring
     def score_outcome_stub(self, order):
+        if logger:
+            logger.debug(f"Calculating outcome score stub for {order.symbol}")
         return None

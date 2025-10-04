@@ -23,6 +23,10 @@ from src.core.ibkr_types import IbkrOrder
 from src.core.shared_enums import OrderState as SharedOrderState
 # <Session Awareness Integration - End>
 
+# Minimal safe logging import
+from src.core.simple_logger import get_simple_logger
+logger = get_simple_logger(__name__)
+
 
 class OrderLoadingOrchestrator:
     """
@@ -49,6 +53,9 @@ class OrderLoadingOrchestrator:
             db_session: Database session for querying orders
             ibkr_client: IBKR client for order discovery (optional)
         """
+        if logger:
+            logger.debug("Initializing OrderLoadingOrchestrator")
+            
         self.loading_service = loading_service
         self.persistence_service = persistence_service
         self.state_service = state_service
@@ -56,6 +63,9 @@ class OrderLoadingOrchestrator:
         # <IBKR Integration - Begin>
         self.ibkr_client = ibkr_client
         # <IBKR Integration - End>
+        
+        if logger:
+            logger.info("OrderLoadingOrchestrator initialized successfully")
         
     def load_all_orders(self, excel_path: str) -> List[PlannedOrder]:
         """
@@ -67,7 +77,8 @@ class OrderLoadingOrchestrator:
         Returns:
             List of PlannedOrder objects from all sources after deduplication
         """
-        print("🔄 OrderLoadingOrchestrator: Loading orders from all sources...")
+        if logger:
+            logger.info(f"Loading orders from all sources, Excel path: {excel_path}")
         
         all_orders = []
         sources_loaded = 0
@@ -78,12 +89,15 @@ class OrderLoadingOrchestrator:
             if db_orders:
                 all_orders.extend(db_orders)
                 sources_loaded += 1
-                print(f"   ✅ Database: {len(db_orders)} active orders resumed")
+                if logger:
+                    logger.info(f"Database: {len(db_orders)} active orders resumed")
             else:
-                print("   ℹ️  Database: No active orders to resume")
+                if logger:
+                    logger.debug("Database: No active orders to resume")
                 
         except Exception as e:
-            print(f"   ❌ Database loading failed: {e}")
+            if logger:
+                logger.error(f"Database loading failed: {e}")
             # Continue with other sources despite database failure
             
         try:
@@ -92,12 +106,15 @@ class OrderLoadingOrchestrator:
             if excel_orders:
                 all_orders.extend(excel_orders)
                 sources_loaded += 1
-                print(f"   ✅ Excel: {len(excel_orders)} orders loaded")
+                if logger:
+                    logger.info(f"Excel: {len(excel_orders)} orders loaded")
             else:
-                print("   ℹ️  Excel: No orders found")
+                if logger:
+                    logger.debug("Excel: No orders found")
                 
         except Exception as e:
-            print(f"   ❌ Excel loading failed: {e}")
+            if logger:
+                logger.error(f"Excel loading failed: {e}")
             # Continue with available orders despite Excel failure
 
         # <IBKR Order Discovery - Begin>
@@ -107,13 +124,16 @@ class OrderLoadingOrchestrator:
             if ibkr_orders:
                 all_orders.extend(ibkr_orders)
                 sources_loaded += 1
-                print(f"   ✅ IBKR: {len(ibkr_orders)} working orders discovered")
+                if logger:
+                    logger.info(f"IBKR: {len(ibkr_orders)} working orders discovered")
             else:
-                print("   ℹ️  IBKR: No working orders to discover")
+                if logger:
+                    logger.debug("IBKR: No working orders to discover")
                 
         except Exception as e:
-            print(f"   ❌ IBKR discovery failed: {e}")
-            print("   📋 Continuing with Database + Excel orders only")
+            if logger:
+                logger.error(f"IBKR discovery failed: {e}")
+                logger.info("Continuing with Database + Excel orders only")
             # Graceful degradation: continue without IBKR orders
         # <IBKR Order Discovery - End>
             
@@ -125,8 +145,8 @@ class OrderLoadingOrchestrator:
         self._log_order_conflicts(all_orders, merged_orders)
         # <Conflict Logging - End>
         
-        print(f"📊 OrderLoadingOrchestrator: {sources_loaded}/3 sources loaded, "
-              f"{len(merged_orders)} total orders after deduplication")
+        if logger:
+            logger.info(f"Order loading completed: {sources_loaded}/3 sources loaded, {len(merged_orders)} total orders after deduplication")
               
         return merged_orders
 
@@ -138,6 +158,9 @@ class OrderLoadingOrchestrator:
         Returns:
             List of PlannedOrder objects representing active database orders
         """
+        if logger:
+            logger.debug("Loading orders from database")
+            
         try:
             # Query for active orders that should be resumed
             # FIXED: Include LIVE_WORKING status and filter by expiration
@@ -150,6 +173,8 @@ class OrderLoadingOrchestrator:
             ).all()
             
             if not active_db_orders:
+                if logger:
+                    logger.debug("No active orders found in database")
                 return []
                 
             # Convert to PlannedOrder objects and filter out expired orders
@@ -167,20 +192,25 @@ class OrderLoadingOrchestrator:
                     if should_resume:
                         planned_orders.append(planned_order)
                         resumed_count += 1
-                        print(f"   🔄 Resuming: {db_order.symbol} ({reason})")
+                        if logger:
+                            logger.debug(f"Resuming: {db_order.symbol} ({reason})")
                     else:
                         expired_count += 1
-                        print(f"   ⏰ Not resuming: {db_order.symbol} ({reason})")
+                        if logger:
+                            logger.debug(f"Not resuming: {db_order.symbol} ({reason})")
                         
                 except Exception as e:
-                    print(f"   ❌ Failed to convert DB order {db_order.symbol}: {e}")
+                    if logger:
+                        logger.error(f"Failed to convert DB order {db_order.symbol}: {e}")
                     continue
                     
-            print(f"   📋 Database resume summary: {resumed_count} resumed, {expired_count} expired/skipped")
+            if logger:
+                logger.info(f"Database resume summary: {resumed_count} resumed, {expired_count} expired/skipped")
             return planned_orders
             
         except Exception as e:
-            print(f"❌ Database order loading failed: {e}")
+            if logger:
+                logger.error(f"Database order loading failed: {e}")
             return []
             
     def _should_resume_order(self, db_order: PlannedOrderDB, planned_order: PlannedOrder) -> tuple[bool, str]:
@@ -249,10 +279,17 @@ class OrderLoadingOrchestrator:
         Returns:
             List of PlannedOrder objects from Excel
         """
+        if logger:
+            logger.debug(f"Loading orders from Excel: {excel_path}")
+            
         try:
-            return self.loading_service.load_and_validate_orders(excel_path)
+            orders = self.loading_service.load_and_validate_orders(excel_path)
+            if logger:
+                logger.debug(f"Successfully loaded {len(orders)} orders from Excel")
+            return orders
         except Exception as e:
-            print(f"❌ Excel order loading failed: {e}")
+            if logger:
+                logger.error(f"Excel order loading failed: {e}")
             return []
             
     def _merge_orders(self, orders: List[PlannedOrder]) -> List[PlannedOrder]:
@@ -265,6 +302,9 @@ class OrderLoadingOrchestrator:
         Returns:
             Deduplicated list of orders
         """
+        if logger:
+            logger.debug(f"Merging {len(orders)} orders from all sources")
+            
         if not orders:
             return []
             
@@ -286,6 +326,10 @@ class OrderLoadingOrchestrator:
                 )
                 
         # Extract just the orders from the dictionary
+        merged_count = len([order for order, _ in unique_orders.values()])
+        if logger:
+            logger.debug(f"Merge completed: {merged_count} unique orders after deduplication")
+            
         return [order for order, _ in unique_orders.values()]
         
     def _get_order_key(self, order: PlannedOrder) -> str:
@@ -349,7 +393,8 @@ class OrderLoadingOrchestrator:
             
         conflict_count = len(all_orders) - len(merged_orders)
         if conflict_count > 0:
-            print(f"   ⚠️  Found {conflict_count} order conflicts (logged for review)")
+            if logger:
+                logger.warning(f"Found {conflict_count} order conflicts (logged for review)")
             # In a real implementation, you might want to log these to a file or database
             # For now, we just print a summary
         
@@ -364,6 +409,8 @@ class OrderLoadingOrchestrator:
             True if order is expired, False otherwise
         """
         if not db_order.position_strategy:
+            if logger:
+                logger.debug(f"No position strategy for {db_order.symbol}, defaulting to not expired")
             return False  # No strategy = never expire (conservative)
             
         strategy = db_order.position_strategy.name if hasattr(db_order.position_strategy, 'name') else str(db_order.position_strategy).upper()
@@ -386,7 +433,8 @@ class OrderLoadingOrchestrator:
             
         else:
             # Unknown strategy - default to not expired
-            print(f"   ⚠️  Unknown position strategy: {strategy} for {db_order.symbol}")
+            if logger:
+                logger.warning(f"Unknown position strategy: {strategy} for {db_order.symbol}")
             return False
 
     # <IBKR Order Discovery Methods - Begin>
@@ -397,14 +445,20 @@ class OrderLoadingOrchestrator:
         Returns:
             List of PlannedOrder objects representing working IBKR orders
         """
+        if logger:
+            logger.debug("Discovering IBKR orders")
+            
         if not self.ibkr_client or not self.ibkr_client.connected:
-            print("   ⚠️  IBKR: Client not connected, skipping discovery")
+            if logger:
+                logger.warning("IBKR: Client not connected, skipping discovery")
             return []
             
         try:
             # Get working orders from IBKR
             ibkr_orders = self.ibkr_client.get_open_orders()
             if not ibkr_orders:
+                if logger:
+                    logger.debug("No IBKR orders found")
                 return []
                 
             # Convert and filter IBKR orders
@@ -415,13 +469,17 @@ class OrderLoadingOrchestrator:
                     if planned_order and self._is_ibkr_order_resumable(planned_order, ibkr_order):
                         planned_orders.append(planned_order)
                 except Exception as e:
-                    print(f"   ❌ Failed to convert IBKR order {ibkr_order.order_id}: {e}")
+                    if logger:
+                        logger.error(f"Failed to convert IBKR order {ibkr_order.order_id}: {e}")
                     continue
                     
+            if logger:
+                logger.debug(f"Successfully converted {len(planned_orders)} IBKR orders")
             return planned_orders
             
         except Exception as e:
-            print(f"❌ IBKR order discovery failed: {e}")
+            if logger:
+                logger.error(f"IBKR order discovery failed: {e}")
             return []
             
     def _convert_ibkr_order(self, ibkr_order: IbkrOrder) -> Optional[PlannedOrder]:
@@ -434,6 +492,9 @@ class OrderLoadingOrchestrator:
         Returns:
             PlannedOrder object or None if conversion fails
         """
+        if logger:
+            logger.debug(f"Converting IBKR order {ibkr_order.order_id}")
+            
         try:
             # Extract basic order information from IBKR order
             # Note: This is a simplified conversion - you may need to adjust based on your IBKR order structure
@@ -465,10 +526,13 @@ class OrderLoadingOrchestrator:
                 position_strategy="CORE"  # Default to CORE for IBKR orders
             )
             
+            if logger:
+                logger.debug(f"Successfully converted IBKR order {ibkr_order.order_id} to PlannedOrder")
             return planned_order
             
         except Exception as e:
-            print(f"   ❌ Failed to convert IBKR order {ibkr_order.order_id}: {e}")
+            if logger:
+                logger.error(f"Failed to convert IBKR order {ibkr_order.order_id}: {e}")
             return None
             
     def _is_ibkr_order_resumable(self, planned_order: PlannedOrder, ibkr_order: IbkrOrder) -> bool:
@@ -487,7 +551,8 @@ class OrderLoadingOrchestrator:
         strategy = planned_order.position_strategy.upper() if planned_order.position_strategy else "CORE"
         
         if strategy not in ['CORE', 'HYBRID']:
-            print(f"   ⏰ IBKR order skipped (strategy: {strategy}): {planned_order.symbol}")
+            if logger:
+                logger.debug(f"IBKR order skipped (strategy: {strategy}): {planned_order.symbol}")
             return False
             
         # Check if order is already in our database to avoid duplicates
@@ -498,10 +563,12 @@ class OrderLoadingOrchestrator:
         ).first()
         
         if existing_db_order:
-            print(f"   ℹ️  IBKR order already in database: {planned_order.symbol}")
+            if logger:
+                logger.debug(f"IBKR order already in database: {planned_order.symbol}")
             return False
             
-        print(f"   ✅ IBKR order resumable: {planned_order.symbol} (strategy: {strategy})")
+        if logger:
+            logger.debug(f"IBKR order resumable: {planned_order.symbol} (strategy: {strategy})")
         return True
     # <IBKR Order Discovery Methods - End>
             
@@ -515,6 +582,9 @@ class OrderLoadingOrchestrator:
         Returns:
             Dictionary with loading statistics
         """
+        if logger:
+            logger.debug("Generating loading statistics")
+            
         try:
             db_orders = self._load_from_database()
             excel_orders = self._load_from_excel(excel_path)
@@ -522,7 +592,7 @@ class OrderLoadingOrchestrator:
             all_orders = db_orders + excel_orders + ibkr_orders
             merged_orders = self._merge_orders(all_orders)
             
-            return {
+            stats = {
                 'database_orders': len(db_orders),
                 'excel_orders': len(excel_orders),
                 'ibkr_orders': len(ibkr_orders),
@@ -533,7 +603,13 @@ class OrderLoadingOrchestrator:
                 'timestamp': datetime.datetime.now()
             }
             
+            if logger:
+                logger.info(f"Loading statistics: {stats}")
+            return stats
+            
         except Exception as e:
+            if logger:
+                logger.error(f"Error generating loading statistics: {e}")
             return {
                 'error': str(e),
                 'timestamp': datetime.datetime.now()
@@ -561,7 +637,8 @@ class OrderLoadingOrchestrator:
         
         # Priority-based resolution
         if new_priority > existing_priority:
-            print(f"   🔄 Source priority: {new_source} over {existing_source} for {new_order.symbol}")
+            if logger:
+                logger.info(f"Source priority: {new_source} over {existing_source} for {new_order.symbol}")
             return (new_order, new_source)
         elif new_priority < existing_priority:
             return (existing_order, existing_source)
@@ -592,11 +669,11 @@ class OrderLoadingOrchestrator:
         if (order1_import_time is not None and 
             order2_import_time is not None and 
             order2_import_time > order1_import_time):
-            print(f"   🔄 Excel update: {order2.symbol} (newer data)")
+            if logger:
+                logger.info(f"Excel update: {order2.symbol} (newer data)")
             return (order2, source)
         else:
             # Default to first order if import times are not comparable
             return (order1, source)
         # <Fix NoneType Comparison - End>
     # <Enhanced Order Conflict Resolution - End>
-

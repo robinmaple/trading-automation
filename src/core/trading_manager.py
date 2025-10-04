@@ -10,7 +10,6 @@ from typing import List, Dict, Optional, Set
 import threading
 import time
 import pandas as pd
-import logging
 
 from src.core.account_utils import detect_trading_environment
 from src.core.order_execution_orchestrator import OrderExecutionOrchestrator
@@ -47,7 +46,9 @@ from src.core.event_bus import EventBus
 from src.core.events import PriceUpdateEvent, EventType
 # <Event Bus Integration - End>
 
-logger = logging.getLogger(__name__)
+# Minimal safe logging import
+from src.core.simple_logger import get_simple_logger
+logger = get_simple_logger(__name__)
 
 class TradingManager:
     """Orchestrates the complete trading lifecycle and manages system state."""
@@ -59,6 +60,10 @@ class TradingManager:
                 risk_config: Optional[Dict] = None,
                 event_bus: EventBus = None):
         """Initialize the trading manager with all necessary dependencies and services."""
+        # Minimal logging
+        if logger:
+            logger.info(f"Initializing TradingManager with {excel_path}")
+        
         # Core dependencies
         self.data_feed = data_feed
         self.excel_path = excel_path
@@ -156,7 +161,8 @@ class TradingManager:
         # Subscribe to price events if event bus is available
         if self.event_bus:
             self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update)
-            logger.info("✅ TradingManager subscribed to PRICE_UPDATE events")
+            if logger:
+                logger.info("TradingManager subscribed to PRICE_UPDATE events")
         # <Event Bus Subscription - End>
 
     # <Price Event Handler - Begin>
@@ -170,11 +176,13 @@ class TradingManager:
             # Check if this symbol is in our planned orders
             symbol_monitored = any(order.symbol == event.symbol for order in self.planned_orders)
             if symbol_monitored:
-                logger.debug(f"📈 Price update for monitored symbol {event.symbol}: ${event.price}")
+                if logger:
+                    logger.debug(f"Price update for monitored symbol {event.symbol}: ${event.price}")
                 self._check_and_execute_orders()
                 
         except Exception as e:
-            logger.error(f"Error handling price update for {event.symbol}: {e}")
+            if logger:
+                logger.error(f"Error handling price update for {event.symbol}: {e}")
     # <Price Event Handler - End>
 
     # <Monitored Symbols Management - Begin>
@@ -198,14 +206,14 @@ class TradingManager:
             for position in positions:
                 monitored_symbols.add(position.symbol)
         except Exception as e:
-            logger.warning(f"Could not fetch positions for symbol monitoring: {e}")
+            if logger:
+                logger.warning(f"Could not fetch positions for symbol monitoring: {e}")
             
         # Update MarketDataManager
         if monitored_symbols:
             self.data_feed.market_data_manager.set_monitored_symbols(monitored_symbols)
-            logger.info(f"🔍 Monitoring {len(monitored_symbols)} symbols for price events")
-        else:
-            logger.warning("⚠️  No symbols to monitor - no planned orders or positions")
+            if logger:
+                logger.info(f"Monitoring {len(monitored_symbols)} symbols for price events")
     # <Monitored Symbols Management - End>
 
     # Account Context Methods - Begin
@@ -219,7 +227,8 @@ class TradingManager:
                     self.current_account_number = account_number
                     return account_number
             except Exception as e:
-                logger.warning(f"Failed to get account number from IBKR: {e}")
+                if logger:
+                    logger.warning(f"Failed to get account number from IBKR: {e}")
         
         # Fallback: use simulation account or previously set account
         if not self.current_account_number:
@@ -231,7 +240,8 @@ class TradingManager:
     def set_account_number(self, account_number: str) -> None:
         """Explicitly set the account number for simulation or testing."""
         self.current_account_number = account_number
-        logger.info(f"Account number set to: {account_number}")
+        if logger:
+            logger.info(f"Account number set to: {account_number}")
     # Account Context Methods - End
 
     def _initialize_components(self, enable_advanced_features: bool) -> None:
@@ -323,6 +333,8 @@ class TradingManager:
                     return False
 
             active_order.update_status('CANCELLED')
+            if logger:
+                logger.info(f"Cancelled active order: {active_order.symbol}")
             return True
         except Exception:
             return False
@@ -352,6 +364,9 @@ class TradingManager:
         """Load and validate planned orders from Excel, persisting valid ones to the database."""
         self.planned_orders = self.order_lifecycle_manager.load_and_persist_orders(self.excel_path)
         
+        if logger:
+            logger.info(f"Loaded {len(self.planned_orders)} planned orders")
+        
         # <Update Monitored Symbols After Loading Orders - Begin>
         # Update the monitored symbols after loading new planned orders
         self._update_monitored_symbols()
@@ -361,6 +376,8 @@ class TradingManager:
 
     def stop_monitoring(self) -> None:
         """Stop the monitoring loop and perform cleanup of resources."""
+        if logger:
+            logger.info("Stopping trading monitoring")
         self.monitoring_service.stop_monitoring()
         self.reconciliation_engine.stop()
         if self.db_session:
@@ -429,15 +446,34 @@ class TradingManager:
             effective_priority = order.priority * fill_prob
             # Pass account number to execution orchestrator
             account_number = self._get_current_account_number()
-            self.execution_orchestrator.execute_single_order(
+            
+            if logger:
+                logger.info(f"Executing order: {order.symbol} {order.action.value} @ ${order.entry_price}")
+                
+            success = self.execution_orchestrator.execute_single_order(
                 order, fill_prob, effective_priority, account_number
             )
-            executed_count += 1
+            
+            if success:
+                executed_count += 1
+                if logger:
+                    logger.info(f"Successfully executed order for {order.symbol}")
+            else:
+                if logger:
+                    logger.error(f"Failed to execute order for {order.symbol}")
+
+        if logger and executed_count > 0:
+            logger.info(f"Executed {executed_count} orders in this cycle")
 
     def _get_total_capital(self) -> float:
         """Get total capital from IBKR or use default."""
         if self.ibkr_client and self.ibkr_client.connected:
-            return self.ibkr_client.get_account_value()
+            try:
+                return self.ibkr_client.get_account_value()
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Failed to get account value from IBKR: {e}")
+        
         return float(self.trading_config['simulation']['default_equity'])
 
     def _get_working_orders(self) -> List[Dict]:
@@ -460,12 +496,16 @@ class TradingManager:
         
         if success:
             old_order.update_status('REPLACED')
+            if logger:
+                logger.info(f"Replaced order: {old_order.symbol} -> {new_planned_order.symbol}")
         
         return success
 
     def generate_training_data(self, output_path: str = "training_data.csv") -> bool:
         """Generate and export training data from labeled orders."""
         if self.advanced_features.enabled:
+            if logger:
+                logger.info(f"Generating training data to: {output_path}")
             return self.advanced_features.generate_training_data(output_path)
         return False
 
@@ -488,23 +528,32 @@ class TradingManager:
         is_ibkr = isinstance(self.data_feed, IBKRDataFeed)
         is_connected = self.data_feed.is_connected()
         
+        if logger:
+            logger.info(f"Data source validation: IBKR={is_ibkr}, Connected={is_connected}")
+        
         if self.planned_orders:
             test_symbol = self.planned_orders[0].symbol
             # Use MonitoringService instead of direct data feed access
             current_price = self.monitoring_service.get_current_price(test_symbol)
-            print(f"Market Data: Live price for {test_symbol}: ${current_price:.2f}" if current_price else "No market data")
+            if current_price:
+                if logger:
+                    logger.info(f"Market Data: Live price for {test_symbol}: ${current_price:.2f}")
+            else:
+                if logger:
+                    logger.warning(f"No market data available for {test_symbol}")
 
     def _close_single_position(self, position) -> None:
         """Orchestrate the closing of a single position through the execution service."""
         try:
-            print(f"🔚 Closing position: {position.symbol} ({position.action} {position.quantity})")
-            print(f"   Cancelling existing orders for {position.symbol}...")
+            if logger:
+                logger.info(f"Closing position: {position.symbol} ({position.action} {position.quantity})")
+            
             cancel_success = self.execution_service.cancel_orders_for_symbol(position.symbol)
             if not cancel_success:
-                print(f"⚠️  Order cancellation failed for {position.symbol}, proceeding anyway")
+                if logger:
+                    logger.warning(f"Order cancellation failed for {position.symbol}, proceeding anyway")
 
             close_action = 'SELL' if position.action == 'BUY' else 'BUY'
-            print(f"   Closing action: {close_action} (was {position.action})")
 
             # Pass account number to execution service
             account_number = self._get_current_account_number()
@@ -520,7 +569,8 @@ class TradingManager:
             if order_id is not None:
                 position.status = 'CLOSING'
                 self.db_session.commit()
-                print(f"✅ Position closing initiated for {position.symbol} (Order ID: {order_id})")
+                if logger:
+                    logger.info(f"Position closing initiated for {position.symbol} (Order ID: {order_id})")
                 
                 # Risk Management - Record P&L on position close - Begin
                 try:
@@ -532,16 +582,17 @@ class TradingManager:
                             self.risk_service.record_trade_outcome(active_order, None)
                             break
                 except Exception as e:
-                    print(f"⚠️  Could not record P&L for {position.symbol}: {e}")
+                    if logger:
+                        logger.warning(f"Could not record P&L for {position.symbol}: {e}")
                 # Risk Management - Record P&L on position close - End
                 
             else:
-                print(f"✅ Simulation: Position would be closed for {position.symbol}")
+                if logger:
+                    logger.info(f"Simulation: Position would be closed for {position.symbol}")
 
         except Exception as e:
-            print(f"❌ Failed to close position {position.symbol}: {e}")
-            import traceback
-            traceback.print_exc()
+            if logger:
+                logger.error(f"Failed to close position {position.symbol}: {e}")
     
     def _get_trading_environment(self) -> str:
         """
@@ -566,15 +617,19 @@ class TradingManager:
             # Load appropriate trading core config
             self.trading_config = get_trading_core_config(environment)
             
-            logger.info(f"Loaded {environment} trading configuration")
+            if logger:
+                logger.info(f"Loaded {environment} trading configuration")
             
         except Exception as e:
             # Fallback to hardcoded defaults
-            logger.warning(f"Failed to load configuration: {e}. Using defaults.")
+            if logger:
+                logger.warning(f"Failed to load configuration: {e}. Using defaults.")
             self._load_fallback_config()
     
     def _load_fallback_config(self) -> None:
         """Load fallback configuration with hardcoded defaults."""
+        if logger:
+            logger.warning("Loading fallback configuration due to configuration failure")
         self.trading_config = {
             'risk_limits': {
                 'max_open_orders': 5,
@@ -620,8 +675,11 @@ class TradingManager:
         if self.market_hours.should_close_positions(buffer_minutes=buffer_minutes):
             # Close all DAY strategy positions
             day_positions = self.state_service.get_positions_by_strategy(PositionStrategy.DAY)
+            if logger and day_positions:
+                logger.info(f"Market close approaching - closing {len(day_positions)} DAY positions")
             for position in day_positions:
-                print(f"🔚 Closing DAY position {position.symbol} before market close")
+                if logger:
+                    logger.info(f"Closing DAY position {position.symbol} before market close")
                 self._close_single_position(position)
 
         """Main monitoring loop for Phase A with error handling and recovery."""
@@ -697,6 +755,9 @@ class TradingManager:
 
     def start_monitoring(self, interval_seconds: Optional[int] = None) -> bool:
         """Start the continuous monitoring loop with automatic initialization."""
+        if logger:
+            logger.info("Starting trading monitoring")
+            
         if not self._initialize():
             return False
 
@@ -732,7 +793,6 @@ class TradingManager:
     def _subscribe_to_planned_order_symbols(self) -> None:
         """Subscribe to market data for all planned order symbols."""
         if not self.planned_orders:
-            print("⚠️  No planned orders to subscribe to")
             return
             
         from ibapi.contract import Contract
@@ -746,19 +806,17 @@ class TradingManager:
                 contract.exchange = order.exchange
                 contract.currency = order.currency
                 
-                print(f"📡 Subscribing to market data for {order.symbol}...")
                 success = self.data_feed.subscribe(order.symbol, contract)
                 
                 if success:
                     subscribed_count += 1
-                    print(f"✅ Subscribed to {order.symbol}")
-                else:
-                    print(f"❌ Failed to subscribe to {order.symbol}")
                     
             except Exception as e:
-                print(f"❌ Error subscribing to {order.symbol}: {e}")
+                if logger:
+                    logger.error(f"Error subscribing to {order.symbol}: {e}")
         
-        print(f"📊 Market data subscriptions: {subscribed_count}/{len(self.planned_orders)} symbols")
+        if logger:
+            logger.info(f"Market data subscriptions: {subscribed_count}/{len(self.planned_orders)} symbols")
 
     def debug_order_status(self):
         """Debug method to check order status"""
@@ -767,11 +825,21 @@ class TradingManager:
         
         # Check what's in the database
         db_orders = self.db_session.scalars(select(PlannedOrderDB)).all()
-        print(f"📋 Database has {len(db_orders)} orders:")
-        for db_order in db_orders:
-            print(f"  - {db_order.symbol} {db_order.action} @ ${db_order.entry_price} (Status: {db_order.status})")
+        if logger:
+            logger.info(f"Database has {len(db_orders)} orders")
         
         # Check planned orders in memory
-        print(f"🧠 Memory has {len(self.planned_orders)} planned orders:")
-        for planned in self.planned_orders:
-            print(f"  - {planned.symbol} {planned.action.value} @ ${planned.entry_price}")
+        if logger:
+            logger.info(f"Memory has {len(self.planned_orders)} planned orders")
+
+    # Add missing methods
+    def _initialize_advanced_services(self) -> None:
+        """Initialize advanced feature services if enabled."""
+        if logger:
+            logger.info("Initializing advanced trading services")
+        try:
+            self.market_context_service = MarketContextService(self.data_feed)
+            self.historical_performance_service = HistoricalPerformanceService(self.db_session)
+        except Exception as e:
+            if logger:
+                logger.error(f"Failed to initialize advanced services: {e}")

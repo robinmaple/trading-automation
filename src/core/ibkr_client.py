@@ -14,11 +14,19 @@ import datetime
 from src.core.ibkr_types import IbkrOrder, IbkrPosition
 from src.core.account_utils import is_paper_account, get_ibkr_port
 
+# Minimal safe logging import
+from src.core.simple_logger import get_simple_logger
+logger = get_simple_logger(__name__)
+
 class IbkrClient(EClient, EWrapper):
     """Manages the connection and all communication with the IBKR trading API."""
 
     def __init__(self, host='127.0.0.1', port=None, client_id=1, mode='auto'):
         """Initialize the client, connection flags, and data stores."""
+        # Minimal logging
+        if logger:
+            logger.debug("Initializing IbkrClient")
+            
         EClient.__init__(self, self)
         self.next_valid_id = None
         self.connected = False
@@ -81,7 +89,8 @@ class IbkrClient(EClient, EWrapper):
             List of order IDs for the bracket order, or None if failed
         """
         if not self.connected or self.next_valid_id is None:
-            print("❌ Not connected to IBKR or no valid order ID for AON order")
+            if logger:
+                logger.error("Not connected to IBKR or no valid order ID for AON order")
             return None
 
         try:
@@ -90,10 +99,8 @@ class IbkrClient(EClient, EWrapper):
                 risk_per_trade, risk_reward_ratio, total_capital, self.next_valid_id
             )
 
-            print(f"🎯 AON Bracket Order:")
-            print(f"   Entry: {action} {orders[0].totalQuantity} @ {entry_price} (AON)")
-            print(f"   Take Profit: {orders[1].action} @ {orders[1].lmtPrice}")
-            print(f"   Stop Loss: {orders[2].action} @ {orders[2].auxPrice}")
+            if logger:
+                logger.info(f"Placing AON bracket order for {contract.symbol}")
 
             order_ids = []
             for order in orders:
@@ -112,10 +119,14 @@ class IbkrClient(EClient, EWrapper):
                 })
 
             self.next_valid_id += 3
+            
+            if logger:
+                logger.info(f"AON bracket order placed successfully: {contract.symbol}")
             return order_ids
 
         except Exception as e:
-            print(f"❌ Failed to place AON bracket order: {e}")
+            if logger:
+                logger.error(f"Failed to place AON bracket order: {e}")
             return None
 
     def _create_aon_bracket_order(self, action, order_type, security_type, entry_price, stop_loss,
@@ -185,11 +196,8 @@ class IbkrClient(EClient, EWrapper):
         """
         with self._manager_lock:
             self.market_data_manager = manager
-            print(f"✅ MarketDataManager connected to IbkrClient")
-            if manager:
-                print(f"   - Manager type: {type(manager).__name__}")
-            else:
-                print("   ⚠️  Manager set to None - data forwarding disabled")
+            if logger:
+                logger.info(f"MarketDataManager connected to IbkrClient")
 
     def get_market_data_health(self) -> dict:
         """
@@ -228,33 +236,37 @@ class IbkrClient(EClient, EWrapper):
         connect_port = port or self.port
         connect_client_id = client_id or self.client_id
 
+        if logger:
+            logger.info(f"Connecting to IB API at {connect_host}:{connect_port}")
+
         EClient.connect(self, connect_host, connect_port, connect_client_id)
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
-        print(f"Connecting to IB API at {connect_host}:{connect_port}...")
-
         # Wait for both: valid ID and account info
         ready = self.connection_event.wait(10) and self.account_ready_event.wait(10)
         if not ready:
-            print("❌ Connection timed out waiting for account details")
+            if logger:
+                logger.error("Connection timed out waiting for account details")
             return False
 
         # Validate account ↔ port
         expected_port = get_ibkr_port(self.account_name)
         if connect_port != expected_port:
-            print(f"❌ Port mismatch: account {self.account_name} "
-                  f"requires port {expected_port}, but tried {connect_port}")
+            if logger:
+                logger.error(f"Port mismatch: account {self.account_name} requires port {expected_port}, but tried {connect_port}")
             self.disconnect()
             return False
 
-        print(f"✅ Connected to {self.account_name} "
-              f"({ 'PAPER' if self.is_paper_account else 'LIVE' }) on port {connect_port}")
+        if logger:
+            logger.info(f"Connected to {self.account_name} ({'PAPER' if self.is_paper_account else 'LIVE'}) on port {connect_port}")
         return True
     
     def disconnect(self) -> None:
         """Cleanly disconnect from TWS."""
         if self.connected:
+            if logger:
+                logger.info("Disconnecting from IBKR TWS")
             super().disconnect()
             self.connected = False
 
@@ -265,24 +277,29 @@ class IbkrClient(EClient, EWrapper):
     def get_account_value(self) -> float:
         """Request and return the Net Liquidation value of the account."""
         if not self.connected:
+            if logger:
+                logger.warning("Not connected to IBKR - using fallback account value")
             return 100000.0
 
         self.account_value_received.clear()
         self.reqAccountUpdates(True, self.account_number)
 
         if not self.account_value_received.wait(5.0):
-            print("⚠️  Timeout waiting for account value data - using fallback value")
+            if logger:
+                logger.warning("Timeout waiting for account value data - using fallback value")
             self.reqAccountUpdates(False, self.account_number)
             return 100000.0
 
         net_liquidation = self.account_values.get("NetLiquidation")
         if net_liquidation is not None:
-            print(f"✅ Current account value: ${net_liquidation:,.2f}")
+            if logger:
+                logger.info(f"Current account value: ${net_liquidation:,.2f}")
             self.reqAccountUpdates(False, self.account_number)
             return net_liquidation
 
         cash_value = self.account_values.get("TotalCashValue", 100000.0)
-        print(f"⚠️  Using cash value: ${cash_value:,.2f} (NetLiquidation not available)")
+        if logger:
+            logger.warning(f"Using cash value: ${cash_value:,.2f} (NetLiquidation not available)")
         self.reqAccountUpdates(False, self.account_number)
         return cash_value
 
@@ -290,7 +307,8 @@ class IbkrClient(EClient, EWrapper):
                           risk_per_trade, risk_reward_ratio, total_capital) -> Optional[List[int]]:
         """Place a complete bracket order (entry, take-profit, stop-loss). Returns list of order IDs or None."""
         if not self.connected or self.next_valid_id is None:
-            print("Not connected to IBKR or no valid order ID")
+            if logger:
+                logger.error("Not connected to IBKR or no valid order ID")
             return None
 
         try:
@@ -299,9 +317,8 @@ class IbkrClient(EClient, EWrapper):
                 risk_per_trade, risk_reward_ratio, total_capital, self.next_valid_id
             )
 
-            print(f"Entry: {action} {orders[0].totalQuantity} @ {entry_price}")
-            print(f"Take Profit: {orders[1].action} @ {orders[1].lmtPrice}")
-            print(f"Stop Loss: {orders[2].action} @ {orders[2].auxPrice}")
+            if logger:
+                logger.info(f"Placing bracket order for {contract.symbol}")
 
             order_ids = []
             for order in orders:
@@ -319,10 +336,14 @@ class IbkrClient(EClient, EWrapper):
                 })
 
             self.next_valid_id += 3
+            
+            if logger:
+                logger.info(f"Bracket order placed successfully: {contract.symbol}")
             return order_ids
 
         except Exception as e:
-            print(f"Failed to place bracket order: {e}")
+            if logger:
+                logger.error(f"Failed to place bracket order: {e}")
             return None
 
     def _create_bracket_order(self, action, order_type, security_type, entry_price, stop_loss,
@@ -398,7 +419,8 @@ class IbkrClient(EClient, EWrapper):
         elif security_type == "OPT":
             quantity = round(base_quantity)
             quantity = max(quantity, 1)
-            print(f"Options position: {quantity} contracts (each = 100 shares)")
+            if logger:
+                logger.debug(f"Options position: {quantity} contracts (each = 100 shares)")
         elif security_type == "FUT":
             quantity = round(base_quantity)
             quantity = max(quantity, 1)
@@ -420,21 +442,25 @@ class IbkrClient(EClient, EWrapper):
     def cancel_order(self, order_id: int) -> bool:
         """Cancel an order through the IBKR API. Returns success status."""
         if not self.connected:
-            print(f"❌ Cannot cancel order {order_id} - not connected to IBKR")
+            if logger:
+                logger.error(f"Cannot cancel order {order_id} - not connected to IBKR")
             return False
 
         try:
             self.cancelOrder(order_id)
-            print(f"✅ Sent cancel request for order {order_id}")
+            if logger:
+                logger.info(f"Sent cancel request for order {order_id}")
             return True
         except Exception as e:
-            print(f"❌ Failed to cancel order {order_id}: {e}")
+            if logger:
+                logger.error(f"Failed to cancel order {order_id}: {e}")
             return False
 
     def get_open_orders(self) -> List[IbkrOrder]:
         """Fetch all open orders from IBKR API synchronously. Returns a list of IbkrOrder objects."""
         if not self.connected:
-            print("❌ Not connected to IBKR - cannot fetch open orders")
+            if logger:
+                logger.error("Not connected to IBKR - cannot fetch open orders")
             return []
 
         try:
@@ -442,24 +468,29 @@ class IbkrClient(EClient, EWrapper):
             self.open_orders_end_received = False
             self.orders_received_event.clear()
 
-            print("📋 Requesting open orders from IBKR...")
+            if logger:
+                logger.debug("Requesting open orders from IBKR...")
             self.reqAllOpenOrders()
 
             if self.orders_received_event.wait(10.0):
-                print(f"✅ Received {len(self.open_orders)} open orders")
+                if logger:
+                    logger.info(f"Received {len(self.open_orders)} open orders")
                 return self.open_orders.copy()
             else:
-                print("❌ Timeout waiting for open orders data")
+                if logger:
+                    logger.error("Timeout waiting for open orders data")
                 return []
 
         except Exception as e:
-            print(f"❌ Failed to fetch open orders: {e}")
+            if logger:
+                logger.error(f"Failed to fetch open orders: {e}")
             return []
 
     def get_positions(self) -> List[IbkrPosition]:
         """Fetch all positions from IBKR API synchronously. Returns a list of IbkrPosition objects."""
         if not self.connected:
-            print("❌ Not connected to IBKR - cannot fetch positions")
+            if logger:
+                logger.error("Not connected to IBKR - cannot fetch positions")
             return []
 
         try:
@@ -467,24 +498,29 @@ class IbkrClient(EClient, EWrapper):
             self.positions_end_received = False
             self.positions_received_event.clear()
 
-            print("📊 Requesting positions from IBKR...")
+            if logger:
+                logger.debug("Requesting positions from IBKR...")
             self.reqPositions()
 
             if self.positions_received_event.wait(10.0):
-                print(f"✅ Received {len(self.positions)} positions")
+                if logger:
+                    logger.info(f"Received {len(self.positions)} positions")
                 return self.positions.copy()
             else:
-                print("❌ Timeout waiting for positions data")
+                if logger:
+                    logger.error("Timeout waiting for positions data")
                 return []
 
         except Exception as e:
-            print(f"❌ Failed to fetch positions: {e}")
+            if logger:
+                logger.error(f"Failed to fetch positions: {e}")
             return []
 
     # --- IBKR API Callbacks ---
     def nextValidId(self, orderId: int) -> None:
         """Callback: Connection is ready and we have a valid order ID."""
-        print(f"Connection established. Next valid order ID: {orderId}")
+        if logger:
+            logger.info(f"Connection established. Next valid order ID: {orderId}")
         self.next_valid_id = orderId
         self.connected = True
         self.connection_event.set()
@@ -502,16 +538,20 @@ class IbkrClient(EClient, EWrapper):
         if errorCode in [10089, 10167, 322, 10201, 10202]:
             is_snapshot = "snapshot" in errorString.lower() or "not subscribed" in errorString.lower()
             if is_snapshot:
-                print(f"📊 Snapshot Error {errorCode}: {errorString}")
-                print("💡 Paper account snapshot data may be limited during off-hours")
+                if logger:
+                    logger.warning(f"Snapshot Error {errorCode}: {errorString}")
             else:
-                print(f"📊 Streaming Error {errorCode}: {errorString}")
+                if logger:
+                    logger.warning(f"Streaming Error {errorCode}: {errorString}")
         elif errorCode in [2104, 2106, 2158]:
-            print(f"Connection: {errorString}")
+            if logger:
+                logger.info(f"Connection: {errorString}")
         elif errorCode == 399:
-            print(f"Order Warning: {errorString}")
+            if logger:
+                logger.warning(f"Order Warning: {errorString}")
         else:
-            print(f"Error {errorCode}: {errorString}")
+            if logger:
+                logger.error(f"Error {errorCode}: {errorString}")
 
         if errorCode in [321, 322]:
             self.positions_received_event.set()
@@ -536,7 +576,8 @@ class IbkrClient(EClient, EWrapper):
     def managedAccounts(self, accountsList: str) -> None:
         """Callback: Received managed account list when connection is established."""
         super().managedAccounts(accountsList)
-        print(f"Managed accounts: {accountsList}")
+        if logger:
+            logger.info(f"Managed accounts: {accountsList}")
 
         if accountsList:
             self.account_number = accountsList.split(',')[0].strip()
@@ -544,7 +585,8 @@ class IbkrClient(EClient, EWrapper):
             self.is_paper_account = is_paper_account(self.account_name)  # Use utility function
             
             env = "PAPER" if self.is_paper_account else "PRODUCTION"
-            print(f"🎯 Auto-detected environment: {env} (Account: {self.account_name})")
+            if logger:
+                logger.info(f"Auto-detected environment: {env} (Account: {self.account_name})")
             self.account_ready_event.set()
 
     def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice) -> None:
@@ -559,7 +601,8 @@ class IbkrClient(EClient, EWrapper):
                 if status == 'Filled' and avgFillPrice > 0:
                     order['avg_fill_price'] = avgFillPrice
 
-        print(f"Order status: {orderId} - {status}, Filled: {filled}, Remaining: {remaining}")
+        if logger:
+            logger.debug(f"Order status: {orderId} - {status}, Filled: {filled}, Remaining: {remaining}")
 
     def openOrder(self, orderId, contract, order, orderState) -> None:
         """Callback: Received open order data."""
@@ -583,13 +626,15 @@ class IbkrClient(EClient, EWrapper):
             )
             self.open_orders.append(ibkr_order)
         except Exception as e:
-            print(f"Error processing open order {orderId}: {e}")
+            if logger:
+                logger.error(f"Error processing open order {orderId}: {e}")
 
     def openOrderEnd(self) -> None:
         """Callback: Finished receiving open orders."""
         self.open_orders_end_received = True
         self.orders_received_event.set()
-        print("📋 Open orders request completed")
+        if logger:
+            logger.debug("Open orders request completed")
 
     def position(self, account: str, contract, position: float, avgCost: float) -> None:
         """Callback: Received position data."""
@@ -605,13 +650,15 @@ class IbkrClient(EClient, EWrapper):
             )
             self.positions.append(ibkr_position)
         except Exception as e:
-            print(f"Error processing position for {contract.symbol}: {e}")
+            if logger:
+                logger.error(f"Error processing position for {contract.symbol}: {e}")
 
     def positionEnd(self) -> None:
         """Callback: Finished receiving positions."""
         self.positions_end_received = True
         self.positions_received_event.set()
-        print("📊 Positions request completed")
+        if logger:
+            logger.debug("Positions request completed")
 
     # <Enhanced tickPrice with Thread Safety and Error Handling - Begin>
     def tickPrice(self, reqId: int, tickType: int, price: float, attrib) -> None:
@@ -634,7 +681,8 @@ class IbkrClient(EClient, EWrapper):
                     # Log first successful tick for debugging
                     if self._total_ticks_processed == 1:
                         tick_type_name = {1: 'BID', 2: 'ASK', 4: 'LAST'}.get(tickType, f'UNKNOWN({tickType})')
-                        print(f"💰 FIRST TICK PROCESSED: Type {tick_type_name}, Price ${price}")
+                        if logger:
+                            logger.info(f"FIRST TICK PROCESSED: Type {tick_type_name}, Price ${price}")
                         
                 except Exception as e:
                     self._tick_errors += 1
@@ -642,16 +690,15 @@ class IbkrClient(EClient, EWrapper):
                     
                     # Only log periodic errors to avoid spam
                     if error_count <= 3 or error_count % 10 == 0:
-                        print(f"⚠️  Error in market data processing (Error #{error_count}): {e}")
-                        
-                    # Don't re-raise - keep IBKR connection alive
+                        if logger:
+                            logger.warning(f"Error in market data processing (Error #{error_count}): {e}")
             else:
                 # Only log missing manager occasionally to avoid spam
                 if self._total_ticks_processed <= 5 or self._total_ticks_processed % 50 == 0:
-                    print(f"📊 Tick received but no MarketDataManager connected (Total ticks: {self._total_ticks_processed})")
+                    if logger:
+                        logger.debug(f"Tick received but no MarketDataManager connected (Total ticks: {self._total_ticks_processed})")
     # <Enhanced tickPrice with Thread Safety and Error Handling - End>
 
-    # Add helper method
     def _get_port_from_mode(self, mode: str) -> int:
         """Determine port based on mode parameter."""
         if mode == 'paper':
@@ -663,8 +710,6 @@ class IbkrClient(EClient, EWrapper):
             return 7497
         else:
             raise ValueError(f"Invalid mode: {mode}. Use 'paper', 'live', or 'auto'")
-
-    # Simplify connect method - remove port validation logic
 
     def get_account_number(self) -> Optional[str]:
         """Get the current account number for order placement."""

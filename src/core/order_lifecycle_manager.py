@@ -23,6 +23,10 @@ from config.trading_core_config import get_config
 from src.core.shared_enums import OrderState as SharedOrderState
 # <AON Configuration Integration - End>
 
+# Minimal safe logging import
+from src.core.simple_logger import get_simple_logger
+logger = get_simple_logger(__name__)
+
 
 class OrderLifecycleManager:
     """Manages the complete lifecycle of orders from loading to completion."""
@@ -39,6 +43,9 @@ class OrderLifecycleManager:
                  # <AON Configuration Integration - End>
                  ):
         """Initialize the order lifecycle manager with required services."""
+        if logger:
+            logger.debug("Initializing OrderLifecycleManager")
+            
         self.loading_service = loading_service
         self.persistence_service = persistence_service
         self.state_service = state_service
@@ -51,23 +58,35 @@ class OrderLifecycleManager:
         self.aon_config = self.config.get('aon_execution', {})
         # <AON Configuration Integration - End>
         
+        if logger:
+            logger.info("OrderLifecycleManager initialized successfully")
+        
     def load_and_persist_orders(self, excel_path: str) -> List[PlannedOrder]:
         """Load orders from Excel, validate, and persist valid ones to database."""
-        print(f"📥 Loading orders from: {excel_path}")
+        if logger:
+            logger.info(f"Loading orders from: {excel_path}")
         
         try:
             # <Multi-Source Order Loading - Begin>
             if self.order_loading_orchestrator:
+                if logger:
+                    logger.debug("Using OrderLoadingOrchestrator for multi-source loading")
                 # Use orchestrator for multi-source loading (DB resumption + Excel)
                 all_orders = self.order_loading_orchestrator.load_all_orders(excel_path)
-                print(f"✅ Loaded {len(all_orders)} orders from all sources")
+                if logger:
+                    logger.info(f"Loaded {len(all_orders)} orders from all sources")
             else:
+                if logger:
+                    logger.debug("Using OrderLoadingService for Excel-only loading")
                 # Fallback to original Excel-only loading
                 all_orders = self.loading_service.load_and_validate_orders(excel_path)
-                print(f"✅ Found {len(all_orders)} valid orders in Excel")
+                if logger:
+                    logger.info(f"Found {len(all_orders)} valid orders in Excel")
             # <Multi-Source Order Loading - End>
             
             if not all_orders:
+                if logger:
+                    logger.warning("No orders loaded from Excel file")
                 return []
                 
             # <Enhanced Persistence Logic - Begin>
@@ -86,19 +105,23 @@ class OrderLifecycleManager:
                     if self._update_existing_order(order):
                         updated_count += 1
                 elif persistence_action == 'SKIP':
-                    print(f"⏩ Skipping order: {order.symbol} (already active)")
+                    if logger:
+                        logger.debug(f"Skipping order: {order.symbol} (already active)")
                 else:
-                    print(f"⚠️  Unknown persistence action for {order.symbol}: {persistence_action}")
+                    if logger:
+                        logger.warning(f"Unknown persistence action for {order.symbol}: {persistence_action}")
             # <Enhanced Persistence Logic - End>
             
             self.db_session.commit()
-            print(f"💾 Order persistence: {persisted_count} new, {updated_count} updated")
+            if logger:
+                logger.info(f"Order persistence completed: {persisted_count} new, {updated_count} updated")
             
             return all_orders
             
         except Exception as e:
             self.db_session.rollback()
-            print(f"❌ Failed to load and persist orders: {e}")
+            if logger:
+                logger.error(f"Failed to load and persist orders: {e}")
             raise
 
     # <Enhanced Persistence Logic - Begin>
@@ -167,7 +190,8 @@ class OrderLifecycleManager:
         try:
             existing_order = self.find_existing_order(order)
             if not existing_order:
-                print(f"⚠️  Cannot update: Order not found for {order.symbol}")
+                if logger:
+                    logger.warning(f"Cannot update: Order not found for {order.symbol}")
                 return False
                 
             # Update order fields with Excel values
@@ -178,11 +202,13 @@ class OrderLifecycleManager:
             existing_order.priority = order.priority
             existing_order.updated_at = datetime.datetime.now()
             
-            print(f"🔄 Updated order: {order.symbol} (Excel changes applied)")
+            if logger:
+                logger.info(f"Updated order: {order.symbol} (Excel changes applied)")
             return True
             
         except Exception as e:
-            print(f"❌ Failed to update order {order.symbol}: {e}")
+            if logger:
+                logger.error(f"Failed to update order {order.symbol}: {e}")
             return False
     # <Enhanced Persistence Logic - End>
             
@@ -192,17 +218,20 @@ class OrderLifecycleManager:
             # Check for existing order with same parameters
             existing_order = self.find_existing_order(order)
             if existing_order and self._is_duplicate_order(order, existing_order):
-                print(f"⏩ Skipping duplicate order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
+                if logger:
+                    logger.debug(f"Skipping duplicate order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
                 return False
                 
             # Convert to database model and persist
             db_order = self.persistence_service.convert_to_db_model(order)
             self.db_session.add(db_order)
-            print(f"✅ Persisted order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
+            if logger:
+                logger.info(f"Persisted order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
             return True
             
         except Exception as e:
-            print(f"❌ Failed to persist order {order.symbol}: {e}")
+            if logger:
+                logger.error(f"Failed to persist order {order.symbol}: {e}")
             return False
 
     # <Enhanced Order Validation - Begin>
@@ -214,18 +243,25 @@ class OrderLifecycleManager:
         the PlannedOrder object is internally valid (required fields present, business
         rules satisfied). Data integrity should be enforced at object creation.
         """
+        if logger:
+            logger.debug(f"Validating order: {order.symbol}")
+            
         # <Delegate Data Integrity to PlannedOrder - Begin>
         try:
             # Fail fast if data integrity issues - should never happen for valid orders
             order.validate()
         except ValueError as e:
             # This indicates a serious data integrity issue that should be fixed upstream
+            if logger:
+                logger.error(f"Data integrity violation for {order.symbol}: {e}")
             return False, f"Data integrity violation: {e}"
         # <Delegate Data Integrity to PlannedOrder - End>
             
         # <System State Validation - Begin>
         # UNIQUE: Check for open positions
         if self.state_service.has_open_position(order.symbol):
+            if logger:
+                logger.warning(f"Validation failed: Open position exists for {order.symbol}")
             return False, f"Open position exists for {order.symbol}"
             
         # UNIQUE: Check database state for existing orders with session awareness
@@ -234,6 +270,8 @@ class OrderLifecycleManager:
             return self._validate_existing_order_scenario(order, existing_order)
         # <System State Validation - End>
             
+        if logger:
+            logger.debug(f"Order validation passed: {order.symbol}")
         return True, None
         
     def _validate_existing_order_scenario(self, new_order: PlannedOrder, existing_order: PlannedOrderDB) -> Tuple[bool, str]:
@@ -251,6 +289,8 @@ class OrderLifecycleManager:
         
         # Active orders block new identical orders
         if existing_status in [SharedOrderState.LIVE.value, SharedOrderState.LIVE_WORKING.value, SharedOrderState.FILLED.value]:
+            if logger:
+                logger.warning(f"Validation failed: Active order already exists for {new_order.symbol}: {existing_status}")
             return False, f"Active order already exists: {existing_status}"
             
         # Allow re-execution of failed/cancelled/expired orders (same trading idea)
@@ -258,14 +298,22 @@ class OrderLifecycleManager:
                              SharedOrderState.AON_REJECTED.value]:
             # Check if this is the same trading idea (prices unchanged)
             if self._is_same_trading_idea(new_order, existing_order):
+                if logger:
+                    logger.debug(f"Validation passed: Re-executing {existing_status} order for {new_order.symbol}")
                 return True, f"Re-executing {existing_status} order"
             else:
+                if logger:
+                    logger.warning(f"Validation failed: Different trading idea for {existing_status} order {new_order.symbol}")
                 return False, f"Different trading idea for {existing_status} order"
                 
         # PENDING orders can be updated/replaced
         if existing_status == SharedOrderState.PENDING.value:
+            if logger:
+                logger.debug(f"Validation passed: Updating PENDING order for {new_order.symbol}")
             return True, "Updating PENDING order"
             
+        if logger:
+            logger.warning(f"Validation failed: Unknown order status for {new_order.symbol}: {existing_status}")
         return False, f"Unknown order status: {existing_status}"
         
     def _is_same_trading_idea(self, order1: PlannedOrder, order2: PlannedOrderDB) -> bool:
@@ -298,8 +346,13 @@ class OrderLifecycleManager:
         Returns:
             Tuple of (is_valid, reason_message)
         """
+        if logger:
+            logger.debug(f"Validating AON execution for {order.symbol}")
+            
         # Check if AON is enabled
         if not self.aon_config.get('enabled', True):
+            if logger:
+                logger.debug(f"AON validation skipped for {order.symbol} (disabled)")
             return True, "AON validation skipped (disabled)"
         
         # Extract actual numeric values from potentially mocked objects
@@ -319,23 +372,35 @@ class OrderLifecycleManager:
             
             # Validate numeric values
             if not isinstance(entry_price, (int, float)) or entry_price <= 0:
+                if logger:
+                    logger.warning(f"AON validation failed: Invalid entry price for {order.symbol}: {entry_price}")
                 return False, f"Invalid entry price: {entry_price}"
                 
             if not isinstance(quantity, (int, float)) or quantity <= 0:
+                if logger:
+                    logger.warning(f"AON validation failed: Invalid quantity for {order.symbol}: {quantity}")
                 return False, f"Invalid quantity: {quantity}"
                 
         except Exception as e:
+            if logger:
+                logger.error(f"AON validation failed: Cannot calculate order notional for {order.symbol}: {e}")
             return False, f"Cannot calculate order notional: {e}"
         
         # Get AON threshold for this symbol
         aon_threshold = self._calculate_aon_threshold(order.symbol)
         if aon_threshold is None:
+            if logger:
+                logger.warning(f"AON validation failed: Cannot determine AON threshold for {order.symbol}")
             return False, "Cannot determine AON threshold (volume data unavailable)"
         
         # Check if order exceeds AON threshold
         if notional_value > aon_threshold:
+            if logger:
+                logger.warning(f"AON validation failed for {order.symbol}: Order notional ${notional_value:,.2f} exceeds AON threshold ${aon_threshold:,.2f}")
             return False, f"Order notional ${notional_value:,.2f} exceeds AON threshold ${aon_threshold:,.2f}"
         
+        if logger:
+            logger.debug(f"AON validation passed for {order.symbol}: ${notional_value:,.2f} <= ${aon_threshold:,.2f}")
         return True, f"AON valid: ${notional_value:,.2f} <= ${aon_threshold:,.2f}"
 
     def _calculate_aon_threshold(self, symbol: str) -> Optional[float]:
@@ -353,7 +418,10 @@ class OrderLifecycleManager:
             daily_volume = self._get_daily_volume(symbol)
             if daily_volume is None:
                 # Fallback to fixed notional
-                return self.aon_config.get('fallback_fixed_notional', 50000)
+                fallback_threshold = self.aon_config.get('fallback_fixed_notional', 50000)
+                if logger:
+                    logger.debug(f"Using fallback AON threshold for {symbol}: ${fallback_threshold:,.2f}")
+                return fallback_threshold
             
             # Get volume percentage for this symbol
             symbol_specific = self.aon_config.get('symbol_specific', {})
@@ -368,11 +436,13 @@ class OrderLifecycleManager:
             current_price = 100.0  # Placeholder - would come from data feed
             threshold = daily_volume * current_price * volume_percentage
             
-            print(f"📊 AON threshold for {symbol}: {daily_volume:,.0f} shares * ${current_price:.2f} * {volume_percentage:.4f} = ${threshold:,.2f}")
+            if logger:
+                logger.debug(f"AON threshold for {symbol}: {daily_volume:,.0f} shares * ${current_price:.2f} * {volume_percentage:.4f} = ${threshold:,.2f}")
             return threshold
             
         except Exception as e:
-            print(f"❌ Error calculating AON threshold for {symbol}: {e}")
+            if logger:
+                logger.error(f"Error calculating AON threshold for {symbol}: {e}")
             return self.aon_config.get('fallback_fixed_notional', 50000)
                 
     def _get_daily_volume(self, symbol: str) -> Optional[float]:
@@ -398,22 +468,33 @@ class OrderLifecycleManager:
         }
         
         volume = mock_volumes.get(symbol, 10000000)  # Default 10M shares
-        print(f"📈 Daily volume for {symbol}: {volume:,.0f} shares (mock data)")
+        if logger:
+            logger.debug(f"Daily volume for {symbol}: {volume:,.0f} shares (mock data)")
         return volume
     # <AON Validation Methods - End>
         
     def find_existing_order(self, order: PlannedOrder) -> Optional[PlannedOrderDB]:
         """Find an existing order in database with matching parameters."""
         try:
-            return self.db_session.query(PlannedOrderDB).filter_by(
+            existing_order = self.db_session.query(PlannedOrderDB).filter_by(
                 symbol=order.symbol,
                 entry_price=order.entry_price,
                 stop_loss=order.stop_loss,
                 action=order.action.value,
                 order_type=order.order_type.value
             ).first()
+            
+            if logger:
+                if existing_order:
+                    logger.debug(f"Found existing order for {order.symbol} with status: {existing_order.status}")
+                else:
+                    logger.debug(f"No existing order found for {order.symbol}")
+                    
+            return existing_order
+            
         except Exception as e:
-            print(f"❌ Error querying for existing order {order.symbol}: {e}")
+            if logger:
+                logger.error(f"Error querying for existing order {order.symbol}: {e}")
             return None
             
     def _is_duplicate_order(self, new_order: PlannedOrder, existing_order: PlannedOrderDB) -> bool:
@@ -428,10 +509,17 @@ class OrderLifecycleManager:
     def get_order_status(self, order: PlannedOrder) -> Optional[OrderState]:
         """Get the current status of an order from database."""
         existing_order = self.find_existing_order(order)
-        return existing_order.status if existing_order else None
+        status = existing_order.status if existing_order else None
+        
+        if logger:
+            logger.debug(f"Order status for {order.symbol}: {status}")
+            
+        return status
         
     def is_order_executable(self, order: PlannedOrder) -> Tuple[bool, Optional[str]]:
         """Check if an order can be executed based on current state."""
+        if logger:
+            logger.debug(f"Checking executability for {order.symbol}")
         # Delegate to validate_order for comprehensive checking
         return self.validate_order(order)
         
@@ -441,7 +529,8 @@ class OrderLifecycleManager:
         try:
             existing_order = self.find_existing_order(order)
             if not existing_order:
-                print(f"⚠️  Order not found in database for status update: {order.symbol}")
+                if logger:
+                    logger.warning(f"Order not found in database for status update: {order.symbol}")
                 return False
                 
             old_status = existing_order.status
@@ -452,19 +541,25 @@ class OrderLifecycleManager:
                 existing_order.status_message = message
                 
             self.db_session.commit()
-            print(f"📋 Status update: {order.symbol} {old_status} → {status}")
-            if message:
-                print(f"   Message: {message}")
+            
+            if logger:
+                logger.info(f"Status update: {order.symbol} {old_status} → {status}")
+                if message:
+                    logger.info(f"Status message: {message}")
                 
             return True
             
         except Exception as e:
             self.db_session.rollback()
-            print(f"❌ Failed to update order status for {order.symbol}: {e}")
+            if logger:
+                logger.error(f"Failed to update order status for {order.symbol}: {e}")
             return False
             
     def bulk_update_status(self, status_updates: List[Tuple[PlannedOrder, OrderState, Optional[str]]]) -> Dict[str, bool]:
         """Update status for multiple orders in a single transaction."""
+        if logger:
+            logger.info(f"Performing bulk status update for {len(status_updates)} orders")
+            
         results = {}
         
         try:
@@ -472,23 +567,35 @@ class OrderLifecycleManager:
                 success = self.update_order_status(order, status, message)
                 results[order.symbol] = success
                 
+            if logger:
+                success_count = sum(1 for result in results.values() if result)
+                logger.info(f"Bulk status update completed: {success_count}/{len(status_updates)} successful")
+                
             return results
             
         except Exception as e:
             self.db_session.rollback()
-            print(f"❌ Bulk status update failed: {e}")
+            if logger:
+                logger.error(f"Bulk status update failed: {e}")
             return {order.symbol: False for order, _, _ in status_updates}
             
     def get_orders_by_status(self, status: OrderState) -> List[PlannedOrderDB]:
         """Get all orders with a specific status from database."""
         try:
-            return self.db_session.query(PlannedOrderDB).filter_by(status=status).all()
+            orders = self.db_session.query(PlannedOrderDB).filter_by(status=status).all()
+            if logger:
+                logger.debug(f"Found {len(orders)} orders with status {status}")
+            return orders
         except Exception as e:
-            print(f"❌ Error querying orders by status {status}: {e}")
+            if logger:
+                logger.error(f"Error querying orders by status {status}: {e}")
             return []
             
     def cleanup_old_orders(self, days_old: int = 30) -> int:
         """Clean up orders older than specified days from database."""
+        if logger:
+            logger.info(f"Cleaning up orders older than {days_old} days")
+            
         try:
             cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_old)
             old_orders = self.db_session.query(PlannedOrderDB).filter(
@@ -504,16 +611,22 @@ class OrderLifecycleManager:
                 deleted_count += 1
                 
             self.db_session.commit()
-            print(f"🧹 Cleaned up {deleted_count} orders older than {days_old} days")
+            
+            if logger:
+                logger.info(f"Cleaned up {deleted_count} orders older than {days_old} days")
             return deleted_count
             
         except Exception as e:
             self.db_session.rollback()
-            print(f"❌ Failed to clean up old orders: {e}")
+            if logger:
+                logger.error(f"Failed to clean up old orders: {e}")
             return 0
             
     def get_order_statistics(self) -> Dict[str, any]:
         """Get statistics about orders in the system."""
+        if logger:
+            logger.debug("Generating order statistics")
+            
         try:
             total_orders = self.db_session.query(PlannedOrderDB).count()
             status_counts = {}
@@ -522,15 +635,21 @@ class OrderLifecycleManager:
                 count = self.db_session.query(PlannedOrderDB).filter_by(status=status).count()
                 status_counts[status] = count
                 
-            return {
+            stats = {
                 'total_orders': total_orders,
                 'status_counts': status_counts,
                 'oldest_order': self._get_oldest_order_date(),
                 'newest_order': self._get_newest_order_date()
             }
             
+            if logger:
+                logger.info(f"Order statistics: {stats}")
+                
+            return stats
+            
         except Exception as e:
-            print(f"❌ Error getting order statistics: {e}")
+            if logger:
+                logger.error(f"Error getting order statistics: {e}")
             return {}
             
     def _get_oldest_order_date(self) -> Optional[datetime.datetime]:
@@ -551,6 +670,9 @@ class OrderLifecycleManager:
             
     def find_orders_needing_attention(self) -> List[PlannedOrderDB]:
         """Find orders that may need manual attention."""
+        if logger:
+            logger.debug("Finding orders needing attention")
+            
         try:
             # Orders stuck in executing state for too long
             stuck_time = datetime.datetime.now() - datetime.timedelta(hours=2)
@@ -566,8 +688,14 @@ class OrderLifecycleManager:
                 # <AON Status Integration - End>
             ).all()
             
-            return stuck_orders + failed_orders
+            attention_orders = stuck_orders + failed_orders
+            
+            if logger:
+                logger.info(f"Found {len(attention_orders)} orders needing attention")
+                
+            return attention_orders
             
         except Exception as e:
-            print(f"❌ Error finding orders needing attention: {e}")
+            if logger:
+                logger.error(f"Error finding orders needing attention: {e}")
             return []
