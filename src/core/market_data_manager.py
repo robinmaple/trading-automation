@@ -12,7 +12,7 @@ from src.services.market_hours_service import MarketHoursService
 # <Market Hours Service Import - End>
 # <Event Bus Integration - Begin>
 from src.core.event_bus import EventBus
-from src.core.events import PriceUpdateEvent
+from src.core.events import EventType, PriceUpdateEvent
 # <Event Bus Integration - End>
 # <Price Filtering Import - Begin>
 from decimal import Decimal
@@ -307,6 +307,7 @@ class MarketDataManager:
                             # Apply filtering logic
                             if self._should_publish_price_update(symbol, price, old_price):
                                 event = PriceUpdateEvent(
+                                    event_type=EventType.PRICE_UPDATE,  # Add required parameter
                                     symbol=symbol,
                                     price=price,
                                     price_type=tick_type_name,
@@ -315,8 +316,8 @@ class MarketDataManager:
                                 self.event_bus.publish(event)
                                 if old_price == 0.0:  # Log first event publication
                                     print(f"📢 Published FIRST price event for {symbol}: ${price}")
-                            # else: # Debug logging for filtered events
-                            #     print(f"🔇 Filtered price update for {symbol}: ${old_price} → ${price}")
+                                # else: # Debug logging for filtered events
+                                #     print(f"🔇 Filtered price update for {symbol}: ${old_price} → ${price}")
                         # <Price Event Publishing with Filtering - End>
                         break
 
