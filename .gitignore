@@ -5,7 +5,7 @@ trading_automation.db
 add_column.py
 analyze_tm.py
 sql_script.py
-log/
+logs/
 *.log
 __pycache__/
 *.py[cod]
