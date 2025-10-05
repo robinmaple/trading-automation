@@ -1,6 +1,6 @@
 # src/scanner/strategy/configurable_strategies.py
 from src.scanner.strategy.strategy_core import StrategyConfig, StrategyType
-from src.scanner.scanner_config import ScannerConfig
+from config.scanner_config import ScannerConfig
 from typing import List
 
 def get_bull_trend_pullback_criteria_list(scanner_config) -> List[str]:

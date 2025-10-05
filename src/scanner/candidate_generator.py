@@ -1,192 +1,135 @@
-# src/scanner/strategy/strategy_definitions.py
-from src.scanner.strategy.strategy_core import Strategy, StrategyConfig, StrategyType
-from typing import Dict, Any, Optional
+# src/scanner/candidate_generator.py
+import logging
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 
-class BullTrendStrategy(Strategy):
-    """Strong uptrend strategy - Price > EMA10 > EMA50 > EMA100"""
-    
-    def evaluate(self, scan_result) -> Optional[Dict[str, Any]]:
-        # Check basic filters
-        if not self._passes_basic_filters(scan_result):
-            return None
-            
-        # Check trend alignment
-        if not self._has_perfect_trend_alignment(scan_result.ema_values):
-            return None
-            
-        confidence = self.calculate_confidence(scan_result)
-        
-        if confidence >= 50:  # Minimum confidence threshold
-            signal = self.generate_signal(scan_result)
-            signal.update({
-                'entry_signal': 'TREND_CONTINUATION',
-                'risk_level': self._assess_risk(scan_result),
-                'targets': self._calculate_targets(scan_result)
-            })
-            return signal
-        return None
-    
-    def calculate_confidence(self, scan_result) -> float:
-        emas = scan_result.ema_values
-        
-        # Base confidence from trend score
-        confidence = scan_result.bull_trend_score * 0.7
-        
-        # Boost for perfect EMA alignment
-        if self._has_perfect_trend_alignment(emas):
-            confidence += 20
-            
-        # Boost for strong pullback score (shows healthy trend)
-        if scan_result.bull_pullback_score > 60:
-            confidence += 10
-            
-        return min(confidence, 100)
-    
-    def _passes_basic_filters(self, scan_result) -> bool:
-        return (scan_result.total_score >= self.config.min_total_score and
-                scan_result.bull_trend_score >= self.config.min_trend_score)
-    
-    def _has_perfect_trend_alignment(self, emas: Dict[int, float]) -> bool:
-        return (emas.get(10, 0) > emas.get(50, 0) > emas.get(100, 0))
-    
-    def _assess_risk(self, scan_result) -> str:
-        if scan_result.bull_pullback_score > 70:
-            return 'LOW'
-        elif scan_result.total_score > 80:
-            return 'MEDIUM'
-        else:
-            return 'HIGH'
-    
-    def _calculate_targets(self, scan_result) -> Dict[str, float]:
-        current = scan_result.current_price
-        ema20 = scan_result.ema_values.get(20, current)
-        return {
-            'profit_target_1': current * 1.05,  # 5% target
-            'profit_target_2': current * 1.08,  # 8% target  
-            'stop_loss': ema20 * 0.98,  # 2% below EMA20
-        }
+from config.scanner_config import ScanResult
+from .strategy.strategy_core import StrategyRegistry
 
-class BullPullbackStrategy(Strategy):
-    """Uptrend stocks pulling back to dynamic support"""
+class CandidateGenerator:
+    """
+    Generates trading candidates by applying strategies to scan results
+    This is the missing piece that connects scan results to trading signals
+    """
     
-    def evaluate(self, scan_result) -> Optional[Dict[str, Any]]:
-        if not self._passes_basic_filters(scan_result):
-            return None
-            
-        if not self._is_valid_pullback(scan_result):
-            return None
-            
-        confidence = self.calculate_confidence(scan_result)
+    def __init__(self, strategy_registry: StrategyRegistry):
+        self.strategy_registry = strategy_registry
+        self.logger = logging.getLogger(__name__)
+    
+    def generate_candidates(self, 
+                          scan_results: List[ScanResult],
+                          strategy_names: List[str] = None,
+                          min_confidence: int = 60,
+                          max_candidates: int = 25) -> List[Dict[str, Any]]:
+        """
+        Generate candidates by applying specified strategies to scan results
+        """
+        if not scan_results:
+            self.logger.warning("No scan results to process")
+            return []
         
-        if confidence >= 50:
-            signal = self.generate_signal(scan_result)
-            signal.update({
-                'entry_signal': 'PULLBACK_TO_SUPPORT',
-                'risk_level': 'LOW',
-                'support_level': scan_result.ema_values.get(20),
-                'pullback_depth': self._calculate_pullback_depth(scan_result),
-                'targets': self._calculate_targets(scan_result)
-            })
-            return signal
-        return None
-    
-    def calculate_confidence(self, scan_result) -> float:
-        # Base confidence from pullback score
-        confidence = scan_result.bull_pullback_score * 0.8
+        strategy_names = strategy_names or ["bull_trend_pullback"]
+        all_candidates = []
         
-        # Boost if trend is still strong
-        if scan_result.bull_trend_score > 70:
-            confidence += 15
-            
-        # Penalize if too far from EMA20
-        pullback_depth = self._calculate_pullback_depth(scan_result)
-        if pullback_depth > 3.0:  # More than 3% pullback
-            confidence -= 20
-            
-        return max(0, min(confidence, 100))
-    
-    def _passes_basic_filters(self, scan_result) -> bool:
-        return (scan_result.total_score >= self.config.min_total_score and
-                scan_result.bull_pullback_score >= self.config.min_pullback_score and
-                scan_result.bull_trend_score >= 50)  # Must be in uptrend
-    
-    def _is_valid_pullback(self, scan_result) -> bool:
-        """Check if this is a valid pullback in an uptrend"""
-        emas = scan_result.ema_values
-        current = scan_result.current_price
+        self.logger.info(f"Applying {len(strategy_names)} strategies to {len(scan_results)} scan results")
         
-        # Must be above EMA50 (main trend support)
-        if current <= emas.get(50, 0):
-            return False
+        for strategy_name in strategy_names:
+            strategy = self.strategy_registry.get_strategy(strategy_name)
+            if not strategy:
+                self.logger.warning(f"Strategy '{strategy_name}' not found in registry")
+                continue
+                
+            self.logger.info(f"Evaluating {strategy_name} strategy...")
+            strategy_candidates = 0
             
-        # Must be near EMA20 (pullback support)
-        pullback_depth = self._calculate_pullback_depth(scan_result)
-        return pullback_depth <= 2.5  # Within 2.5% of EMA20
+            for scan_result in scan_results:
+                try:
+                    signal = strategy.evaluate(scan_result)
+                    if signal and signal.get('confidence', 0) >= min_confidence:
+                        candidate = {
+                            'symbol': scan_result.symbol,
+                            'strategy': strategy_name,
+                            'confidence': signal['confidence'],
+                            'total_score': scan_result.total_score,
+                            'trend_score': scan_result.bull_trend_score,
+                            'pullback_score': scan_result.bull_pullback_score,
+                            'current_price': scan_result.current_price,
+                            'signal_details': signal,
+                            'scan_timestamp': datetime.now(),
+                            'volume_status': scan_result.volume_status,
+                            'market_cap_status': scan_result.market_cap_status,
+                            'price_status': scan_result.price_status
+                        }
+                        all_candidates.append(candidate)
+                        strategy_candidates += 1
+                        
+                except Exception as e:
+                    self.logger.error(f"Error evaluating {scan_result.symbol} with {strategy_name}: {e}")
+                    continue
+            
+            self.logger.info(f"Strategy {strategy_name} found {strategy_candidates} candidates")
+        
+        # Sort by confidence and limit results
+        all_candidates.sort(key=lambda x: x['confidence'], reverse=True)
+        final_candidates = all_candidates[:max_candidates]
+        
+        self.logger.info(f"Generated {len(final_candidates)} total candidates (max: {max_candidates})")
+        return final_candidates
     
-    def _calculate_pullback_depth(self, scan_result) -> float:
-        current = scan_result.current_price
-        ema20 = scan_result.ema_values.get(20, current)
-        return abs(current - ema20) / ema20 * 100
+    def get_available_strategies(self) -> List[str]:
+        """Get list of available strategy names from registry"""
+        return list(self.strategy_registry._strategies.keys())
     
-    def _calculate_targets(self, scan_result) -> Dict[str, float]:
-        current = scan_result.current_price
-        ema10 = scan_result.ema_values.get(10, current * 1.03)
+    def generate_excel_output(self, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Format candidates for Excel output as specified in requirements
+        """
+        if not candidates:
+            return {
+                'columns': [],
+                'data': [],
+                'timestamp': datetime.now(),
+                'candidate_count': 0
+            }
+        
+        # Define Excel columns as per requirements
+        columns = [
+            'Symbol', 
+            'Total Score', 
+            'Bull Trend Score', 
+            'Bull Pullback Score',
+            'Current Price',
+            'Volume Status',
+            'Market Cap Status', 
+            'Price Status',
+            'Confidence',
+            'Strategy',
+            'Signal Type',
+            'Risk Level'
+        ]
+        
+        excel_data = []
+        for candidate in candidates:
+            signal_details = candidate.get('signal_details', {})
+            row = [
+                candidate['symbol'],
+                candidate['total_score'],
+                candidate['trend_score'], 
+                candidate['pullback_score'],
+                f"${candidate['current_price']:.2f}",
+                candidate['volume_status'],
+                candidate['market_cap_status'],
+                candidate['price_status'],
+                f"{candidate['confidence']:.1f}%",
+                candidate['strategy'],
+                signal_details.get('entry_signal', 'N/A'),
+                signal_details.get('risk_level', 'N/A')
+            ]
+            excel_data.append(row)
+        
         return {
-            'profit_target_1': ema10,  # Target EMA10 resistance
-            'profit_target_2': current * 1.06,  # 6% target
-            'stop_loss': scan_result.ema_values.get(20, current) * 0.97,
-        }
-
-class MomentumBreakoutStrategy(Strategy):
-    """Stocks showing strong momentum characteristics"""
-    
-    def evaluate(self, scan_result) -> Optional[Dict[str, Any]]:
-        if not self._passes_basic_filters(scan_result):
-            return None
-            
-        momentum_strength = self._calculate_momentum_strength(scan_result)
-        
-        if momentum_strength >= 60:
-            confidence = self.calculate_confidence(scan_result)
-            
-            if confidence >= 55:
-                signal = self.generate_signal(scan_result)
-                signal.update({
-                    'entry_signal': 'MOMENTUM_ACCELERATION',
-                    'risk_level': 'MEDIUM',
-                    'momentum_strength': momentum_strength,
-                    'targets': self._calculate_targets(scan_result)
-                })
-                return signal
-        return None
-    
-    def calculate_confidence(self, scan_result) -> float:
-        momentum = self._calculate_momentum_strength(scan_result)
-        trend_strength = scan_result.bull_trend_score * 0.3
-        total_score = scan_result.total_score * 0.4
-        
-        return momentum * 0.3 + trend_strength + total_score
-    
-    def _passes_basic_filters(self, scan_result) -> bool:
-        return scan_result.total_score >= self.config.min_total_score
-    
-    def _calculate_momentum_strength(self, scan_result) -> float:
-        """Calculate momentum based on price position relative to EMAs"""
-        emas = scan_result.ema_values
-        current = scan_result.current_price
-        
-        # How far above key EMAs
-        above_ema10 = max(0, (current - emas.get(10, current)) / current * 100)
-        above_ema20 = max(0, (current - emas.get(20, current)) / current * 100)
-        
-        # EMA slope approximation (would need historical EMA values for real slope)
-        momentum = (above_ema10 * 0.6 + above_ema20 * 0.4) * 10
-        return min(momentum, 100)
-    
-    def _calculate_targets(self, scan_result) -> Dict[str, float]:
-        current = scan_result.current_price
-        return {
-            'profit_target_1': current * 1.08,
-            'profit_target_2': current * 1.12, 
-            'stop_loss': current * 0.94,
+            'columns': columns,
+            'data': excel_data,
+            'timestamp': datetime.now(),
+            'candidate_count': len(candidates)
         }

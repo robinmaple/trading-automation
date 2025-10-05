@@ -14,40 +14,53 @@ from src.core.ibkr_client import IbkrClient
 from src.core.trading_manager import TradingManager
 from src.data_feeds.ibkr_data_feed import IBKRDataFeed
 from src.core.database import init_database
-from src.core.market_data_debug import MarketDataDebugger
 # <Event Bus Integration - Begin>
 from src.core.event_bus import EventBus
 # <Event Bus Integration - End>
+# <Session Management Integration - Begin>
+from src.core.simple_logger import start_trading_session, end_trading_session, get_current_session_file
+# <Session Management Integration - End>
 
-
-def run_market_data_diagnostic(ibkr_client: IbkrClient, hybrid: bool = False):
-    """Run a market data diagnostic test for IBKR support."""
-    print("\n" + "=" * 60)
-    if hybrid:
-        print("RUNNING MARKET DATA DIAGNOSTIC FOR IBKR SUPPORT (Paper Mode)")
-    else:
-        print("RUNNING MARKET DATA DIAGNOSTIC FOR IBKR SUPPORT")
-    print("=" * 60)
-
-    debugger = MarketDataDebugger(ibkr_client)
-    debugger.run_comprehensive_diagnostic(
-        ["EUR", "AAPL", "TSLA", "GLD", "ES", "GBP", "NQ", "CL", "GC", "IBM"]
-    )
-
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_file = f"ibkr_market_data_diagnostic_{timestamp}.log"
-    print(report_file)
-
-    print(f"\n✅ Diagnostic complete! Report saved to: {report_file}")
-    print("📋 Please share this file with IBKR support for investigation")
-    print("=" * 60 + "\n")
-    input(
-        "Press Enter to continue with trading, or Ctrl+C to exit and review the diagnostic..."
-    )
-
+def run_scanner_from_main(ibkr_client, data_feed, config=None):
+    """
+    Run the scanner using the existing IBKR connection from main()
+    """
+    try:
+        from src.scanner.simple_scanner import simple_bull_trend_pullback_scan
+        
+        print("🚀 Starting Bull Trend Pullback Scanner...")
+        print("=" * 50)
+        
+        candidates = simple_bull_trend_pullback_scan(ibkr_client, data_feed)
+        
+        if candidates:
+            print(f"✅ Scanner completed! Found {len(candidates)} candidates for next trading day.")
+            return candidates
+        else:
+            print("⚠️  Scanner found no candidates meeting criteria.")
+            return []
+            
+    except Exception as e:
+        print(f"❌ Scanner failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 def main():
+    # <Session Management - Begin>
+    session_file = None
+    trading_mgr = None
+    ibkr_client = None
+    # <Session Management - End>
+    
     try:
+        # <Session Management - Begin>
+        # Start session explicitly at the beginning of main execution
+        session_file = start_trading_session()
+        print(f"📝 Trading session started: {session_file}")
+        print(f"⏰ Session start time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        # <Session Management - End>
+
         parser = argparse.ArgumentParser(description="Trading System")
         parser.add_argument(
             "--mode",
@@ -60,6 +73,11 @@ def main():
             action="store_true",
             help="Run market data diagnostic before starting trading",
         )
+        parser.add_argument('--scanner', action='store_true', 
+                   help='Run bull trend pullback scanner')
+        parser.add_argument('--scanner-only', action='store_true',
+                        help='Run scanner and exit (no trading)')
+
         args = parser.parse_args()
 
         # Initialize DB
@@ -77,7 +95,7 @@ def main():
             print(f"✅ Loaded {len(planned_orders)} planned orders")
         except Exception as e:
             print(f"❌ Failed to load planned orders: {e}")
-            return
+            # Don't return yet - scanner might still work without planned orders
 
         # <Event Bus Creation - Begin>
         # Create the central event bus for system communication
@@ -88,20 +106,53 @@ def main():
         # Setup IBKR client
         ibkr_client = IbkrClient()
         port = 7496 if args.mode == "live" else 7497
-        print(f"Connecting to IB API at 127.0.0.1:{port}...")
+        print(f"🔌 Connecting to IB API at 127.0.0.1:{port} ({args.mode.upper()} mode)...")
 
         if not ibkr_client.connect("127.0.0.1", port, 0):
-            print("Failed to connect to IB")
+            print("❌ Failed to connect to IB")
+            # <Session Management - Begin>
+            end_trading_session()
+            print("✅ Trading session ended due to connection failure")
+            # <Session Management - End>
             return
 
         # Create data feed with already-connected client
         data_feed = IBKRDataFeed(ibkr_client, event_bus)
         print("✅ IBKRDataFeed connected to EventBus for price publishing")        
-        # data_feed.connect()  # ← REMOVE THIS LINE (redundant)
 
         # Verify the data feed is properly initialized
         print(f"✅ Data feed status: {data_feed.is_connected()}")
         print(f"✅ IBKR client connected: {ibkr_client.connected}")
+
+        # SCANNER INTEGRATION - Run before normal trading
+        scanner_candidates = None
+        if args.scanner or args.scanner_only:
+            print("\n" + "="*60)
+            print("🔍 SCANNER MODE ACTIVATED")
+            print("="*60)
+            
+            scanner_candidates = run_scanner_from_main(ibkr_client, data_feed)
+            
+            if args.scanner_only:
+                print("\n🎯 Scanner-only mode complete. Exiting.")
+                print("💡 Use --scanner (without --scanner-only) to run scanner + trading")
+                # <Session Management - Begin>
+                end_trading_session()
+                print("✅ Trading session ended after scanner-only execution")
+                # <Session Management - End>
+                return  # Exit after scanner if scanner-only mode
+            
+            # If --scanner (without --scanner-only), continue to normal trading
+            print("\n📈 Continuing to normal trading with scanner results...")
+            print("="*60)
+
+        # Exit here if we only wanted to run the scanner
+        if args.scanner_only:
+            # <Session Management - Begin>
+            end_trading_session()
+            print("✅ Trading session ended after scanner-only execution")
+            # <Session Management - End>
+            return
 
         # <Event-Driven Trading Manager - Begin>
         # Create TradingManager with EventBus dependency
@@ -123,23 +174,22 @@ def main():
             print("⚠️  MarketDataManager not found in data feed - event publishing may not work")
         # <Event-Driven Market Data Manager - End>
 
-        # Run diagnostic if requested
-        if args.debug_market_data:
-            run_market_data_diagnostic(
-                ibkr_client, hybrid=(args.mode == "paper")
-            )
-
         # Register planned orders
         try:
             trading_mgr.load_planned_orders()
+            print(f"✅ Registered {len(trading_mgr.planned_orders)} planned orders")
         except Exception as e:
-            print(f"Warning: Could not register planned orders: {e}")
+            print(f"⚠️  Could not register planned orders: {e}")
             print("Continuing without planned orders...")
 
-
+        # If we have scanner candidates, you could integrate them here
+        if scanner_candidates:
+            print(f"💡 Scanner provided {len(scanner_candidates)} candidates for trading consideration")
+            # You could add logic here to use scanner candidates in your trading strategy
+            # For example: trading_mgr.integrate_scanner_candidates(scanner_candidates)
 
         # Start monitoring with debug output
-        print("🚀 Starting trading monitoring...")
+        print("\n🚀 Starting trading monitoring...")
 
         # Temporary debug - check system state
         print(f"🔍 Data feed connected: {data_feed.is_connected()}")
@@ -159,32 +209,73 @@ def main():
             print("✅ Monitoring started successfully")
             print("📡 Now listening for market data updates...")
             print("🔔 Event-driven system ACTIVE - orders will execute on price changes")
+            # <Session Management - Begin>
+            print(f"📝 Session logging to: {session_file}")
+            # <Session Management - End>
         else:
             print("❌ Failed to start monitoring - check logs above")
             print("💡 Possible issues: data feed not connected, no planned orders, or initialization failed")
+            # <Session Management - Begin>
+            end_trading_session()
+            print("✅ Trading session ended due to monitoring failure")
+            # <Session Management - End>
             return  # Exit if monitoring failed
 
         try:
+            # <Session Management - Begin>
+            print(f"🔄 Trading session ACTIVE - Monitoring every 30 seconds...")
+            print(f"📊 Session logs being written to: {session_file}")
+            # <Session Management - End>
+            
             while True:
-                print("💤 Monitoring loop running... (Ctrl+C to stop)")
+                # <Session Management - Begin>
+                # Reduced frequency for status messages since detailed logs go to session file
+                print("💤 Monitoring... (Ctrl+C to stop)")
+                # <Session Management - End>
                 time.sleep(60)
+                
+        except KeyboardInterrupt:
+            print("\n⏹️  Shutting down gracefully...")
         except Exception as e:
-            print(f"Fatal error: {e}")
+            print(f"❌ Fatal error in monitoring loop: {e}")
+            import traceback
+            traceback.print_exc()
 
     except Exception as e:
-        print(f"Fatal error: {e}")
+        print(f"❌ Fatal error: {e}")
         import traceback
-
         traceback.print_exc()
         sys.exit(1)
 
     finally:
+        print("🧹 Cleaning up resources...")
         try:
-            trading_mgr.stop_monitoring()
-            ibkr_client.disconnect()
-        except:
-            pass
-
+            # <Session Management - Begin>
+            # Stop trading manager first
+            if trading_mgr:
+                trading_mgr.stop_monitoring()  # This will also call end_trading_session() internally
+            else:
+                # If trading manager wasn't created, end session manually
+                end_trading_session()
+                print("✅ Trading session ended")
+            # <Session Management - End>
+            
+            # Disconnect IBKR client
+            if ibkr_client:
+                ibkr_client.disconnect()
+                
+            print("✅ Cleanup completed")
+            # <Session Management - Begin>
+            print(f"📁 Session log saved: {session_file}")
+            # <Session Management - End>
+            
+        except Exception as e:
+            print(f"⚠️  Cleanup warning: {e}")
+            # <Session Management - Begin>
+            # Ensure session is ended even if cleanup fails
+            end_trading_session()
+            print("✅ Trading session ended (with cleanup warnings)")
+            # <Session Management - End>
 
 if __name__ == "__main__":
     main()

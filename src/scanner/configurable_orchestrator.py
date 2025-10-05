@@ -8,7 +8,7 @@ from src.scanner.criteria_setup import create_configurable_criteria_registry, ge
 from src.scanner.strategy.configurable_strategies import create_configurable_bull_trend_pullback_config
 from src.scanner.strategy.bull_trend_pullback_strategy import BullTrendPullbackStrategy
 from src.scanner.strategy.strategy_core import StrategyRegistry
-from src.scanner.scanner_config import ScannerConfig
+from config.scanner_config import ScannerConfig
 
 class ConfigurableScannerOrchestrator:
     """Fully configurable scanner orchestrator"""

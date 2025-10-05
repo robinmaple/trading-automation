@@ -5,7 +5,7 @@ from datetime import datetime
 import logging
 import time
 
-from .scanner_config import ScannerConfig, ScanResult, ScanMode
+from config.scanner_config import ScannerConfig, ScanResult
 from .technical_scorer import TechnicalScorer
 from .integration.ibkr_data_adapter import IBKRDataAdapter
 
@@ -15,9 +15,11 @@ class StockScanner:
     def __init__(self, ibkr_data_adapter: IBKRDataAdapter, config: ScannerConfig = None):
         self.data_adapter = ibkr_data_adapter
         self.config = config or ScannerConfig()
+        
+        # Use only the available config attributes
         self.technical_scorer = TechnicalScorer(
-            self.config.ema_periods, 
-            self.config.pullback_threshold
+            ema_periods=[self.config.ema_short_term, self.config.ema_medium_term, self.config.ema_long_term, 100],
+            pullback_threshold=self.config.max_pullback_distance_pct / 100
         )
         self.logger = logging.getLogger(__name__)
         self.last_scan_time = None
@@ -46,9 +48,9 @@ class StockScanner:
             if result:
                 results.append(result)
             
-            # Small delay to avoid overwhelming the API
-            if self.config.scan_mode == ScanMode.REAL_TIME:
-                time.sleep(0.1)
+            # REMOVED: scan_mode check since it doesn't exist
+            # Use a small fixed delay instead
+            time.sleep(0.05)  # 50ms delay between stocks
         
         # Step 3: Create ranked output
         if results:

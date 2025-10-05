@@ -10,7 +10,7 @@ from .strategy.strategy_core import StrategyRegistry
 from .strategy.bull_trend_pullback_strategy import BullTrendPullbackStrategy
 from .strategy.configurable_strategies import create_configurable_bull_trend_pullback_config
 from .criteria_setup import create_configurable_criteria_registry
-from .scanner_config import ScannerConfig, ScanResult
+from config.scanner_config import ScannerConfig, ScanResult
 
 class ScanManager:
     """
