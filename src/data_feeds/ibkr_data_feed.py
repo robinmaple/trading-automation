@@ -11,15 +11,21 @@ from ibapi.contract import Contract
 from src.core.abstract_data_feed import AbstractDataFeed
 from src.core.market_data_manager import MarketDataManager
 from src.core.ibkr_client import IbkrClient
+# <Event Bus Integration - Begin>
+from src.core.event_bus import EventBus
+# <Event Bus Integration - End>
 
 
 class IBKRDataFeed(AbstractDataFeed):
     """Concrete data feed implementation for Interactive Brokers market data."""
 
-    def __init__(self, ibkr_client: IbkrClient):
+    def __init__(self, ibkr_client: IbkrClient, event_bus: EventBus = None):
         """Initialize the data feed with an existing IbkrClient instance."""
         self.ibkr_client = ibkr_client
-        self.market_data = MarketDataManager(ibkr_client)
+        # <Event-Driven Market Data Manager - Begin>
+        # Create MarketDataManager with EventBus for price publishing
+        self.market_data = MarketDataManager(ibkr_client, event_bus)
+        # <Event-Driven Market Data Manager - End>
         
         # <Market Data Manager Connection - Begin>
         # CRITICAL: Connect MarketDataManager to IbkrClient to enable data flow

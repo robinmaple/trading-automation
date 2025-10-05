@@ -20,12 +20,19 @@ from sqlalchemy.orm import Session
 from src.core.database import get_db_session
 # <AON Reconciliation Integration - End>
 
+# Minimal safe logging import
+from src.core.simple_logger import get_simple_logger
+logger = get_simple_logger(__name__)
+
 
 class ReconciliationEngine:
     """Orchestrates the continuous synchronization between internal state and IBKR."""
 
     def __init__(self, ibkr_client: IbkrClient, state_service: StateService, polling_interval: int = 30):
         """Initialize the engine with its client, state service, and polling interval."""
+        if logger:
+            logger.debug("Initializing ReconciliationEngine")
+            
         self.ibkr_client = ibkr_client
         self.state_service = state_service
         self.polling_interval = polling_interval
@@ -35,12 +42,16 @@ class ReconciliationEngine:
         # <AON Reconciliation Integration - Begin>
         self.db_session: Session = get_db_session()
         # <AON Reconciliation Integration - End>
+        
+        if logger:
+            logger.info("ReconciliationEngine initialized successfully")
 
     def start(self) -> None:
         """Start the background reconciliation thread."""
         with self._lock:
             if self._running:
-                print("⚠️  Reconciliation engine already running")
+                if logger:
+                    logger.warning("Reconciliation engine already running")
                 return
 
             self._running = True
@@ -50,7 +61,8 @@ class ReconciliationEngine:
                 name="ReconciliationEngine"
             )
             self._thread.start()
-            print("✅ Reconciliation engine started")
+            if logger:
+                logger.info(f"Reconciliation engine started (interval: {self.polling_interval}s)")
 
     def stop(self) -> None:
         """Stop the background reconciliation thread."""
@@ -61,7 +73,8 @@ class ReconciliationEngine:
             self._running = False
             if self._thread and self._thread.is_alive():
                 self._thread.join(timeout=5.0)
-            print("✅ Reconciliation engine stopped")
+            if logger:
+                logger.info("Reconciliation engine stopped")
 
     def is_running(self) -> bool:
         """Check if the reconciliation engine is currently running."""
@@ -73,7 +86,8 @@ class ReconciliationEngine:
         error_count = 0
         max_errors = 5
 
-        print(f"🔄 Reconciliation loop started (interval: {self.polling_interval}s)")
+        if logger:
+            logger.info(f"Reconciliation loop started (interval: {self.polling_interval}s)")
 
         while self._running and error_count < max_errors:
             try:
@@ -86,16 +100,21 @@ class ReconciliationEngine:
                 time.sleep(self.polling_interval)
             except Exception as e:
                 error_count += 1
-                print(f"❌ Reconciliation error ({error_count}/{max_errors}): {e}")
+                if logger:
+                    logger.error(f"Reconciliation error ({error_count}/{max_errors}): {e}")
                 backoff_time = min(60 * error_count, 300)
                 time.sleep(backoff_time)
 
         if error_count >= max_errors:
-            print("❌ Too many reconciliation errors, stopping engine")
+            if logger:
+                logger.error("Too many reconciliation errors, stopping engine")
             self.stop()
 
     def _reconcile_orders(self) -> ReconciliationResult:
         """Compare IBKR orders with internal state and handle any discrepancies."""
+        if logger:
+            logger.debug("Starting order reconciliation")
+            
         result = ReconciliationResult(
             success=False,
             operation_type="orders",
@@ -114,16 +133,24 @@ class ReconciliationEngine:
 
             result.success = True
             if discrepancies:
-                print(f"🔍 Found {len(discrepancies)} order discrepancies")
+                if logger:
+                    logger.info(f"Found {len(discrepancies)} order discrepancies")
+            else:
+                if logger:
+                    logger.debug("No order discrepancies found")
 
         except Exception as e:
             result.error = str(e)
-            print(f"❌ Order reconciliation failed: {e}")
+            if logger:
+                logger.error(f"Order reconciliation failed: {e}")
 
         return result
 
     def _reconcile_positions(self) -> ReconciliationResult:
         """Compare IBKR positions with internal state and handle any discrepancies."""
+        if logger:
+            logger.debug("Starting position reconciliation")
+            
         result = ReconciliationResult(
             success=False,
             operation_type="positions",
@@ -142,17 +169,25 @@ class ReconciliationEngine:
 
             result.success = True
             if discrepancies:
-                print(f"🔍 Found {len(discrepancies)} position discrepancies")
+                if logger:
+                    logger.info(f"Found {len(discrepancies)} position discrepancies")
+            else:
+                if logger:
+                    logger.debug("No position discrepancies found")
 
         except Exception as e:
             result.error = str(e)
-            print(f"❌ Position reconciliation failed: {e}")
+            if logger:
+                logger.error(f"Position reconciliation failed: {e}")
 
         return result
 
     # <AON Reconciliation Methods - Begin>
     def _reconcile_aon_orders(self) -> None:
         """Handle AON-specific reconciliation scenarios."""
+        if logger:
+            logger.debug("Starting AON reconciliation")
+            
         try:
             ibkr_orders = self.ibkr_client.get_open_orders()
             internal_orders = self._get_internal_working_orders()
@@ -163,8 +198,12 @@ class ReconciliationEngine:
             # Check for AON status mismatches
             self._handle_aon_status_mismatches(ibkr_orders, internal_orders)
             
+            if logger:
+                logger.debug("AON reconciliation completed")
+                
         except Exception as e:
-            print(f"❌ AON reconciliation failed: {e}")
+            if logger:
+                logger.error(f"AON reconciliation failed: {e}")
 
     def _handle_orphaned_aon_orders(self, ibkr_orders: List[IbkrOrder], internal_orders: List[Dict]) -> None:
         """Handle AON orders that exist in IBKR but not in our database."""
@@ -175,7 +214,8 @@ class ReconciliationEngine:
             internal_match = self._find_internal_order_match(ibkr_order, internal_orders)
             
             if not internal_match and self._is_likely_aon_order(ibkr_order):
-                print(f"🔍 Found orphaned AON order: {ibkr_order.order_id} for {ibkr_order.symbol}")
+                if logger:
+                    logger.warning(f"Found orphaned AON order: {ibkr_order.order_id} for {ibkr_order.symbol}")
                 orphaned_count += 1
                 
                 # For now, just log - in production you might want to:
@@ -184,7 +224,8 @@ class ReconciliationEngine:
                 # 3. Resume monitoring
                 
         if orphaned_count > 0:
-            print(f"⚠️  Found {orphaned_count} orphaned AON orders (logged for manual review)")
+            if logger:
+                logger.warning(f"Found {orphaned_count} orphaned AON orders (logged for manual review)")
 
     def _handle_aon_status_mismatches(self, ibkr_orders: List[IbkrOrder], internal_orders: List[Dict]) -> None:
         """Handle status mismatches involving AON orders."""
@@ -200,7 +241,8 @@ class ReconciliationEngine:
                 if (internal_status == SharedOrderState.LIVE_WORKING.value and 
                     ibkr_status in ['Filled', 'Cancelled']):
                     
-                    print(f"🔄 AON status sync: {internal_order['symbol']} {internal_status} → {ibkr_status}")
+                    if logger:
+                        logger.info(f"AON status sync: {internal_order['symbol']} {internal_status} → {ibkr_status}")
                     
                     # Update internal status to match IBKR reality
                     db_order = self.db_session.query(PlannedOrderDB).filter_by(id=internal_order['id']).first()
@@ -211,7 +253,8 @@ class ReconciliationEngine:
                             db_order.status = SharedOrderState.CANCELLED.value
                         
                         self.db_session.commit()
-                        print(f"✅ Updated {internal_order['symbol']} status to {db_order.status}")
+                        if logger:
+                            logger.info(f"Updated {internal_order['symbol']} status to {db_order.status}")
 
     def _is_likely_aon_order(self, ibkr_order: IbkrOrder) -> bool:
         """Check if an IBKR order is likely an AON order from our system."""
@@ -243,6 +286,9 @@ class ReconciliationEngine:
 
     def _get_internal_working_orders(self) -> List[Dict[str, Any]]:
         """Get internal orders that should be working in IBKR."""
+        if logger:
+            logger.debug("Fetching internal working orders")
+            
         try:
             # Query database for orders that should be working in IBKR
             working_orders = self.db_session.query(PlannedOrderDB).filter(
@@ -267,18 +313,25 @@ class ReconciliationEngine:
                     'created_at': order.created_at
                 })
             
+            if logger:
+                logger.debug(f"Found {len(internal_orders)} internal working orders")
             return internal_orders
             
         except Exception as e:
-            print(f"❌ Error fetching internal working orders: {e}")
+            if logger:
+                logger.error(f"Error fetching internal working orders: {e}")
             return []
 
     def _find_order_discrepancies(self, internal_orders: List[Dict], ibkr_orders: List[IbkrOrder]) -> List[OrderDiscrepancy]:
         """Find discrepancies between internal and external order states."""
+        if logger:
+            logger.debug("Finding order discrepancies")
+            
         discrepancies = []
         
         if ibkr_orders:
-            print(f"📋 IBKR has {len(ibkr_orders)} open orders")
+            if logger:
+                logger.debug(f"IBKR has {len(ibkr_orders)} open orders")
             
         # Check for orders in IBKR but not in our internal state
         for ibkr_order in ibkr_orders:
@@ -306,56 +359,75 @@ class ReconciliationEngine:
                     description=f"Order in internal state but not found in IBKR"
                 ))
         
+        if logger:
+            logger.debug(f"Found {len(discrepancies)} order discrepancies")
         return discrepancies
 
     def _find_position_discrepancies(self, internal_positions: List[Any], ibkr_positions: List[IbkrPosition]) -> List[PositionDiscrepancy]:
         """Find discrepancies between internal and external position states."""
+        if logger:
+            logger.debug("Finding position discrepancies")
+            
         discrepancies = []
         if ibkr_positions:
-            print(f"📊 IBKR has {len(ibkr_positions)} positions")
+            if logger:
+                logger.debug(f"IBKR has {len(ibkr_positions)} positions")
         return discrepancies
 
     def _handle_order_discrepancy(self, discrepancy: OrderDiscrepancy) -> None:
         """Handle an order state discrepancy."""
-        print(f"🔄 Handling order discrepancy: {discrepancy.discrepancy_type} for {discrepancy.symbol}")
+        if logger:
+            logger.info(f"Handling order discrepancy: {discrepancy.discrepancy_type} for {discrepancy.symbol}")
         
         if discrepancy.discrepancy_type == 'status_mismatch':
-            print(f"   Status mismatch: Internal={discrepancy.internal_status}, IBKR={discrepancy.external_status}")
+            if logger:
+                logger.warning(f"Status mismatch: Internal={discrepancy.internal_status}, IBKR={discrepancy.external_status}")
             # In production, you would update the internal status to match IBKR
             
         elif discrepancy.discrepancy_type == 'orphaned_order':
-            print(f"   Orphaned order: {discrepancy.symbol} (Order ID: {discrepancy.order_id})")
+            if logger:
+                logger.warning(f"Orphaned order: {discrepancy.symbol} (Order ID: {discrepancy.order_id})")
             # In production, you would create an internal record for this order
             
         elif discrepancy.discrepancy_type == 'missing_order':
-            print(f"   Missing order: {discrepancy.symbol} (Internal status: {discrepancy.internal_status})")
+            if logger:
+                logger.warning(f"Missing order: {discrepancy.symbol} (Internal status: {discrepancy.internal_status})")
             # In production, you would mark the internal order as failed/cancelled
 
     def _handle_position_discrepancy(self, discrepancy: PositionDiscrepancy) -> None:
         """Handle a position state discrepancy."""
-        print(f"🔄 Handling position discrepancy: {discrepancy.discrepancy_type} for {discrepancy.symbol}")
+        if logger:
+            logger.info(f"Handling position discrepancy: {discrepancy.discrepancy_type} for {discrepancy.symbol}")
+            
         if discrepancy.discrepancy_type == 'quantity_mismatch':
-            print(f"   Quantity mismatch: Internal={discrepancy.internal_position}, IBKR={discrepancy.external_position}")
+            if logger:
+                logger.warning(f"Quantity mismatch: Internal={discrepancy.internal_position}, IBKR={discrepancy.external_position}")
 
     def _handle_reconciliation_error(self, error: Exception) -> None:
         """Handle reconciliation errors gracefully."""
-        print(f"❌ Reconciliation error: {error}")
+        if logger:
+            logger.error(f"Reconciliation error: {error}")
 
     def force_reconciliation(self) -> Optional[tuple]:
         """Force an immediate reconciliation cycle for testing or manual intervention."""
         if not self._running:
-            print("⚠️  Reconciliation engine not running")
+            if logger:
+                logger.warning("Reconciliation engine not running")
             return None
 
-        print("🔄 Manual reconciliation triggered")
+        if logger:
+            logger.info("Manual reconciliation triggered")
+            
         try:
             order_result = self._reconcile_orders()
             position_result = self._reconcile_positions()
             # <AON Reconciliation Integration - Begin>
             self._reconcile_aon_orders()
             # <AON Reconciliation Integration - End>
-            print("✅ Manual reconciliation completed")
+            if logger:
+                logger.info("Manual reconciliation completed")
             return order_result, position_result
         except Exception as e:
-            print(f"❌ Manual reconciliation failed: {e}")
+            if logger:
+                logger.error(f"Manual reconciliation failed: {e}")
             return None

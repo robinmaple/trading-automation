@@ -3,6 +3,11 @@ import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo  # Changed from: import pytz
 
+# Market Hours Service - Begin
+import datetime
+from typing import Optional
+from zoneinfo import ZoneInfo
+
 class MarketHoursService:
     """Service to track market hours and closing times"""
     
@@ -11,14 +16,24 @@ class MarketHoursService:
     MARKET_CLOSE = datetime.time(16, 0)  # 4:00 PM ET
     
     def __init__(self):
-        self.et_timezone = ZoneInfo('US/Eastern')  # Changed from: pytz.timezone('US/Eastern')
+        # FIX: Use America/New_York instead of US/Eastern for proper DST handling
+        self.et_timezone = ZoneInfo('America/New_York')
         
     def is_market_open(self) -> bool:
         """Check if markets are currently open"""
         now_et = datetime.datetime.now(self.et_timezone)
-        return (self.MARKET_OPEN <= now_et.time() <= self.MARKET_CLOSE and
-                now_et.weekday() < 5)  # Monday-Friday
-    
+        current_time = now_et.time()
+        current_weekday = now_et.weekday()
+        
+        print(f"🕒 Market hours check: {current_time} ET, weekday: {current_weekday}")
+        print(f"   Market hours: {self.MARKET_OPEN} - {self.MARKET_CLOSE}")
+        
+        is_open = (self.MARKET_OPEN <= current_time <= self.MARKET_CLOSE and
+                  current_weekday < 5)  # Monday-Friday
+        print(f"   Market open: {is_open}")
+        return is_open
+   
+    # Market Hours Service - End   
     def time_until_market_close(self) -> Optional[datetime.timedelta]:
         """Return time until market close, or None if market closed"""
         if not self.is_market_open():

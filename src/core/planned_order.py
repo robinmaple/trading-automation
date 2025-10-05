@@ -17,6 +17,10 @@ from pandas.tseries.offsets import BDay  # Business day offset
 import datetime
 from config.trading_core_config import get_config
 
+# Minimal safe logging import
+from src.core.simple_logger import get_simple_logger
+logger = get_simple_logger(__name__)
+
 # Market Hours Utility Functions - Begin
 def is_market_hours(check_time: Optional[datetime.datetime] = None) -> bool:
     """
@@ -181,6 +185,10 @@ class PlannedOrder:
 
     def __post_init__(self) -> None:
         """Dataclass hook to validate and set expiration after initialization."""
+        # Minimal logging
+        if logger:
+            logger.debug(f"Initializing PlannedOrder: {self.symbol}")
+        
         self.validate()
         self._set_expiration_date()
 
@@ -256,6 +264,10 @@ class PlannedOrder:
             raise ValueError("Entry price and stop loss cannot be equal")
         # <Data Quality Validation - End>
 
+        # Minimal logging
+        if logger:
+            logger.debug(f"PlannedOrder validation passed: {self.symbol}")
+
     # Modified Expiration Date Calculation - Begin
     def _set_expiration_date(self) -> None:
         """Set expiration date based on position strategy and import time."""
@@ -290,6 +302,11 @@ class PlannedOrder:
             calculated_quantity = max(calculated_quantity, 1)
 
         self._quantity = calculated_quantity
+        
+        # Minimal logging
+        if logger:
+            logger.debug(f"Calculated quantity for {self.symbol}: {calculated_quantity}")
+        
         return self._quantity
 
     def calculate_profit_target(self) -> float:
@@ -351,6 +368,10 @@ class PlannedOrderManager:
         orders = []
         try:
             df = pd.read_excel(file_path)
+            
+            # Minimal logging
+            if logger:
+                logger.info(f"Loading planned orders from: {file_path}")
 
             for index, row in df.iterrows():
                 try:
@@ -405,19 +426,23 @@ class PlannedOrderManager:
                     orders.append(order)
 
                 except Exception as row_error:
-                    print(f"❌ ERROR processing row {index + 2}: {row_error}")
+                    if logger:
+                        logger.error(f"Error processing row {index + 2}: {row_error}")
                     continue
 
-            print(f"\n✅ Successfully loaded {len(orders)} orders from Excel")
-            print(f"   Import time: {import_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            # Minimal logging
+            if logger:
+                logger.info(f"Successfully loaded {len(orders)} orders from Excel")
             
             return orders
 
         except FileNotFoundError:
-            print(f"❌ Excel file not found: {file_path}")
+            if logger:
+                logger.error(f"Excel file not found: {file_path}")
             return []
         except Exception as e:
-            print(f"❌ Error loading Excel file: {e}")
+            if logger:
+                logger.error(f"Error loading Excel file: {e}")
             return []
 
 class ActiveOrder:
@@ -450,4 +475,7 @@ class ActiveOrder:
 
     def update_status(self, new_status: str) -> None:
         """Update the status of this order."""
+        # Minimal logging
+        if logger and self.status != new_status:
+            logger.debug(f"ActiveOrder status change: {self.symbol} {self.status} -> {new_status}")
         self.status = new_status

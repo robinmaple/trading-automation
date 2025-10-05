@@ -15,6 +15,9 @@ from src.core.trading_manager import TradingManager
 from src.data_feeds.ibkr_data_feed import IBKRDataFeed
 from src.core.database import init_database
 from src.core.market_data_debug import MarketDataDebugger
+# <Event Bus Integration - Begin>
+from src.core.event_bus import EventBus
+# <Event Bus Integration - End>
 
 
 def run_market_data_diagnostic(ibkr_client: IbkrClient, hybrid: bool = False):
@@ -76,6 +79,12 @@ def main():
             print(f"❌ Failed to load planned orders: {e}")
             return
 
+        # <Event Bus Creation - Begin>
+        # Create the central event bus for system communication
+        event_bus = EventBus()
+        print("✅ EventBus created - enabling real-time price notifications")
+        # <Event Bus Creation - End>
+
         # Setup IBKR client
         ibkr_client = IbkrClient()
         port = 7496 if args.mode == "live" else 7497
@@ -86,14 +95,33 @@ def main():
             return
 
         # Create data feed with already-connected client
-        data_feed = IBKRDataFeed(ibkr_client)
+        data_feed = IBKRDataFeed(ibkr_client, event_bus)
+        print("✅ IBKRDataFeed connected to EventBus for price publishing")        
         # data_feed.connect()  # ← REMOVE THIS LINE (redundant)
 
         # Verify the data feed is properly initialized
         print(f"✅ Data feed status: {data_feed.is_connected()}")
         print(f"✅ IBKR client connected: {ibkr_client.connected}")
 
-        trading_mgr = TradingManager(data_feed, "plan.xlsx", ibkr_client)
+        # <Event-Driven Trading Manager - Begin>
+        # Create TradingManager with EventBus dependency
+        trading_mgr = TradingManager(
+            data_feed=data_feed, 
+            excel_path="plan.xlsx", 
+            ibkr_client=ibkr_client,
+            event_bus=event_bus  # Pass EventBus to TradingManager
+        )
+        print("✅ TradingManager connected to EventBus for price notifications")
+        # <Event-Driven Trading Manager - End>
+
+        # <Event-Driven Market Data Manager - Begin>
+        # Get the MarketDataManager from data feed and connect it to EventBus
+        if hasattr(data_feed, 'market_data_manager') and data_feed.market_data_manager:
+            data_feed.market_data_manager.event_bus = event_bus
+            print("✅ MarketDataManager connected to EventBus for price publishing")
+        else:
+            print("⚠️  MarketDataManager not found in data feed - event publishing may not work")
+        # <Event-Driven Market Data Manager - End>
 
         # Run diagnostic if requested
         if args.debug_market_data:
@@ -130,6 +158,7 @@ def main():
         if success:
             print("✅ Monitoring started successfully")
             print("📡 Now listening for market data updates...")
+            print("🔔 Event-driven system ACTIVE - orders will execute on price changes")
         else:
             print("❌ Failed to start monitoring - check logs above")
             print("💡 Possible issues: data feed not connected, no planned orders, or initialization failed")
