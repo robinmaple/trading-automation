@@ -8,6 +8,52 @@ import logging
 # Add criteria imports - FIXED IMPORT
 from src.scanner.criteria.criteria_core import CriteriaRegistry, CriteriaType
 
+# Strategy Matching System - Begin
+@dataclass
+class StrategyMatch:
+    """Represents a strategy match with detailed information"""
+    symbol: str
+    strategy_name: str
+    strategy_type: 'StrategyType'
+    confidence: float
+    current_price: float
+    total_score: float
+    metadata: Dict[str, Any]
+    criteria_details: Dict[str, Any] = field(default_factory=dict)
+    base_criteria_score: float = 0.0
+    strategy_confidence: float = 0.0
+
+class StrategyOrchestrator:
+    """Coordinates multiple strategies with OR logic"""
+    
+    def __init__(self, strategies: List['Strategy']):
+        self.strategies = strategies
+        self.logger = logging.getLogger(__name__)
+    
+    def evaluate_symbol(self, scan_result) -> List[StrategyMatch]:
+        """
+        Evaluate symbol against all strategies using OR logic
+        Returns all strategy matches (empty list if no matches)
+        """
+        matches = []
+        
+        for strategy in self.strategies:
+            try:
+                match = strategy.evaluate_with_details(scan_result)
+                if match:
+                    matches.append(match)
+            except Exception as e:
+                self.logger.warning(f"Strategy {strategy.config.name} failed for {scan_result.symbol}: {e}")
+                continue
+        
+        return matches
+    
+    def get_matching_strategies(self, scan_result) -> List[str]:
+        """Get list of strategy names that match this symbol"""
+        matches = self.evaluate_symbol(scan_result)
+        return [match.strategy_name for match in matches]
+# Strategy Matching System - End
+
 class StrategyType(Enum):
     BULL_TREND = "bull_trend"
     BULL_PULLBACK = "bull_pullback" 
@@ -61,8 +107,9 @@ class Strategy(ABC):
         """Calculate strategy-specific confidence (to be implemented by subclasses)"""
         pass
     
-    def evaluate(self, scan_result) -> Optional[Dict[str, Any]]:
-        """Complete evaluation: base criteria + strategy-specific"""
+    # Enhanced Evaluation Methods - Begin
+    def evaluate_with_details(self, scan_result) -> Optional[StrategyMatch]:
+        """Complete evaluation returning detailed StrategyMatch object"""
         # Convert scan_result to stock_data format for criteria
         stock_data = self._scan_result_to_stock_data(scan_result)
         
@@ -86,14 +133,41 @@ class Strategy(ABC):
         )
         
         if overall_confidence >= 50:  # Minimum threshold
-            signal = self.generate_signal(scan_result, stock_data, overall_confidence)
-            signal.update({
-                'base_criteria_score': base_criteria_result['overall_score'],
-                'strategy_confidence': strategy_confidence,
-                'criteria_details': base_criteria_result
-            })
-            return signal
+            return StrategyMatch(
+                symbol=scan_result.symbol,
+                strategy_name=self.config.name,
+                strategy_type=self.config.strategy_type,
+                confidence=overall_confidence,
+                current_price=scan_result.current_price,
+                total_score=scan_result.total_score,
+                metadata=self._generate_metadata(scan_result, stock_data),
+                criteria_details=base_criteria_result,
+                base_criteria_score=base_criteria_result['overall_score'],
+                strategy_confidence=strategy_confidence
+            )
         return None
+    
+    def evaluate(self, scan_result) -> Optional[Dict[str, Any]]:
+        """Legacy evaluate method - now uses new detailed system"""
+        match = self.evaluate_with_details(scan_result)
+        if match:
+            return {
+                'symbol': match.symbol,
+                'strategy': match.strategy_name,
+                'strategy_type': match.strategy_type.value,
+                'confidence': match.confidence,
+                'current_price': match.current_price,
+                'total_score': match.total_score,
+                'trend_score': getattr(scan_result, 'bull_trend_score', 0),
+                'pullback_score': getattr(scan_result, 'bull_pullback_score', 0),
+                'timestamp': getattr(scan_result, 'last_updated', None),
+                'metadata': match.metadata,
+                'base_criteria_score': match.base_criteria_score,
+                'strategy_confidence': match.strategy_confidence,
+                'criteria_details': match.criteria_details
+            }
+        return None
+    # Enhanced Evaluation Methods - End
     
     def _scan_result_to_stock_data(self, scan_result) -> Dict[str, Any]:
         """Convert scan result to stock data format for criteria"""
@@ -148,7 +222,6 @@ class Strategy(ABC):
         else:
             return 'POOR'
 
-# ADD THE MISSING CLASS - COPY THIS EXACTLY
 class StrategyRegistry:
     """Registry to manage all available strategies"""
     
