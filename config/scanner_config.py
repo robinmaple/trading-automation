@@ -33,6 +33,7 @@ class ScannerConfig:
     cache_duration: int = 300  # 5 minutes
     
     # Strategy Configuration
+    enabled_strategies: List[str] = field(default_factory=lambda: ['bull_trend_pullback'])
     min_confidence_score: int = 60
     max_candidates: int = 25
     

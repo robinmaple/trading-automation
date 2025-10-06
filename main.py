@@ -22,30 +22,63 @@ from src.core.simple_logger import start_trading_session, end_trading_session, g
 # <Session Management Integration - End>
 
 def run_scanner_from_main(ibkr_client, data_feed, config=None):
-    """
-    Run the scanner using the existing IBKR connection from main()
-    """
     try:
-        from src.scanner.simple_scanner import simple_bull_trend_pullback_scan
+        from src.scanner.scan_manager import ScanManager
+        from config.scanner_config import ScannerConfig
+        from src.scanner.integration.ibkr_data_adapter import IBKRDataAdapter
         
-        print("🚀 Starting Bull Trend Pullback Scanner...")
+        print("🚀 Starting Tiered Scanner with REAL Market Data...")
         print("=" * 50)
         
-        candidates = simple_bull_trend_pullback_scan(ibkr_client, data_feed)
+        # TEST: Try Tier 1 only mode first
+        print("🧪 TESTING: Tier 1 Only Mode (no strategies)")
+        scanner_config_tier1 = ScannerConfig(
+            enabled_strategies=[],  # Empty = Tier 1 only
+            min_confidence_score=60,
+            max_candidates=25
+        )
+        
+        data_adapter = IBKRDataAdapter(data_feed)
+        scan_manager_tier1 = ScanManager(data_adapter, scanner_config_tier1)
+        
+        tier1_results = scan_manager_tier1.generate_all_candidates()
+        print(f"📋 TIER 1 RESULTS: {len(tier1_results)} candidates")
+        
+        if tier1_results:
+            filepath = scan_manager_tier1.tiered_scanner.save_results_to_excel(tier1_results)
+            print(f"💾 Tier 1 results saved to: {filepath}")
+            
+            # Show Tier 1 candidates
+            print("\n📊 Tier 1 Candidates:")
+            for i, candidate in enumerate(tier1_results[:10]):
+                print(f"   {i+1}. {candidate['symbol']} - Price: ${candidate['current_price']:.2f}")
+        
+        # Now try with strategy
+        print("\n🧪 TESTING: With Bull Trend Pullback Strategy")
+        scanner_config = ScannerConfig(
+            enabled_strategies=['bull_trend_pullback'],
+            min_confidence_score=60,
+            max_candidates=25
+        )
+        
+        scan_manager = ScanManager(data_adapter, scanner_config)
+        candidates = scan_manager.generate_all_candidates()
         
         if candidates:
-            print(f"✅ Scanner completed! Found {len(candidates)} candidates for next trading day.")
-            return candidates
+            filepath = scan_manager.tiered_scanner.save_results_to_excel(candidates)
+            print(f"💾 Strategy results saved to: {filepath}")
+            print(f"✅ Found {len(candidates)} strategy candidates")
         else:
-            print("⚠️  Scanner found no candidates meeting criteria.")
-            return []
+            print("⚠️  No strategy candidates found - strategy is being selective")
+            
+        return candidates if candidates else tier1_results
             
     except Exception as e:
         print(f"❌ Scanner failed: {e}")
         import traceback
         traceback.print_exc()
         return []
-
+        
 def main():
     # <Session Management - Begin>
     session_file = None
