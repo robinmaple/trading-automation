@@ -37,14 +37,10 @@ from src.services.market_context_service import MarketContextService
 from src.services.historical_performance_service import HistoricalPerformanceService
 from config.trading_core_config import get_config as get_trading_core_config
 from src.services.risk_management_service import RiskManagementService
-
-# <Order Loading Orchestrator Integration - Begin>
 from src.core.order_loading_orchestrator import OrderLoadingOrchestrator
-# <Order Loading Orchestrator Integration - End>
-# <Event Bus Integration - Begin>
 from src.core.event_bus import EventBus
 from src.core.events import PriceUpdateEvent, EventType
-# <Event Bus Integration - End>
+from src.core.context_aware_logger import get_context_logger, TradingEventType
 
 # Minimal safe logging import
 from src.core.simple_logger import get_simple_logger
@@ -73,6 +69,11 @@ class TradingManager:
         self.active_orders: Dict[int, ActiveOrder] = {}
         self.monitoring = False
         self.monitor_thread: Optional[threading.Thread] = None
+
+        # <Context-Aware Logging Integration - Begin>
+        # Initialize context-aware logger
+        self.context_logger = get_context_logger()
+        # <Context-Aware Logging Integration - End>
 
         # Account Context Tracking - Begin
         self.current_account_number: Optional[str] = None
@@ -349,17 +350,6 @@ class TradingManager:
         """Get a summary of all active orders for monitoring purposes."""
         return [active_order.to_dict() for active_order in self.active_orders.values()]
 
-    def _check_and_execute_orders(self) -> None:
-        """Check market conditions and execute orders that meet the criteria."""
-        if not self.planned_orders:
-            return
-
-        executable_orders = self.eligibility_service.find_executable_orders()
-        if not executable_orders:
-            return
-
-        self._execute_prioritized_orders(executable_orders)
-
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persisting valid ones to the database."""
         self.planned_orders = self.order_lifecycle_manager.load_and_persist_orders(self.excel_path)
@@ -414,56 +404,6 @@ class TradingManager:
             if order_key == active_key:
                 return False
         return True
-
-    def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
-        """Execute orders using two-layer prioritization with viability gating."""
-        total_capital = self._get_total_capital()
-        working_orders = self._get_working_orders()
-
-        prioritized_orders = self.prioritization_service.prioritize_orders(
-            executable_orders, total_capital, working_orders
-        )
-
-        executed_count = 0
-        for order_data in prioritized_orders:
-            if not order_data.get('allocated', False) or not order_data.get('viable', False):
-                continue
-
-            order = order_data['order']
-            fill_prob = order_data['fill_probability']
-
-            if self.state_service.has_open_position(order.symbol):
-                continue
-
-            db_order = self.order_lifecycle_manager.find_existing_order(order)
-            if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
-                same_action = db_order.action == order.action.value
-                same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
-                same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
-                if same_action and same_entry and same_stop:
-                    continue
-
-            effective_priority = order.priority * fill_prob
-            # Pass account number to execution orchestrator
-            account_number = self._get_current_account_number()
-            
-            if logger:
-                logger.info(f"Executing order: {order.symbol} {order.action.value} @ ${order.entry_price}")
-                
-            success = self.execution_orchestrator.execute_single_order(
-                order, fill_prob, effective_priority, account_number
-            )
-            
-            if success:
-                executed_count += 1
-                if logger:
-                    logger.info(f"Successfully executed order for {order.symbol}")
-            else:
-                if logger:
-                    logger.error(f"Failed to execute order for {order.symbol}")
-
-        if logger and executed_count > 0:
-            logger.info(f"Executed {executed_count} orders in this cycle")
 
     def _get_total_capital(self) -> float:
         """Get total capital from IBKR or use default."""
@@ -542,58 +482,6 @@ class TradingManager:
                 if logger:
                     logger.warning(f"No market data available for {test_symbol}")
 
-    def _close_single_position(self, position) -> None:
-        """Orchestrate the closing of a single position through the execution service."""
-        try:
-            if logger:
-                logger.info(f"Closing position: {position.symbol} ({position.action} {position.quantity})")
-            
-            cancel_success = self.execution_service.cancel_orders_for_symbol(position.symbol)
-            if not cancel_success:
-                if logger:
-                    logger.warning(f"Order cancellation failed for {position.symbol}, proceeding anyway")
-
-            close_action = 'SELL' if position.action == 'BUY' else 'BUY'
-
-            # Pass account number to execution service
-            account_number = self._get_current_account_number()
-            order_id = self.execution_service.close_position({
-                'symbol': position.symbol,
-                'action': close_action,
-                'quantity': position.quantity,
-                'security_type': position.security_type,
-                'exchange': position.exchange,
-                'currency': position.currency
-            }, account_number)
-
-            if order_id is not None:
-                position.status = 'CLOSING'
-                self.db_session.commit()
-                if logger:
-                    logger.info(f"Position closing initiated for {position.symbol} (Order ID: {order_id})")
-                
-                # Risk Management - Record P&L on position close - Begin
-                try:
-                    # Delegate P&L calculation and recording to RiskManagementService
-                    # Find the active order for this position
-                    for active_order in self.active_orders.values():
-                        if active_order.symbol == position.symbol and active_order.is_working():
-                            # Risk service will handle P&L calculation internally
-                            self.risk_service.record_trade_outcome(active_order, None)
-                            break
-                except Exception as e:
-                    if logger:
-                        logger.warning(f"Could not record P&L for {position.symbol}: {e}")
-                # Risk Management - Record P&L on position close - End
-                
-            else:
-                if logger:
-                    logger.info(f"Simulation: Position would be closed for {position.symbol}")
-
-        except Exception as e:
-            if logger:
-                logger.error(f"Failed to close position {position.symbol}: {e}")
-    
     def _get_trading_environment(self) -> str:
         """
         Detect trading environment based on connected account.
@@ -664,44 +552,6 @@ class TradingManager:
                 'state_change_hours_back': 1
             }
         }
-
-    # src/core/trading_manager.py - Fix the _check_market_close_actions method
-    def _check_market_close_actions(self) -> None:
-        """Check if any DAY positions need to be closed before market close."""
-        # Safely get buffer_minutes from config with fallback
-        market_close_config = self.trading_config.get('market_close', {})
-        buffer_minutes = market_close_config.get('buffer_minutes', 10)
-        
-        if self.market_hours.should_close_positions(buffer_minutes=buffer_minutes):
-            # Close all DAY strategy positions
-            day_positions = self.state_service.get_positions_by_strategy(PositionStrategy.DAY)
-            if logger and day_positions:
-                logger.info(f"Market close approaching - closing {len(day_positions)} DAY positions")
-            for position in day_positions:
-                if logger:
-                    logger.info(f"Closing DAY position {position.symbol} before market close")
-                self._close_single_position(position)
-
-        """Main monitoring loop for Phase A with error handling and recovery."""
-        monitoring_config = self.trading_config.get('monitoring', {})
-        max_errors = monitoring_config.get('max_errors', 10)
-        error_backoff_base = monitoring_config.get('error_backoff_base', 60)
-        max_backoff = monitoring_config.get('max_backoff', 300)
-        
-        error_count = 0
-
-        self.monitoring_service.subscribe_to_symbols(self.planned_orders)
-
-        while self.monitoring and error_count < max_errors:
-            try:
-                self._check_and_execute_orders()
-                self._check_market_close_actions()
-                error_count = 0
-                time.sleep(5)
-            except Exception:
-                error_count += 1
-                backoff_time = min(error_backoff_base * error_count, max_backoff)
-                time.sleep(backoff_time)
 
     # src/core/trading_manager.py - Fix other config access methods
     def _label_completed_orders(self) -> None:
@@ -843,3 +693,310 @@ class TradingManager:
         except Exception as e:
             if logger:
                 logger.error(f"Failed to initialize advanced services: {e}")
+    
+    def _check_market_close_actions(self) -> None:
+        """Check if any DAY positions need to be closed before market close."""
+        # Safely get buffer_minutes from config with fallback
+        market_close_config = self.trading_config.get('market_close', {})
+        buffer_minutes = market_close_config.get('buffer_minutes', 10)
+        
+        # <Context-Aware Logging - Market Close Check - Begin>
+        # Log market close check with context
+        should_close = self.market_hours.should_close_positions(buffer_minutes=buffer_minutes)
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Market close position check",
+            context_provider={
+                'buffer_minutes': buffer_minutes,
+                'should_close': should_close,
+                'current_time': lambda: datetime.datetime.now().isoformat(),
+                'minutes_until_close': lambda: self.market_hours.minutes_until_close(),
+                'market_status': lambda: self.market_hours.get_market_status()
+            },
+            decision_reason=f"Market close check: should_close={should_close}"
+        )
+        # <Context-Aware Logging - Market Close Check - End>
+        
+        if should_close:
+            # Close all DAY strategy positions
+            day_positions = self.state_service.get_positions_by_strategy(PositionStrategy.DAY)
+            
+            # <Context-Aware Logging - DAY Positions Found - Begin>
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                f"Found {len(day_positions)} DAY positions to close",
+                context_provider={
+                    'day_positions_count': len(day_positions),
+                    'position_symbols': lambda: [p.symbol for p in day_positions] if day_positions else []
+                },
+                decision_reason=f"Market close: closing {len(day_positions)} DAY positions"
+            )
+            # <Context-Aware Logging - DAY Positions Found - End>
+            
+            if logger and day_positions:
+                logger.info(f"Market close approaching - closing {len(day_positions)} DAY positions")
+            for position in day_positions:
+                if logger:
+                    logger.info(f"Closing DAY position {position.symbol} before market close")
+                self._close_single_position(position)
+
+    def _check_and_execute_orders(self) -> None:
+        """Check market conditions and execute orders that meet the criteria."""
+        if not self.planned_orders:
+            return
+
+        # <Context-Aware Logging - Execution Cycle Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            "Starting order execution cycle",
+            context_provider={
+                'planned_orders_count': len(self.planned_orders),
+                'active_orders_count': len(self.active_orders),
+                'market_open': lambda: self.market_hours.is_market_open()
+            }
+        )
+        # <Context-Aware Logging - Execution Cycle Start - End>
+
+        executable_orders = self.eligibility_service.find_executable_orders()
+        if not executable_orders:
+            # <Context-Aware Logging - No Executable Orders - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                "No executable orders found",
+                context_provider={
+                    'planned_orders_count': len(self.planned_orders),
+                    'executable_orders_count': 0
+                },
+                decision_reason="Eligibility service returned no executable orders"
+            )
+            # <Context-Aware Logging - No Executable Orders - End>
+            return
+
+        self._execute_prioritized_orders(executable_orders)
+
+    def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
+        """Execute orders using two-layer prioritization with viability gating."""
+        total_capital = self._get_total_capital()
+        working_orders = self._get_working_orders()
+
+        # <Context-Aware Logging - Prioritization Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            "Starting order prioritization",
+            context_provider={
+                'executable_orders_count': len(executable_orders),
+                'total_capital': total_capital,
+                'working_orders_count': len(working_orders),
+                'max_open_orders': self.max_open_orders
+            }
+        )
+        # <Context-Aware Logging - Prioritization Start - End>
+
+        prioritized_orders = self.prioritization_service.prioritize_orders(
+            executable_orders, total_capital, working_orders
+        )
+
+        executed_count = 0
+        skipped_reasons = {}
+        
+        for order_data in prioritized_orders:
+            order = order_data['order']
+            fill_prob = order_data['fill_probability']
+            symbol = order.symbol
+
+            if not order_data.get('allocated', False) or not order_data.get('viable', False):
+                skipped_reasons[symbol] = f"Not allocated/viable (allocated={order_data.get('allocated')}, viable={order_data.get('viable')})"
+                continue
+
+            if self.state_service.has_open_position(symbol):
+                skipped_reasons[symbol] = "Open position exists"
+                continue
+
+            db_order = self.order_lifecycle_manager.find_existing_order(order)
+            if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
+                same_action = db_order.action == order.action.value
+                same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
+                same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
+                if same_action and same_entry and same_stop:
+                    skipped_reasons[symbol] = f"Duplicate active order (status: {db_order.status})"
+                    continue
+
+            effective_priority = order.priority * fill_prob
+            account_number = self._get_current_account_number()
+            
+            # <Context-Aware Logging - Order Execution Attempt - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Attempting order execution for {symbol}",
+                symbol=symbol,
+                context_provider={
+                    'entry_price': order.entry_price,
+                    'stop_loss': order.stop_loss,
+                    'action': order.action.value,
+                    'fill_probability': fill_prob,
+                    'effective_priority': effective_priority,
+                    'account_number': account_number
+                },
+                decision_reason=f"Order meets execution criteria"
+            )
+            # <Context-Aware Logging - Order Execution Attempt - End>
+            
+            if logger:
+                logger.info(f"Executing order: {symbol} {order.action.value} @ ${order.entry_price}")
+                
+            success = self.execution_orchestrator.execute_single_order(
+                order, fill_prob, effective_priority, account_number
+            )
+            
+            if success:
+                executed_count += 1
+                # <Context-Aware Logging - Order Execution Success - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"Order execution successful for {symbol}",
+                    symbol=symbol,
+                    context_provider={
+                        'entry_price': order.entry_price,
+                        'order_type': order.order_type.value
+                    },
+                    decision_reason="Execution orchestrator returned success"
+                )
+                # <Context-Aware Logging - Order Execution Success - End>
+                if logger:
+                    logger.info(f"Successfully executed order for {symbol}")
+            else:
+                # <Context-Aware Logging - Order Execution Failure - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"Order execution failed for {symbol}",
+                    symbol=symbol,
+                    context_provider={
+                        'entry_price': order.entry_price
+                    },
+                    decision_reason="Execution orchestrator returned failure"
+                )
+                # <Context-Aware Logging - Order Execution Failure - End>
+                if logger:
+                    logger.error(f"Failed to execute order for {symbol}")
+
+        # <Context-Aware Logging - Execution Summary - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Order execution cycle completed: {executed_count} executed, {len(skipped_reasons)} skipped",
+            context_provider={
+                'executed_count': executed_count,
+                'skipped_count': len(skipped_reasons),
+                'skipped_reasons': skipped_reasons,
+                'total_considered': len(prioritized_orders)
+            },
+            decision_reason=f"Execution summary: {executed_count} executed"
+        )
+        # <Context-Aware Logging - Execution Summary - End>
+
+        if logger and executed_count > 0:
+            logger.info(f"Executed {executed_count} orders in this cycle")
+
+    def _close_single_position(self, position) -> None:
+        """Orchestrate the closing of a single position through the execution service."""
+        try:
+            # <Context-Aware Logging - Position Close Start - Begin>
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                f"Closing position: {position.symbol}",
+                symbol=position.symbol,
+                context_provider={
+                    'position_action': position.action,
+                    'position_quantity': position.quantity,
+                    'position_strategy': getattr(position, 'position_strategy', 'UNKNOWN'),
+                    'reason': 'market_close' if hasattr(self, '_check_market_close_actions') else 'manual'
+                },
+                decision_reason="Closing position"
+            )
+            # <Context-Aware Logging - Position Close Start - End>
+            
+            if logger:
+                logger.info(f"Closing position: {position.symbol} ({position.action} {position.quantity})")
+            
+            cancel_success = self.execution_service.cancel_orders_for_symbol(position.symbol)
+            if not cancel_success:
+                if logger:
+                    logger.warning(f"Order cancellation failed for {position.symbol}, proceeding anyway")
+
+            close_action = 'SELL' if position.action == 'BUY' else 'BUY'
+
+            # Pass account number to execution service
+            account_number = self._get_current_account_number()
+            order_id = self.execution_service.close_position({
+                'symbol': position.symbol,
+                'action': close_action,
+                'quantity': position.quantity,
+                'security_type': position.security_type,
+                'exchange': position.exchange,
+                'currency': position.currency
+            }, account_number)
+
+            if order_id is not None:
+                position.status = 'CLOSING'
+                self.db_session.commit()
+                
+                # <Context-Aware Logging - Position Close Success - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    f"Position closing initiated for {position.symbol}",
+                    symbol=position.symbol,
+                    context_provider={
+                        'close_order_id': order_id,
+                        'close_action': close_action,
+                        'quantity': position.quantity
+                    },
+                    decision_reason="Position close order placed successfully"
+                )
+                # <Context-Aware Logging - Position Close Success - End>
+                
+                if logger:
+                    logger.info(f"Position closing initiated for {position.symbol} (Order ID: {order_id})")
+                
+                # Risk Management - Record P&L on position close - Begin
+                try:
+                    # Delegate P&L calculation and recording to RiskManagementService
+                    # Find the active order for this position
+                    for active_order in self.active_orders.values():
+                        if active_order.symbol == position.symbol and active_order.is_working():
+                            # Risk service will handle P&L calculation internally
+                            self.risk_service.record_trade_outcome(active_order, None)
+                            break
+                except Exception as e:
+                    if logger:
+                        logger.warning(f"Could not record P&L for {position.symbol}: {e}")
+                # Risk Management - Record P&L on position close - End
+                
+            else:
+                # <Context-Aware Logging - Position Close Simulation - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    f"Position close simulated for {position.symbol}",
+                    symbol=position.symbol,
+                    context_provider={
+                        'close_action': close_action,
+                        'quantity': position.quantity
+                    },
+                    decision_reason="Simulation mode - no actual order placed"
+                )
+                # <Context-Aware Logging - Position Close Simulation - End>
+                if logger:
+                    logger.info(f"Simulation: Position would be closed for {position.symbol}")
+
+        except Exception as e:
+            # <Context-Aware Logging - Position Close Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                f"Failed to close position {position.symbol}",
+                symbol=position.symbol,
+                context_provider={
+                    'error': str(e)
+                },
+                decision_reason=f"Position close failed: {e}"
+            )
+            # <Context-Aware Logging - Position Close Error - End>
+            if logger:
+                logger.error(f"Failed to close position {position.symbol}: {e}")

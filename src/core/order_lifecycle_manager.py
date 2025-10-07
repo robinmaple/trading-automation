@@ -23,9 +23,9 @@ from config.trading_core_config import get_config
 from src.core.shared_enums import OrderState as SharedOrderState
 # <AON Configuration Integration - End>
 
-# Minimal safe logging import
-from src.core.simple_logger import get_simple_logger
-logger = get_simple_logger(__name__)
+# Context-aware logging import - Begin
+from src.core.context_aware_logger import get_context_logger, TradingEventType
+# Context-aware logging import - End
 
 
 class OrderLifecycleManager:
@@ -43,9 +43,10 @@ class OrderLifecycleManager:
                  # <AON Configuration Integration - End>
                  ):
         """Initialize the order lifecycle manager with required services."""
-        if logger:
-            logger.debug("Initializing OrderLifecycleManager")
-            
+        # Context-aware logging initialization - Begin
+        self.context_logger = get_context_logger()
+        # Context-aware logging initialization - End
+        
         self.loading_service = loading_service
         self.persistence_service = persistence_service
         self.state_service = state_service
@@ -58,44 +59,63 @@ class OrderLifecycleManager:
         self.aon_config = self.config.get('aon_execution', {})
         # <AON Configuration Integration - End>
         
-        if logger:
-            logger.info("OrderLifecycleManager initialized successfully")
+        self.context_logger.log_event(
+            event_type=TradingEventType.SYSTEM_HEALTH,
+            message="OrderLifecycleManager initialized",
+            context_provider={
+                'has_loading_orchestrator': lambda: order_loading_orchestrator is not None,
+                'aon_enabled': lambda: self.aon_config.get('enabled', True)
+            },
+            decision_reason="Service startup"
+        )
         
     def load_and_persist_orders(self, excel_path: str) -> List[PlannedOrder]:
         """Load orders from Excel, validate, and persist valid ones to database."""
-        if logger:
-            logger.info(f"Loading orders from: {excel_path}")
+        self.context_logger.log_event(
+            event_type=TradingEventType.ORDER_VALIDATION,
+            message="Starting order loading and persistence",
+            context_provider={
+                'excel_path': lambda: excel_path,
+                'loading_method': lambda: 'orchestrator' if self.order_loading_orchestrator else 'excel_only'
+            },
+            decision_reason="Begin order loading process"
+        )
         
         try:
             # <Multi-Source Order Loading - Begin>
             if self.order_loading_orchestrator:
-                if logger:
-                    logger.debug("Using OrderLoadingOrchestrator for multi-source loading")
-                # Use orchestrator for multi-source loading (DB resumption + Excel)
+                self.context_logger.log_event(
+                    event_type=TradingEventType.SYSTEM_HEALTH,
+                    message="Using OrderLoadingOrchestrator for multi-source loading",
+                    decision_reason="Multi-source loading selected"
+                )
                 all_orders = self.order_loading_orchestrator.load_all_orders(excel_path)
-                if logger:
-                    logger.info(f"Loaded {len(all_orders)} orders from all sources")
             else:
-                if logger:
-                    logger.debug("Using OrderLoadingService for Excel-only loading")
-                # Fallback to original Excel-only loading
+                self.context_logger.log_event(
+                    event_type=TradingEventType.SYSTEM_HEALTH,
+                    message="Using OrderLoadingService for Excel-only loading",
+                    decision_reason="Excel-only loading selected"
+                )
                 all_orders = self.loading_service.load_and_validate_orders(excel_path)
-                if logger:
-                    logger.info(f"Found {len(all_orders)} valid orders in Excel")
             # <Multi-Source Order Loading - End>
             
             if not all_orders:
-                if logger:
-                    logger.warning("No orders loaded from Excel file")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.ORDER_VALIDATION,
+                    message="No orders loaded from Excel file",
+                    context_provider={
+                        'excel_path': lambda: excel_path
+                    },
+                    decision_reason="Empty order set"
+                )
                 return []
                 
             # <Enhanced Persistence Logic - Begin>
-            # Handle order persistence with session awareness
             persisted_count = 0
             updated_count = 0
+            skipped_count = 0
             
             for order in all_orders:
-                # Determine if this order needs persistence or updating
                 persistence_action = self._determine_persistence_action(order)
                 
                 if persistence_action == 'CREATE':
@@ -105,23 +125,54 @@ class OrderLifecycleManager:
                     if self._update_existing_order(order):
                         updated_count += 1
                 elif persistence_action == 'SKIP':
-                    if logger:
-                        logger.debug(f"Skipping order: {order.symbol} (already active)")
+                    skipped_count += 1
+                    self.context_logger.log_event(
+                        event_type=TradingEventType.ORDER_VALIDATION,
+                        message="Skipping existing order",
+                        symbol=order.symbol,
+                        context_provider={
+                            'action': lambda: persistence_action
+                        },
+                        decision_reason="Order already active in database"
+                    )
                 else:
-                    if logger:
-                        logger.warning(f"Unknown persistence action for {order.symbol}: {persistence_action}")
+                    self.context_logger.log_event(
+                        event_type=TradingEventType.SYSTEM_HEALTH,
+                        message="Unknown persistence action",
+                        symbol=order.symbol,
+                        context_provider={
+                            'action': lambda: persistence_action
+                        },
+                        decision_reason="Persistence action resolution failure"
+                    )
             # <Enhanced Persistence Logic - End>
             
             self.db_session.commit()
-            if logger:
-                logger.info(f"Order persistence completed: {persisted_count} new, {updated_count} updated")
+            self.context_logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Order persistence batch completed",
+                context_provider={
+                    'total_orders': lambda: len(all_orders),
+                    'persisted_count': lambda: persisted_count,
+                    'updated_count': lambda: updated_count,
+                    'skipped_count': lambda: skipped_count
+                },
+                decision_reason="Order loading and persistence finished"
+            )
             
             return all_orders
             
         except Exception as e:
             self.db_session.rollback()
-            if logger:
-                logger.error(f"Failed to load and persist orders: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Order loading and persistence failed",
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Order loading exception"
+            )
             raise
 
     # <Enhanced Persistence Logic - Begin>
@@ -135,25 +186,20 @@ class OrderLifecycleManager:
         Returns:
             'CREATE' for new orders, 'UPDATE' for Excel updates, 'SKIP' for DB-resumed orders
         """
-        # Check if order already exists in database
         existing_order = self.find_existing_order(order)
         
         if not existing_order:
             return 'CREATE'  # New order - create in database
             
-        # Order exists - determine if this is an Excel update or DB-resumed order
         existing_status = existing_order.status
         
-        # If order is active (not filled/expired), treat Excel version as update
         if existing_status in [SharedOrderState.PENDING.value, SharedOrderState.LIVE.value, 
                              SharedOrderState.LIVE_WORKING.value]:
-            # Check if this appears to be an Excel update (prices changed)
             if self._is_excel_update(order, existing_order):
                 return 'UPDATE'
             else:
-                return 'SKIP'  # DB-resumed order, no changes
+                return 'SKIP'
         else:
-            # Order is filled/expired - create new order for same trading idea
             return 'CREATE'
             
     def _is_excel_update(self, excel_order: PlannedOrder, db_order: PlannedOrderDB) -> bool:
@@ -167,11 +213,9 @@ class OrderLifecycleManager:
         Returns:
             True if Excel order has meaningful changes, False otherwise
         """
-        # Check for price changes that would indicate an update
         price_changed = (abs(excel_order.entry_price - db_order.entry_price) > 0.0001 or
                         abs(excel_order.stop_loss - db_order.stop_loss) > 0.0001)
         
-        # Check for other meaningful field changes
         priority_changed = (excel_order.priority != db_order.priority)
         risk_changed = (abs(excel_order.risk_per_trade - db_order.risk_per_trade) > 0.0001)
         
@@ -190,11 +234,14 @@ class OrderLifecycleManager:
         try:
             existing_order = self.find_existing_order(order)
             if not existing_order:
-                if logger:
-                    logger.warning(f"Cannot update: Order not found for {order.symbol}")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.SYSTEM_HEALTH,
+                    message="Cannot update - order not found",
+                    symbol=order.symbol,
+                    decision_reason="Order lookup failure during update"
+                )
                 return False
                 
-            # Update order fields with Excel values
             existing_order.entry_price = order.entry_price
             existing_order.stop_loss = order.stop_loss
             existing_order.risk_per_trade = order.risk_per_trade
@@ -202,36 +249,77 @@ class OrderLifecycleManager:
             existing_order.priority = order.priority
             existing_order.updated_at = datetime.datetime.now()
             
-            if logger:
-                logger.info(f"Updated order: {order.symbol} (Excel changes applied)")
+            self.context_logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Order updated with Excel changes",
+                symbol=order.symbol,
+                context_provider={
+                    'entry_price': lambda: order.entry_price,
+                    'stop_loss': lambda: order.stop_loss,
+                    'priority': lambda: order.priority
+                },
+                decision_reason="Excel update applied to database order"
+            )
             return True
             
         except Exception as e:
-            if logger:
-                logger.error(f"Failed to update order {order.symbol}: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Order update failed",
+                symbol=order.symbol,
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Order update exception"
+            )
             return False
     # <Enhanced Persistence Logic - End>
             
     def _persist_single_order(self, order: PlannedOrder) -> bool:
         """Persist a single order to database with duplicate checking."""
         try:
-            # Check for existing order with same parameters
             existing_order = self.find_existing_order(order)
             if existing_order and self._is_duplicate_order(order, existing_order):
-                if logger:
-                    logger.debug(f"Skipping duplicate order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.ORDER_VALIDATION,
+                    message="Skipping duplicate order",
+                    symbol=order.symbol,
+                    context_provider={
+                        'entry_price': lambda: order.entry_price,
+                        'action': lambda: order.action.value
+                    },
+                    decision_reason="Duplicate order detection"
+                )
                 return False
                 
-            # Convert to database model and persist
             db_order = self.persistence_service.convert_to_db_model(order)
             self.db_session.add(db_order)
-            if logger:
-                logger.info(f"Persisted order: {order.symbol} {order.action.value} @ {order.entry_price:.4f}")
+            
+            self.context_logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Order persisted to database",
+                symbol=order.symbol,
+                context_provider={
+                    'entry_price': lambda: order.entry_price,
+                    'action': lambda: order.action.value,
+                    'order_type': lambda: order.order_type.value
+                },
+                decision_reason="New order creation"
+            )
             return True
             
         except Exception as e:
-            if logger:
-                logger.error(f"Failed to persist order {order.symbol}: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Order persistence failed",
+                symbol=order.symbol,
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Order persistence exception"
+            )
             return False
 
     # <Enhanced Order Validation - Begin>
@@ -243,35 +331,51 @@ class OrderLifecycleManager:
         the PlannedOrder object is internally valid (required fields present, business
         rules satisfied). Data integrity should be enforced at object creation.
         """
-        if logger:
-            logger.debug(f"Validating order: {order.symbol}")
+        self.context_logger.log_event(
+            event_type=TradingEventType.ORDER_VALIDATION,
+            message="Starting order validation",
+            symbol=order.symbol,
+            context_provider={
+                'action': lambda: order.action.value,
+                'order_type': lambda: order.order_type.value
+            },
+            decision_reason="Begin system-level validation"
+        )
             
-        # <Delegate Data Integrity to PlannedOrder - Begin>
         try:
-            # Fail fast if data integrity issues - should never happen for valid orders
             order.validate()
         except ValueError as e:
-            # This indicates a serious data integrity issue that should be fixed upstream
-            if logger:
-                logger.error(f"Data integrity violation for {order.symbol}: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Data integrity validation failed",
+                symbol=order.symbol,
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Data integrity violation"
+            )
             return False, f"Data integrity violation: {e}"
-        # <Delegate Data Integrity to PlannedOrder - End>
             
-        # <System State Validation - Begin>
-        # UNIQUE: Check for open positions
         if self.state_service.has_open_position(order.symbol):
-            if logger:
-                logger.warning(f"Validation failed: Open position exists for {order.symbol}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Validation failed - open position exists",
+                symbol=order.symbol,
+                decision_reason="Open position conflict"
+            )
             return False, f"Open position exists for {order.symbol}"
             
-        # UNIQUE: Check database state for existing orders with session awareness
         existing_order = self.find_existing_order(order)
         if existing_order:
             return self._validate_existing_order_scenario(order, existing_order)
-        # <System State Validation - End>
             
-        if logger:
-            logger.debug(f"Order validation passed: {order.symbol}")
+        self.context_logger.log_event(
+            event_type=TradingEventType.ORDER_VALIDATION,
+            message="Order validation passed",
+            symbol=order.symbol,
+            decision_reason="All validation checks passed"
+        )
         return True, None
         
     def _validate_existing_order_scenario(self, new_order: PlannedOrder, existing_order: PlannedOrderDB) -> Tuple[bool, str]:
@@ -287,33 +391,61 @@ class OrderLifecycleManager:
         """
         existing_status = existing_order.status
         
-        # Active orders block new identical orders
         if existing_status in [SharedOrderState.LIVE.value, SharedOrderState.LIVE_WORKING.value, SharedOrderState.FILLED.value]:
-            if logger:
-                logger.warning(f"Validation failed: Active order already exists for {new_order.symbol}: {existing_status}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Validation failed - active order exists",
+                symbol=new_order.symbol,
+                context_provider={
+                    'existing_status': lambda: existing_status
+                },
+                decision_reason="Active order conflict"
+            )
             return False, f"Active order already exists: {existing_status}"
             
-        # Allow re-execution of failed/cancelled/expired orders (same trading idea)
         if existing_status in [SharedOrderState.CANCELLED.value, SharedOrderState.EXPIRED.value, 
                              SharedOrderState.AON_REJECTED.value]:
-            # Check if this is the same trading idea (prices unchanged)
             if self._is_same_trading_idea(new_order, existing_order):
-                if logger:
-                    logger.debug(f"Validation passed: Re-executing {existing_status} order for {new_order.symbol}")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.ORDER_VALIDATION,
+                    message="Validation passed - re-executing order",
+                    symbol=new_order.symbol,
+                    context_provider={
+                        'previous_status': lambda: existing_status
+                    },
+                    decision_reason="Re-execution of terminated order"
+                )
                 return True, f"Re-executing {existing_status} order"
             else:
-                if logger:
-                    logger.warning(f"Validation failed: Different trading idea for {existing_status} order {new_order.symbol}")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.ORDER_VALIDATION,
+                    message="Validation failed - different trading idea",
+                    symbol=new_order.symbol,
+                    context_provider={
+                        'previous_status': lambda: existing_status
+                    },
+                    decision_reason="Different trading idea detected"
+                )
                 return False, f"Different trading idea for {existing_status} order"
                 
-        # PENDING orders can be updated/replaced
         if existing_status == SharedOrderState.PENDING.value:
-            if logger:
-                logger.debug(f"Validation passed: Updating PENDING order for {new_order.symbol}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Validation passed - updating pending order",
+                symbol=new_order.symbol,
+                decision_reason="Pending order update allowed"
+            )
             return True, "Updating PENDING order"
             
-        if logger:
-            logger.warning(f"Validation failed: Unknown order status for {new_order.symbol}: {existing_status}")
+        self.context_logger.log_event(
+            event_type=TradingEventType.ORDER_VALIDATION,
+            message="Validation failed - unknown order status",
+            symbol=new_order.symbol,
+            context_provider={
+                'existing_status': lambda: existing_status
+            },
+            decision_reason="Unknown order status encountered"
+        )
         return False, f"Unknown order status: {existing_status}"
         
     def _is_same_trading_idea(self, order1: PlannedOrder, order2: PlannedOrderDB) -> bool:
@@ -346,61 +478,109 @@ class OrderLifecycleManager:
         Returns:
             Tuple of (is_valid, reason_message)
         """
-        if logger:
-            logger.debug(f"Validating AON execution for {order.symbol}")
+        self.context_logger.log_event(
+            event_type=TradingEventType.RISK_EVALUATION,
+            message="Starting AON validation",
+            symbol=order.symbol,
+            context_provider={
+                'total_capital': lambda: total_capital,
+                'aon_enabled': lambda: self.aon_config.get('enabled', True)
+            },
+            decision_reason="Begin AON eligibility check"
+        )
             
-        # Check if AON is enabled
         if not self.aon_config.get('enabled', True):
-            if logger:
-                logger.debug(f"AON validation skipped for {order.symbol} (disabled)")
+            self.context_logger.log_event(
+                event_type=TradingEventType.RISK_EVALUATION,
+                message="AON validation skipped - disabled",
+                symbol=order.symbol,
+                decision_reason="AON feature disabled"
+            )
             return True, "AON validation skipped (disabled)"
         
-        # Extract actual numeric values from potentially mocked objects
         try:
             entry_price = getattr(order.entry_price, 'return_value', order.entry_price)
             if hasattr(entry_price, '__call__'):
                 entry_price = entry_price()
             
-            # Calculate order notional value with proper numeric extraction
             quantity = order.calculate_quantity(total_capital)
-            # Ensure quantity is also a numeric value
             quantity = getattr(quantity, 'return_value', quantity)
             if hasattr(quantity, '__call__'):
                 quantity = quantity()
                 
             notional_value = entry_price * quantity
             
-            # Validate numeric values
             if not isinstance(entry_price, (int, float)) or entry_price <= 0:
-                if logger:
-                    logger.warning(f"AON validation failed: Invalid entry price for {order.symbol}: {entry_price}")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.RISK_EVALUATION,
+                    message="AON validation failed - invalid entry price",
+                    symbol=order.symbol,
+                    context_provider={
+                        'entry_price': lambda: entry_price
+                    },
+                    decision_reason="Invalid entry price format"
+                )
                 return False, f"Invalid entry price: {entry_price}"
                 
             if not isinstance(quantity, (int, float)) or quantity <= 0:
-                if logger:
-                    logger.warning(f"AON validation failed: Invalid quantity for {order.symbol}: {quantity}")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.RISK_EVALUATION,
+                    message="AON validation failed - invalid quantity",
+                    symbol=order.symbol,
+                    context_provider={
+                        'quantity': lambda: quantity
+                    },
+                    decision_reason="Invalid quantity format"
+                )
                 return False, f"Invalid quantity: {quantity}"
                 
         except Exception as e:
-            if logger:
-                logger.error(f"AON validation failed: Cannot calculate order notional for {order.symbol}: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.RISK_EVALUATION,
+                message="AON validation failed - calculation error",
+                symbol=order.symbol,
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Notional calculation exception"
+            )
             return False, f"Cannot calculate order notional: {e}"
         
-        # Get AON threshold for this symbol
         aon_threshold = self._calculate_aon_threshold(order.symbol)
         if aon_threshold is None:
-            if logger:
-                logger.warning(f"AON validation failed: Cannot determine AON threshold for {order.symbol}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.RISK_EVALUATION,
+                message="AON validation failed - threshold unavailable",
+                symbol=order.symbol,
+                decision_reason="AON threshold calculation failure"
+            )
             return False, "Cannot determine AON threshold (volume data unavailable)"
         
-        # Check if order exceeds AON threshold
         if notional_value > aon_threshold:
-            if logger:
-                logger.warning(f"AON validation failed for {order.symbol}: Order notional ${notional_value:,.2f} exceeds AON threshold ${aon_threshold:,.2f}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.RISK_EVALUATION,
+                message="AON validation failed - exceeds threshold",
+                symbol=order.symbol,
+                context_provider={
+                    'notional_value': lambda: round(notional_value, 2),
+                    'aon_threshold': lambda: round(aon_threshold, 2),
+                    'exceeds_by': lambda: round(notional_value - aon_threshold, 2)
+                },
+                decision_reason="Order notional exceeds AON threshold"
+            )
             return False, f"Order notional ${notional_value:,.2f} exceeds AON threshold ${aon_threshold:,.2f}"
         
-        if logger:
-            logger.debug(f"AON validation passed for {order.symbol}: ${notional_value:,.2f} <= ${aon_threshold:,.2f}")
+        self.context_logger.log_event(
+            event_type=TradingEventType.RISK_EVALUATION,
+            message="AON validation passed",
+            symbol=order.symbol,
+            context_provider={
+                'notional_value': lambda: round(notional_value, 2),
+                'aon_threshold': lambda: round(aon_threshold, 2)
+            },
+            decision_reason="Order eligible for AON execution"
+        )
         return True, f"AON valid: ${notional_value:,.2f} <= ${aon_threshold:,.2f}"
 
     def _calculate_aon_threshold(self, symbol: str) -> Optional[float]:
@@ -414,36 +594,56 @@ class OrderLifecycleManager:
             AON threshold in dollars, or None if cannot determine
         """
         try:
-            # Get daily volume for symbol
             daily_volume = self._get_daily_volume(symbol)
             if daily_volume is None:
-                # Fallback to fixed notional
                 fallback_threshold = self.aon_config.get('fallback_fixed_notional', 50000)
-                if logger:
-                    logger.debug(f"Using fallback AON threshold for {symbol}: ${fallback_threshold:,.2f}")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.RISK_EVALUATION,
+                    message="Using fallback AON threshold",
+                    symbol=symbol,
+                    context_provider={
+                        'fallback_threshold': lambda: fallback_threshold
+                    },
+                    decision_reason="Daily volume unavailable"
+                )
                 return fallback_threshold
             
-            # Get volume percentage for this symbol
             symbol_specific = self.aon_config.get('symbol_specific', {})
             volume_percentage = symbol_specific.get(symbol, 
                                 self.aon_config.get('default_volume_percentage', 0.001))
             
-            # Ensure volume_percentage is numeric
             volume_percentage = float(volume_percentage)
-            
-            # Calculate threshold: daily_volume * entry_price * percentage
-            # For now using a placeholder - in practice you'd get current price
             current_price = 100.0  # Placeholder - would come from data feed
             threshold = daily_volume * current_price * volume_percentage
             
-            if logger:
-                logger.debug(f"AON threshold for {symbol}: {daily_volume:,.0f} shares * ${current_price:.2f} * {volume_percentage:.4f} = ${threshold:,.2f}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.RISK_EVALUATION,
+                message="AON threshold calculated",
+                symbol=symbol,
+                context_provider={
+                    'daily_volume': lambda: daily_volume,
+                    'current_price': lambda: current_price,
+                    'volume_percentage': lambda: volume_percentage,
+                    'calculated_threshold': lambda: round(threshold, 2)
+                },
+                decision_reason="AON threshold calculation completed"
+            )
             return threshold
             
         except Exception as e:
-            if logger:
-                logger.error(f"Error calculating AON threshold for {symbol}: {e}")
-            return self.aon_config.get('fallback_fixed_notional', 50000)
+            fallback_threshold = self.aon_config.get('fallback_fixed_notional', 50000)
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="AON threshold calculation failed - using fallback",
+                symbol=symbol,
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e),
+                    'fallback_threshold': lambda: fallback_threshold
+                },
+                decision_reason="AON threshold calculation exception"
+            )
+            return fallback_threshold
                 
     def _get_daily_volume(self, symbol: str) -> Optional[float]:
         """
@@ -457,19 +657,15 @@ class OrderLifecycleManager:
         Returns:
             Daily volume in shares, or None if unavailable
         """
-        # Placeholder implementation - would integrate with IBKR data feed
-        # For now, return mock volumes based on symbol liquidity
         mock_volumes = {
-            'SPY': 50000000,   # 50M shares
-            'QQQ': 30000000,   # 30M shares  
-            'IWM': 20000000,   # 20M shares
-            'AAPL': 40000000,  # 40M shares
-            'TSLA': 25000000,  # 25M shares
+            'SPY': 50000000,
+            'QQQ': 30000000,
+            'IWM': 20000000,
+            'AAPL': 40000000,
+            'TSLA': 25000000,
         }
         
-        volume = mock_volumes.get(symbol, 10000000)  # Default 10M shares
-        if logger:
-            logger.debug(f"Daily volume for {symbol}: {volume:,.0f} shares (mock data)")
+        volume = mock_volumes.get(symbol, 10000000)
         return volume
     # <AON Validation Methods - End>
         
@@ -484,22 +680,23 @@ class OrderLifecycleManager:
                 order_type=order.order_type.value
             ).first()
             
-            if logger:
-                if existing_order:
-                    logger.debug(f"Found existing order for {order.symbol} with status: {existing_order.status}")
-                else:
-                    logger.debug(f"No existing order found for {order.symbol}")
-                    
             return existing_order
             
         except Exception as e:
-            if logger:
-                logger.error(f"Error querying for existing order {order.symbol}: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Existing order query failed",
+                symbol=order.symbol,
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Database query exception"
+            )
             return None
             
     def _is_duplicate_order(self, new_order: PlannedOrder, existing_order: PlannedOrderDB) -> bool:
         """Check if new order is a duplicate of existing database order."""
-        # Consider orders with same symbol, action, entry, and stop as duplicates
         same_action = existing_order.action == new_order.action.value
         same_entry = abs(existing_order.entry_price - new_order.entry_price) < 0.0001
         same_stop = abs(existing_order.stop_loss - new_order.stop_loss) < 0.0001
@@ -510,17 +707,11 @@ class OrderLifecycleManager:
         """Get the current status of an order from database."""
         existing_order = self.find_existing_order(order)
         status = existing_order.status if existing_order else None
-        
-        if logger:
-            logger.debug(f"Order status for {order.symbol}: {status}")
             
         return status
         
     def is_order_executable(self, order: PlannedOrder) -> Tuple[bool, Optional[str]]:
         """Check if an order can be executed based on current state."""
-        if logger:
-            logger.debug(f"Checking executability for {order.symbol}")
-        # Delegate to validate_order for comprehensive checking
         return self.validate_order(order)
         
     def update_order_status(self, order: PlannedOrder, status: OrderState, 
@@ -529,8 +720,12 @@ class OrderLifecycleManager:
         try:
             existing_order = self.find_existing_order(order)
             if not existing_order:
-                if logger:
-                    logger.warning(f"Order not found in database for status update: {order.symbol}")
+                self.context_logger.log_event(
+                    event_type=TradingEventType.SYSTEM_HEALTH,
+                    message="Order not found for status update",
+                    symbol=order.symbol,
+                    decision_reason="Order lookup failure"
+                )
                 return False
                 
             old_status = existing_order.status
@@ -542,23 +737,43 @@ class OrderLifecycleManager:
                 
             self.db_session.commit()
             
-            if logger:
-                logger.info(f"Status update: {order.symbol} {old_status} → {status}")
-                if message:
-                    logger.info(f"Status message: {message}")
-                
+            self.context_logger.log_event(
+                event_type=TradingEventType.STATE_TRANSITION,
+                message="Order status updated",
+                symbol=order.symbol,
+                context_provider={
+                    'old_status': lambda: old_status,
+                    'new_status': lambda: status,
+                    'has_message': lambda: message is not None
+                },
+                decision_reason="Order status transition"
+            )
             return True
             
         except Exception as e:
             self.db_session.rollback()
-            if logger:
-                logger.error(f"Failed to update order status for {order.symbol}: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Order status update failed",
+                symbol=order.symbol,
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Status update exception"
+            )
             return False
             
     def bulk_update_status(self, status_updates: List[Tuple[PlannedOrder, OrderState, Optional[str]]]) -> Dict[str, bool]:
         """Update status for multiple orders in a single transaction."""
-        if logger:
-            logger.info(f"Performing bulk status update for {len(status_updates)} orders")
+        self.context_logger.log_event(
+            event_type=TradingEventType.STATE_TRANSITION,
+            message="Starting bulk status update",
+            context_provider={
+                'order_count': lambda: len(status_updates)
+            },
+            decision_reason="Begin batch status update"
+        )
             
         results = {}
         
@@ -567,42 +782,66 @@ class OrderLifecycleManager:
                 success = self.update_order_status(order, status, message)
                 results[order.symbol] = success
                 
-            if logger:
-                success_count = sum(1 for result in results.values() if result)
-                logger.info(f"Bulk status update completed: {success_count}/{len(status_updates)} successful")
-                
+            success_count = sum(1 for result in results.values() if result)
+            self.context_logger.log_event(
+                event_type=TradingEventType.STATE_TRANSITION,
+                message="Bulk status update completed",
+                context_provider={
+                    'success_count': lambda: success_count,
+                    'total_count': lambda: len(status_updates),
+                    'success_rate': lambda: round(success_count / len(status_updates) * 100, 2) if status_updates else 0
+                },
+                decision_reason="Batch status update finished"
+            )
             return results
             
         except Exception as e:
             self.db_session.rollback()
-            if logger:
-                logger.error(f"Bulk status update failed: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Bulk status update failed",
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Batch status update exception"
+            )
             return {order.symbol: False for order, _, _ in status_updates}
             
     def get_orders_by_status(self, status: OrderState) -> List[PlannedOrderDB]:
         """Get all orders with a specific status from database."""
         try:
             orders = self.db_session.query(PlannedOrderDB).filter_by(status=status).all()
-            if logger:
-                logger.debug(f"Found {len(orders)} orders with status {status}")
             return orders
         except Exception as e:
-            if logger:
-                logger.error(f"Error querying orders by status {status}: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Order status query failed",
+                context_provider={
+                    'status': lambda: status,
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Status-based query exception"
+            )
             return []
             
     def cleanup_old_orders(self, days_old: int = 30) -> int:
         """Clean up orders older than specified days from database."""
-        if logger:
-            logger.info(f"Cleaning up orders older than {days_old} days")
+        self.context_logger.log_event(
+            event_type=TradingEventType.SYSTEM_HEALTH,
+            message="Starting old order cleanup",
+            context_provider={
+                'days_old': lambda: days_old
+            },
+            decision_reason="Begin order cleanup process"
+        )
             
         try:
             cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_old)
             old_orders = self.db_session.query(PlannedOrderDB).filter(
                 PlannedOrderDB.created_at < cutoff_date,
-                # <AON Status Integration - Begin>
                 PlannedOrderDB.status.in_(['FILLED', 'CANCELLED', 'AON_REJECTED'])
-                # <AON Status Integration - End>
             ).all()
             
             deleted_count = 0
@@ -612,20 +851,37 @@ class OrderLifecycleManager:
                 
             self.db_session.commit()
             
-            if logger:
-                logger.info(f"Cleaned up {deleted_count} orders older than {days_old} days")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Old order cleanup completed",
+                context_provider={
+                    'deleted_count': lambda: deleted_count,
+                    'cutoff_date': lambda: cutoff_date.isoformat()
+                },
+                decision_reason="Order cleanup finished"
+            )
             return deleted_count
             
         except Exception as e:
             self.db_session.rollback()
-            if logger:
-                logger.error(f"Failed to clean up old orders: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Old order cleanup failed",
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Order cleanup exception"
+            )
             return 0
             
     def get_order_statistics(self) -> Dict[str, any]:
         """Get statistics about orders in the system."""
-        if logger:
-            logger.debug("Generating order statistics")
+        self.context_logger.log_event(
+            event_type=TradingEventType.SYSTEM_HEALTH,
+            message="Generating order statistics",
+            decision_reason="Begin statistics collection"
+        )
             
         try:
             total_orders = self.db_session.query(PlannedOrderDB).count()
@@ -642,14 +898,27 @@ class OrderLifecycleManager:
                 'newest_order': self._get_newest_order_date()
             }
             
-            if logger:
-                logger.info(f"Order statistics: {stats}")
-                
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Order statistics generated",
+                context_provider={
+                    'total_orders': lambda: total_orders,
+                    'status_count': lambda: len(status_counts)
+                },
+                decision_reason="Statistics collection completed"
+            )
             return stats
             
         except Exception as e:
-            if logger:
-                logger.error(f"Error getting order statistics: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Order statistics generation failed",
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Statistics collection exception"
+            )
             return {}
             
     def _get_oldest_order_date(self) -> Optional[datetime.datetime]:
@@ -670,32 +939,45 @@ class OrderLifecycleManager:
             
     def find_orders_needing_attention(self) -> List[PlannedOrderDB]:
         """Find orders that may need manual attention."""
-        if logger:
-            logger.debug("Finding orders needing attention")
+        self.context_logger.log_event(
+            event_type=TradingEventType.SYSTEM_HEALTH,
+            message="Finding orders needing attention",
+            decision_reason="Begin attention order scan"
+        )
             
         try:
-            # Orders stuck in executing state for too long
             stuck_time = datetime.datetime.now() - datetime.timedelta(hours=2)
             stuck_orders = self.db_session.query(PlannedOrderDB).filter(
                 PlannedOrderDB.status == 'EXECUTING',
                 PlannedOrderDB.updated_at < stuck_time
             ).all()
             
-            # Orders with multiple failures
             failed_orders = self.db_session.query(PlannedOrderDB).filter(
-                # <AON Status Integration - Begin>
                 PlannedOrderDB.status.in_(['FAILED', 'AON_REJECTED'])
-                # <AON Status Integration - End>
             ).all()
             
             attention_orders = stuck_orders + failed_orders
             
-            if logger:
-                logger.info(f"Found {len(attention_orders)} orders needing attention")
-                
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Attention order scan completed",
+                context_provider={
+                    'stuck_orders': lambda: len(stuck_orders),
+                    'failed_orders': lambda: len(failed_orders),
+                    'total_attention_orders': lambda: len(attention_orders)
+                },
+                decision_reason="Attention order scan finished"
+            )
             return attention_orders
             
         except Exception as e:
-            if logger:
-                logger.error(f"Error finding orders needing attention: {e}")
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Attention order scan failed",
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Attention order scan exception"
+            )
             return []
