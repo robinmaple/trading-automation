@@ -354,7 +354,7 @@ class PlannedOrderManager:
 
     @staticmethod
     def from_excel(file_path: str, config: Optional[Dict[str, Any]] = None) -> List[PlannedOrder]:
-        """Load and parse planned orders from an Excel template with configurable defaults."""
+        """Load and parse planned orders from an Excel template - ORIGINAL WORKING VERSION with zero-row filtering"""
         # Use provided config or get default (live environment)
         if config is None:
             from config.trading_core_config import get_config
@@ -375,6 +375,11 @@ class PlannedOrderManager:
 
             for index, row in df.iterrows():
                 try:
+                    # NEW: Skip all-zero rows (the only enhancement needed)
+                    if PlannedOrderManager._is_all_zero_row(row):
+                        continue
+                    
+                    # ORIGINAL WORKING CODE BELOW - don't change this
                     # Parse enums / strings
                     security_type = SecurityType[str(row['Security Type']).strip()]
                     action = Action[str(row['Action']).strip().upper()]
@@ -444,6 +449,87 @@ class PlannedOrderManager:
             if logger:
                 logger.error(f"Error loading Excel file: {e}")
             return []
+
+    @staticmethod
+    def _is_all_zero_row(row: pd.Series) -> bool:
+        """Check if a row contains all zeros or empty values - minimal enhancement only"""
+        # Only check key fields that should never be zero
+        symbol = str(row.get('Symbol', '')).strip()
+        if symbol and symbol not in ['0', '0.0']:
+            return False
+            
+        # If symbol is zero/empty, check if other key fields are also zero
+        entry_price = row.get('Entry Price')
+        if entry_price and float(entry_price) != 0:
+            return False
+            
+        return True
+
+    @staticmethod
+    def _is_invalid_row(row: pd.Series) -> bool:
+        """Check if a row is invalid (all zeros, empty, or meaningless values)."""
+        required_fields = ['Symbol', 'Security Type', 'Exchange', 'Currency', 'Action']
+        
+        for field in required_fields:
+            if field in row:
+                value = str(row[field]).strip()
+                if value and value not in ['0', '0.0', 'nan', '']:
+                    return False
+        
+        # Additional check: if all numeric values are zero
+        numeric_fields = ['Entry Price', 'Stop Loss', 'Risk Per Trade', 'Risk Reward Ratio', 'Priority']
+        all_numeric_zero = True
+        for field in numeric_fields:
+            if field in row and pd.notna(row[field]):
+                try:
+                    if float(row[field]) != 0:
+                        all_numeric_zero = False
+                        break
+                except (ValueError, TypeError):
+                    all_numeric_zero = False
+                    break
+        
+        return all_numeric_zero
+
+    @staticmethod
+    def _parse_numeric_field(row: pd.Series, field_name: str, data_type, 
+                            default=None, required=False, min_value=None, max_value=None):
+        """Safely parse numeric fields with validation."""
+        if field_name not in row or pd.isna(row[field_name]):
+            if required:
+                raise ValueError(f"Required field '{field_name}' is missing")
+            return default
+        
+        try:
+            value = data_type(row[field_name])
+            
+            # Check for zero values in required fields
+            if required and value == 0:
+                raise ValueError(f"Required field '{field_name}' cannot be zero")
+            
+            # Range validation
+            if min_value is not None and value < min_value:
+                raise ValueError(f"Field '{field_name}' must be at least {min_value}")
+            if max_value is not None and value > max_value:
+                raise ValueError(f"Field '{field_name}' cannot exceed {max_value}")
+                
+            return value
+        except (ValueError, TypeError) as e:
+            if required:
+                raise ValueError(f"Invalid value for required field '{field_name}': {row[field_name]}")
+            return default
+
+    @staticmethod
+    def _parse_string_field(row: pd.Series, field_name: str, default: Optional[str] = None):
+        """Safely parse string fields, handling zeros and empty values."""
+        if field_name not in row or pd.isna(row[field_name]):
+            return default
+        
+        value = str(row[field_name]).strip()
+        if not value or value in ['0', '0.0', 'nan']:
+            return default
+        
+        return value
 
 class ActiveOrder:
     """Tracks the state and metadata of an order that has been submitted to the broker."""
