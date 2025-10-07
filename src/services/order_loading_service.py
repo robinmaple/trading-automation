@@ -170,22 +170,23 @@ class OrderLoadingService:
                     logger.warning(f"Invalid stop loss price: {order.stop_loss}")
                 return False
                 
-            # FIXED: Action validation - handle both enum objects and strings
+            # <Fix Enum Validation - Begin>
+            # Action validation - handle enum objects properly
             from src.core.planned_order import Action
             if isinstance(order.action, Action):
-                # Enum comparison
+                # Enum comparison - this is the correct way
                 if order.action not in [Action.BUY, Action.SELL, Action.SSHORT]:
                     if logger:
                         logger.warning(f"Invalid action: {order.action}")
                     return False
             else:
-                # String comparison (fallback)
+                # String comparison (fallback for robustness)
                 if order.action not in ['BUY', 'SELL', 'SSHORT']:
                     if logger:
                         logger.warning(f"Invalid action: {order.action}")
                     return False
                 
-            # FIXED: Security type validation - handle enum objects
+            # Security type validation - handle enum objects properly
             from src.core.planned_order import SecurityType
             if not order.security_type:
                 if logger:
@@ -198,6 +199,7 @@ class OrderLoadingService:
                 if logger:
                     logger.warning(f"Invalid security type: {order.security_type}")
                 return False
+            # <Fix Enum Validation - End>
                 
             # Exchange validation
             if not order.exchange:
@@ -213,3 +215,6 @@ class OrderLoadingService:
             if logger:
                 logger.error(f"Basic validation error for {order.symbol}: {e}")
             return False
+
+        
+    

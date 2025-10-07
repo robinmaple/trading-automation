@@ -232,10 +232,19 @@ class OrderLoadingOrchestrator:
         is_cross_session = self._is_cross_session_order(db_order)
         
         if is_cross_session:
-            # Cross-session rules
-            if db_order.position_strategy.upper() == 'DAY':
+            # <Fix PositionStrategy Enum Handling - Begin>
+            # Cross-session rules - handle PositionStrategy enum properly
+            from src.core.planned_order import PositionStrategy
+            
+            # Get strategy as string for comparison
+            if isinstance(db_order.position_strategy, PositionStrategy):
+                strategy_str = db_order.position_strategy.value.upper()
+            else:
+                strategy_str = str(db_order.position_strategy).upper()
+                
+            if strategy_str == 'DAY':
                 return False, "DAY strategy expired (cross-session)"
-            elif db_order.position_strategy.upper() == 'HYBRID':
+            elif strategy_str == 'HYBRID':
                 # HYBRID orders can resume across sessions within 10-day window
                 days_old = (datetime.datetime.now().date() - db_order.created_at.date()).days
                 if days_old <= 10:
@@ -244,9 +253,30 @@ class OrderLoadingOrchestrator:
                     return False, f"HYBRID strategy expired ({days_old}/10 days)"
             else:  # CORE strategy
                 return True, "CORE strategy (cross-session)"
+            # <Fix PositionStrategy Enum Handling - End>
         else:
             # Same-session rules - resume all non-expired orders
             return True, "Active order (same-session)"
+            
+    def _is_cross_session_order(self, db_order: PlannedOrderDB) -> bool:
+        """
+        Check if an order is from a previous trading session.
+        
+        Args:
+            db_order: Database order to check
+            
+        Returns:
+            True if order is from previous session, False if same session
+        """
+        if not db_order.created_at:
+            return False
+            
+        order_date = db_order.created_at.date()
+        current_date = datetime.datetime.now().date()
+        
+        # Simple implementation: consider cross-session if created before today
+        # In production, you might want more sophisticated session detection
+        return order_date < current_date
             
     def _is_cross_session_order(self, db_order: PlannedOrderDB) -> bool:
         """
