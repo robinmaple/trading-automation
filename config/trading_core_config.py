@@ -79,8 +79,21 @@ BASE_TRADING_CORE_CONFIG: Dict[str, Any] = {
                 'log_level': 'WARNING'
             }
         }
-    }
+    },
     # <Event System Configuration - End>
+    # <End of Day Configuration - Begin>
+    'end_of_day': {
+        'enabled': True,                  # Enable EOD process by default
+        'close_buffer_minutes': 15,       # 15 minutes before market close to start closing
+        'pre_market_start_minutes': 30,   # 30 minutes before market open to start program
+        'post_market_end_minutes': 30,    # 30 minutes after market close to stop program
+        'max_close_attempts': 3,          # Maximum attempts to close a position
+        'close_day_positions': True,      # Close all DAY strategy positions
+        'close_expired_hybrid': True,     # Close expired HYBRID positions
+        'expire_planned_orders': True,    # Expire corresponding PlannedOrders
+        'leave_core_positions': True      # Leave CORE positions with bracket orders
+    }
+    # <End of Day Configuration - End>
 }
 
 # Paper trading configuration - same as base but with explicit name
@@ -111,6 +124,15 @@ LIVE_TRADING_CONFIG['aon_execution'].update({
     }
 })
 # <AON Live Trading Configuration - End>
+
+# <End of Day Live Trading Configuration - Begin>
+LIVE_TRADING_CONFIG['end_of_day'].update({
+    'close_buffer_minutes': 20,      # More conservative: 20 minutes before close
+    'max_close_attempts': 5,         # More attempts for live trading reliability
+    'pre_market_start_minutes': 45,  # Start earlier for live trading prep
+    'post_market_end_minutes': 60    # Run longer for post-market analysis
+})
+# <End of Day Live Trading Configuration - End>
 
 # Environment configurations
 CONFIGS = {
@@ -235,6 +257,41 @@ def validate_config(config: Dict[str, Any]) -> tuple[bool, str]:
                     return False, f"events.{event_name}.min_price_change must be non-negative"
     # <Event System Configuration Validation - End>
 
+    # <End of Day Configuration Validation - Begin>
+    # Validate EOD settings if present
+    if 'end_of_day' in config:
+        eod_config = config['end_of_day']
+        
+        # Validate timing parameters
+        timing_params = [
+            'close_buffer_minutes',
+            'pre_market_start_minutes', 
+            'post_market_end_minutes'
+        ]
+        
+        for param in timing_params:
+            if param in eod_config:
+                value = eod_config[param]
+                if value < 0 or value > 240:  # 4 hours maximum
+                    return False, f"end_of_day.{param} must be between 0 and 240 minutes, got {value}"
+        
+        # Validate max close attempts
+        if 'max_close_attempts' in eod_config:
+            attempts = eod_config['max_close_attempts']
+            if attempts < 1 or attempts > 10:
+                return False, f"end_of_day.max_close_attempts must be between 1 and 10, got {attempts}"
+                
+        # Validate boolean flags
+        boolean_flags = [
+            'enabled', 'close_day_positions', 'close_expired_hybrid',
+            'expire_planned_orders', 'leave_core_positions'
+        ]
+        
+        for flag in boolean_flags:
+            if flag in eod_config and not isinstance(eod_config[flag], bool):
+                return False, f"end_of_day.{flag} must be a boolean value"
+    # <End of Day Configuration Validation - End>
+
     return True, "Configuration is valid"
 
 
@@ -270,6 +327,13 @@ if __name__ == "__main__":
                     event_sys = config['event_system']
                     print(f"  Event System: enabled={event_sys['event_bus']['enabled']}")
                     print(f"  Events enabled: {list(event_sys['events'].keys())}")
+                
+                # Show End of Day settings
+                if 'end_of_day' in config:
+                    eod = config['end_of_day']
+                    print(f"  EOD: enabled={eod['enabled']}, close_buffer={eod['close_buffer_minutes']}min")
+                    print(f"  EOD operational window: {eod['pre_market_start_minutes']}min pre, {eod['post_market_end_minutes']}min post")
+                    print(f"  EOD actions: DAY={eod['close_day_positions']}, HYBRID={eod['close_expired_hybrid']}, CORE={eod['leave_core_positions']}")
             else:
                 print(f"✗ {env} configuration validation failed: {message}")
                 

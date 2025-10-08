@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Dict, Any, Optional, Callable
 from dataclasses import dataclass, asdict
 import uuid
+import inspect
 
 # Minimal safe logging import
 from src.core.simple_logger import get_simple_logger
@@ -52,11 +53,18 @@ class SafeContext:
     
     def __init__(self, **lazy_fields):
         self._lazy_fields = lazy_fields
-        self._evaluated_fields = {}
+        self._evaluated = False
+        self._safe_dict = {}
     
     def to_safe_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, evaluating lazy fields only when accessed."""
-        safe_dict = {}
+        if not self._evaluated:
+            self._evaluate_lazy_fields()
+            self._evaluated = True
+        return self._safe_dict
+    
+    def _evaluate_lazy_fields(self):
+        """Evaluate lazy fields and convert to safe types."""
         for key, provider in self._lazy_fields.items():
             try:
                 if callable(provider):
@@ -67,13 +75,11 @@ class SafeContext:
                     value = provider
                 
                 # Convert to primitive types only - NO OBJECT INTROSPECTION
-                safe_dict[key] = self._make_safe(value)
+                self._safe_dict[key] = self._make_safe(value)
                 
             except Exception as e:
                 # If context evaluation fails, log the error but don't break
-                safe_dict[key] = f"CONTEXT_ERROR: {str(e)}"
-                
-        return safe_dict
+                self._safe_dict[key] = f"CONTEXT_ERROR: {str(e)}"
     
     def _make_safe(self, value: Any) -> Any:
         """Convert value to safe, primitive types only."""
@@ -154,13 +160,11 @@ class ContextAwareLogger:
             return False
         
         try:
-            # Layer 3: Safe Context Evaluation (LAZY - only when needed)
-            safe_context = {}
-            if context_provider:
-                safe_context_wrapper = SafeContext(**context_provider)
-                safe_context = safe_context_wrapper.to_safe_dict()
+            # Layer 3: Safe Context Evaluation (TRULY LAZY - only when needed for logging)
+            # Create SafeContext but don't evaluate it yet
+            safe_context_wrapper = SafeContext(**(context_provider or {}))
             
-            # Create event with primitive data only
+            # Create event with the wrapper, not the evaluated dict
             event = TradingEvent(
                 event_id=str(uuid.uuid4())[:8],
                 event_type=event_type.value,
@@ -168,13 +172,13 @@ class ContextAwareLogger:
                 session_id=self.session_id,
                 symbol=symbol,
                 message=message,
-                context=safe_context,
+                context={},  # Empty for now, will be populated during logging
                 decision_reason=decision_reason,
                 call_stack_depth=recursion_depth
             )
             
-            # Convert to dict for logging
-            event_dict = asdict(event)
+            # Convert to dict for logging, evaluating context only at this point
+            event_dict = self._prepare_event_for_logging(event, safe_context_wrapper)
             
             # Log to both structured logger and console for visibility
             self._write_structured_log(event_dict)
@@ -190,6 +194,14 @@ class ContextAwareLogger:
         finally:
             # Always cleanup recursion tracking
             self._cleanup_thread(thread_id)
+    
+    def _prepare_event_for_logging(self, event: TradingEvent, context_wrapper: SafeContext) -> Dict[str, Any]:
+        """Prepare event for logging by evaluating context only when needed."""
+        # Convert event to dict first
+        event_dict = asdict(event)
+        # Now evaluate the context (this is when lazy evaluation happens)
+        event_dict['context'] = context_wrapper.to_safe_dict()
+        return event_dict
     
     def _check_circuit_breaker(self, event_type: TradingEventType, current_time: float) -> bool:
         """Circuit breaker to prevent event storms."""
@@ -211,12 +223,31 @@ class ContextAwareLogger:
     
     def _check_recursion(self, thread_id: int) -> int:
         """Check and track recursion depth for current thread."""
+        # Get current call stack to detect actual recursion
+        current_frame = inspect.currentframe()
+        call_frames = []
+        
+        # Walk up the call stack to find our own method calls
+        frame = current_frame
+        while frame:
+            # Check if this frame is calling our log_event method
+            if (frame.f_code == self.log_event.__code__ or 
+                (hasattr(frame, 'f_back') and frame.f_back and 
+                 frame.f_back.f_code == self.log_event.__code__)):
+                call_frames.append(frame)
+            frame = frame.f_back
+        
+        # Count how many times we're in the call stack
+        recursion_count = len(call_frames)
+        
+        # Also track by thread for simple cases
         if thread_id not in self._active_threads:
             self._active_threads[thread_id] = 1
         else:
             self._active_threads[thread_id] += 1
         
-        return self._active_threads[thread_id]
+        # Use the maximum of both methods
+        return max(recursion_count, self._active_threads[thread_id])
     
     def _cleanup_thread(self, thread_id: int):
         """Clean up recursion tracking for thread."""

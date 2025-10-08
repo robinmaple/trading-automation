@@ -42,6 +42,10 @@ from src.core.event_bus import EventBus
 from src.core.events import PriceUpdateEvent, EventType
 from src.core.context_aware_logger import get_context_logger, TradingEventType
 
+# End of Day Service Integration - Begin
+from src.services.end_of_day_service import EndOfDayService, EODConfig
+# End of Day Service Integration - End
+
 # Minimal safe logging import
 from src.core.simple_logger import get_simple_logger
 logger = get_simple_logger(__name__)
@@ -165,6 +169,61 @@ class TradingManager:
             if logger:
                 logger.info("TradingManager subscribed to PRICE_UPDATE events")
         # <Event Bus Subscription - End>
+
+        # End of Day Service Integration - Begin
+        self._initialize_end_of_day_service()
+        # End of Day Service Integration - End
+
+    # End of Day Service Initialization - Begin
+    def _initialize_end_of_day_service(self) -> None:
+        """Initialize the End of Day service with configuration from trading config."""
+        try:
+            # Get EOD configuration from trading config with defaults
+            eod_config_section = self.trading_config.get('end_of_day', {})
+            
+            eod_config = EODConfig(
+                enabled=eod_config_section.get('enabled', True),
+                close_buffer_minutes=eod_config_section.get('close_buffer_minutes', 15),
+                pre_market_start_minutes=eod_config_section.get('pre_market_start_minutes', 30),
+                post_market_end_minutes=eod_config_section.get('post_market_end_minutes', 30),
+                max_close_attempts=eod_config_section.get('max_close_attempts', 3)
+            )
+            
+            self.end_of_day_service = EndOfDayService(
+                state_service=self.state_service,
+                market_hours_service=self.market_hours,
+                config=eod_config
+            )
+            
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="EndOfDayService initialized successfully",
+                context_provider={
+                    'enabled': lambda: eod_config.enabled,
+                    'close_buffer_minutes': lambda: eod_config.close_buffer_minutes,
+                    'pre_market_start_minutes': lambda: eod_config.pre_market_start_minutes,
+                    'post_market_end_minutes': lambda: eod_config.post_market_end_minutes
+                },
+                decision_reason="EOD service startup"
+            )
+            
+        except Exception as e:
+            # Fallback to default configuration if initialization fails
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="EndOfDayService initialization failed, using defaults",
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="EOD service fallback initialization"
+            )
+            
+            self.end_of_day_service = EndOfDayService(
+                state_service=self.state_service,
+                market_hours_service=self.market_hours
+            )
+    # End of Day Service Initialization - End
 
     # <Price Event Handler - Begin>
     def _handle_price_update(self, event: PriceUpdateEvent) -> None:
@@ -594,14 +653,122 @@ class TradingManager:
 
         while self.monitoring and error_count < max_errors:
             try:
+                # Operational Window Check - Begin
+                if not self._should_run_in_operational_window():
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Outside operational window - skipping monitoring cycle",
+                        context_provider={
+                            'current_time': lambda: datetime.datetime.now().isoformat(),
+                            'operational_window_active': lambda: False
+                        },
+                        decision_reason="Outside pre/post market operational hours"
+                    )
+                    time.sleep(interval_seconds)
+                    continue
+                # Operational Window Check - End
+
                 self._check_and_execute_orders()
                 self._check_market_close_actions()
+                
+                # End of Day Process Integration - Begin
+                self._run_end_of_day_process()
+                # End of Day Process Integration - End
+                
                 error_count = 0
                 time.sleep(interval_seconds)
             except Exception:
                 error_count += 1
                 backoff_time = min(error_backoff_base * error_count, max_backoff)
                 time.sleep(backoff_time)
+
+    # Operational Window Check Method - Begin
+    def _should_run_in_operational_window(self) -> bool:
+        """
+        Check if the system should run based on operational window configuration.
+        Only runs 30min pre-market to 30min post-market by default.
+        """
+        # Always run during market hours
+        if self.market_hours.is_market_open():
+            return True
+            
+        # Check if EOD service is available and in operational window
+        if hasattr(self, 'end_of_day_service'):
+            return self.end_of_day_service.should_run_eod_process()
+            
+        # Fallback: use MarketHoursService for basic operational window check
+        return self._is_in_basic_operational_window()
+
+    def _is_in_basic_operational_window(self) -> bool:
+        """Basic operational window check as fallback."""
+        now_et = datetime.datetime.now(self.market_hours.et_timezone)
+        current_time = now_et.time()
+        current_weekday = now_et.weekday()
+        
+        # Only run on weekdays
+        if current_weekday >= 5:  # Saturday, Sunday
+            return False
+
+        # Pre-market window (30 minutes before market open)
+        pre_market_start = (
+            datetime.datetime.combine(now_et.date(), self.market_hours.MARKET_OPEN) - 
+            datetime.timedelta(minutes=30)
+        ).time()
+
+        # Post-market window (30 minutes after market close)
+        post_market_end = (
+            datetime.datetime.combine(now_et.date(), self.market_hours.MARKET_CLOSE) + 
+            datetime.timedelta(minutes=30)
+        ).time()
+
+        # Check if in pre-market window
+        if pre_market_start <= current_time < self.market_hours.MARKET_OPEN:
+            return True
+
+        # Check if in post-market window
+        if self.market_hours.MARKET_CLOSE <= current_time <= post_market_end:
+            return True
+
+        return False
+    # Operational Window Check Method - End
+
+    # End of Day Process Integration - Begin
+    def _run_end_of_day_process(self) -> None:
+        """Execute the End of Day process for position management."""
+        if not hasattr(self, 'end_of_day_service'):
+            return
+            
+        try:
+            eod_results = self.end_of_day_service.run_eod_process()
+            
+            # Log EOD process results
+            if eod_results.get('status') == 'completed' and (
+                eod_results.get('day_positions_closed', 0) > 0 or 
+                eod_results.get('hybrid_positions_closed', 0) > 0
+            ):
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    "EOD process executed successfully",
+                    context_provider={
+                        'day_positions_closed': lambda: eod_results.get('day_positions_closed', 0),
+                        'hybrid_positions_closed': lambda: eod_results.get('hybrid_positions_closed', 0),
+                        'orders_expired': lambda: eod_results.get('orders_expired', 0),
+                        'error_count': lambda: len(eod_results.get('errors', []))
+                    },
+                    decision_reason="EOD position management completed"
+                )
+                
+        except Exception as e:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "EOD process execution failed",
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason=f"EOD process exception: {e}"
+            )
+    # End of Day Process Integration - End
 
     def start_monitoring(self, interval_seconds: Optional[int] = None) -> bool:
         """Start the continuous monitoring loop with automatic initialization."""
