@@ -6,7 +6,7 @@ Tests circuit breakers, recursion protection, safe context evaluation, and event
 import pytest
 import time
 import threading
-from unittest.mock import Mock, patch, call
+from unittest.mock import MagicMock, Mock, patch, call
 from datetime import datetime
 
 from src.core.context_aware_logger import (
@@ -348,25 +348,6 @@ class TestContextAwareLogger:
         assert event.decision_reason == "Test reason"
         assert event.call_stack_depth == 1
 
-    @patch('src.core.context_aware_logger.logger')
-    def test_structured_log_output_format(self, mock_logger):
-        """Test that structured logs are written with correct format."""
-        logger = ContextAwareLogger()
-        
-        logger.log_event(
-            event_type=TradingEventType.ORDER_VALIDATION,
-            message="Test structured output",
-            symbol="MSFT",
-            decision_reason="Validation test"
-        )
-        
-        # Verify that the structured logger was called
-        assert mock_logger.info.called
-        
-        # Check that the log message contains expected structure
-        call_args = mock_logger.info.call_args[0][0]
-        assert "STRUCTURED_EVENT:" in call_args
-
     def test_safe_context_make_safe_method(self):
         """Test _make_safe method handles various types correctly."""
         safe_context = SafeContext()
@@ -451,6 +432,166 @@ class TestContextAwareLogger:
         assert stats['total_events'] == 100
         assert stats['dropped_events'] == 0
 
+    def test_console_output_format(self):
+        """Test that events are properly formatted for console output."""
+        from io import StringIO
+        import sys
+        
+        # Capture stdout
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+        
+        try:
+            logger = ContextAwareLogger()
+            
+            logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Test console output",
+                symbol="MSFT",
+                decision_reason="Validation test"
+            )
+            
+            # Get the console output
+            console_output = captured_output.getvalue()
+            
+            # Check console formatting
+            assert "🔍" in console_output  # Emoji prefix
+            assert "ORDER_VALIDATION" in console_output
+            assert "MSFT" in console_output
+            assert "Test console output" in console_output
+            assert "Validation test" in console_output
+            
+        finally:
+            sys.stdout = original_stdout
+
+    def test_context_aware_logging_with_complex_context(self):
+        """Test context-aware logging with complex context data."""
+        from io import StringIO
+        import sys
+        
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+        
+        try:
+            logger = ContextAwareLogger()
+            
+            # Complex context with nested data
+            complex_context = {
+                'portfolio': {
+                    'total_value': 100000,
+                    'positions': ['AAPL', 'MSFT', 'GOOGL'],
+                    'cash_balance': 25000.50
+                },
+                'market_conditions': {
+                    'volatility': 'high',
+                    'trend': 'bullish',
+                    'volume': 'above_average'
+                },
+                'risk_metrics': {
+                    'max_drawdown': -0.02,
+                    'sharpe_ratio': 1.5,
+                    'var_95': -5000
+                }
+            }
+            
+            success = logger.log_event(
+                event_type=TradingEventType.RISK_EVALUATION,
+                message="Portfolio risk assessment",
+                symbol="PORTFOLIO",
+                context_provider=complex_context,
+                decision_reason="Risk limits within acceptable range"
+            )
+            
+            assert success is True
+            
+            console_output = captured_output.getvalue()
+            # Verify the complex context was processed without errors
+            assert "Portfolio risk assessment" in console_output
+            assert "PORTFOLIO" in console_output
+            
+        finally:
+            sys.stdout = original_stdout
+
+    def test_context_aware_logging_with_lazy_evaluation(self):
+        """Test that lazy context evaluation works correctly."""
+        from io import StringIO
+        import sys
+        
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+        
+        try:
+            logger = ContextAwareLogger()
+            
+            evaluation_tracker = []
+            
+            def lazy_portfolio_value():
+                evaluation_tracker.append("portfolio_evaluated")
+                return 150000.75
+            
+            def lazy_risk_metrics():
+                evaluation_tracker.append("risk_evaluated") 
+                return {'var': -7500, 'expected_shortfall': -12000}
+            
+            success = logger.log_event(
+                event_type=TradingEventType.POSITION_MANAGEMENT,
+                message="Lazy context evaluation test",
+                symbol="TEST",
+                context_provider={
+                    'immediate_value': "available_immediately",
+                    'portfolio_value': lazy_portfolio_value,
+                    'risk_data': lazy_risk_metrics
+                }
+            )
+            
+            assert success is True
+            # Verify lazy evaluation occurred
+            assert len(evaluation_tracker) == 2
+            assert "portfolio_evaluated" in evaluation_tracker
+            assert "risk_evaluated" in evaluation_tracker
+            
+            console_output = captured_output.getvalue()
+            assert "Lazy context evaluation test" in console_output
+            
+        finally:
+            sys.stdout = original_stdout
+
+    def test_context_aware_logging_error_handling(self):
+        """Test that context evaluation errors are handled gracefully."""
+        from io import StringIO
+        import sys
+        
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+        
+        try:
+            logger = ContextAwareLogger()
+            
+            def failing_context_provider():
+                raise ValueError("Simulated context provider failure")
+            
+            success = logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Error handling test",
+                context_provider={
+                    'good_data': "This works fine",
+                    'bad_data': failing_context_provider,
+                    'more_good_data': {"nested": "value"}
+                }
+            )
+            
+            # Should still succeed despite context errors
+            assert success is True
+            
+            console_output = captured_output.getvalue()
+            assert "Error handling test" in console_output
+            
+        finally:
+            sys.stdout = original_stdout
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

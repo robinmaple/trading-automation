@@ -19,6 +19,12 @@ from decimal import Decimal
 from typing import Set
 # <Price Filtering Import - End>
 
+# Context-aware logging import
+from src.core.context_aware_logger import get_context_logger, TradingEventType
+
+# Initialize context-aware logger
+context_logger = get_context_logger()
+
 
 class MarketDataManager:
     """Manages subscriptions to market data and tracks current prices for symbols."""
@@ -38,7 +44,17 @@ class MarketDataManager:
         
         # Log environment detection
         env = "PAPER" if self.use_delayed_data else "PRODUCTION"
-        print(f"📊 Auto-detected: {env} account environment")
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "MarketDataManager initialized with environment detection",
+            context_provider={
+                "environment": env,
+                "event_bus_provided": event_bus is not None,
+                "market_hours_service_initialized": True,
+                "initial_request_id": self.next_req_id
+            },
+            decision_reason="MARKET_DATA_MANAGER_INITIALIZED"
+        )
         # <Enhanced Data Type Detection - End>
         
         # <Price Filtering Configuration - Begin>
@@ -65,23 +81,74 @@ class MarketDataManager:
             if 'enabled' in config:
                 self.filter_config['enabled'] = config['enabled']
             
-            print(f"🔧 Price filter updated: {self.filter_config}")
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Price filter configuration updated",
+                context_provider={
+                    "new_min_percent_change": float(self.filter_config['min_percent_change']),
+                    "new_min_absolute_change": float(self.filter_config['min_absolute_change']),
+                    "filtering_enabled": self.filter_config['enabled'],
+                    "config_source": "manual_update"
+                },
+                decision_reason="PRICE_FILTER_CONFIG_UPDATED"
+            )
 
     def set_monitored_symbols(self, symbols: Set[str]) -> None:
         """Set the symbols that should receive price events (PlannedOrder symbols + positions)."""
         with self.lock:
+            previous_count = len(self.monitored_symbols)
             self.monitored_symbols = symbols.copy()
-            print(f"🔍 Monitoring {len(self.monitored_symbols)} symbols for price events: {sorted(list(symbols))}")
+            
+            context_logger.log_event(
+                TradingEventType.MARKET_CONDITION,
+                "Monitored symbols updated",
+                context_provider={
+                    "previous_symbols_count": previous_count,
+                    "new_symbols_count": len(self.monitored_symbols),
+                    "symbols_added": len(symbols - set(self.monitored_symbols)) if previous_count > 0 else len(symbols),
+                    "symbols_removed": len(set(self.monitored_symbols) - symbols) if previous_count > 0 else 0,
+                    "monitored_symbols_list": sorted(list(symbols))
+                },
+                decision_reason="MONITORED_SYMBOLS_UPDATED"
+            )
 
     def add_monitored_symbol(self, symbol: str) -> None:
         """Add a symbol to the monitored set."""
         with self.lock:
+            was_monitored = symbol in self.monitored_symbols
             self.monitored_symbols.add(symbol)
+            
+            if not was_monitored:
+                context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "Symbol added to monitoring",
+                    symbol=symbol,
+                    context_provider={
+                        "previous_monitoring_state": False,
+                        "new_monitoring_state": True,
+                        "total_monitored_symbols": len(self.monitored_symbols)
+                    },
+                    decision_reason="SYMBOL_ADDED_TO_MONITORING"
+                )
 
     def remove_monitored_symbol(self, symbol: str) -> None:
         """Remove a symbol from the monitored set."""
         with self.lock:
+            was_monitored = symbol in self.monitored_symbols
             self.monitored_symbols.discard(symbol)
+            
+            if was_monitored:
+                context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "Symbol removed from monitoring",
+                    symbol=symbol,
+                    context_provider={
+                        "previous_monitoring_state": True,
+                        "new_monitoring_state": False,
+                        "total_monitored_symbols": len(self.monitored_symbols)
+                    },
+                    decision_reason="SYMBOL_REMOVED_FROM_MONITORING"
+                )
 
     def _should_publish_price_update(self, symbol: str, new_price: float, old_price: float) -> bool:
         """
@@ -118,10 +185,25 @@ class MarketDataManager:
         
         should_publish = meets_absolute or meets_percent
         
-        # Debug logging for significant changes
+        # Log filtering decision for significant changes
         if should_publish and price_change > 0:
-            print(f"📈 Significant price change for {symbol}: ${old_price:.2f} → ${new_price:.2f} "
-                  f"(Δ${price_change:.2f}, {percent_change:.2f}%)")
+            context_logger.log_event(
+                TradingEventType.MARKET_CONDITION,
+                "Significant price change detected",
+                symbol=symbol,
+                context_provider={
+                    "old_price": old_price,
+                    "new_price": new_price,
+                    "absolute_change": price_change,
+                    "percent_change": float(percent_change),
+                    "absolute_threshold": float(min_absolute),
+                    "percent_threshold": float(min_percent),
+                    "meets_absolute_threshold": meets_absolute,
+                    "meets_percent_threshold": meets_percent,
+                    "filtering_enabled": True
+                },
+                decision_reason="PRICE_UPDATE_PASSED_FILTER"
+            )
         
         return should_publish
     # <Price Filtering Methods - End>
@@ -130,6 +212,17 @@ class MarketDataManager:
         """Subscribe to market data for a symbol, with fallback to snapshot data on failure."""
         with self.lock:
             if symbol in self.subscriptions:
+                context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "Symbol already subscribed",
+                    symbol=symbol,
+                    context_provider={
+                        "existing_request_id": self.subscriptions[symbol],
+                        "current_price": self.prices[symbol].get('price', 0) if symbol in self.prices else 0,
+                        "subscription_count": len(self.subscriptions)
+                    },
+                    decision_reason="DUPLICATE_SUBSCRIPTION_ATTEMPT"
+                )
                 return
 
             req_id = self.next_req_id
@@ -138,7 +231,20 @@ class MarketDataManager:
             try:
                 # <Smart Data Type Selection - Begin>
                 data_type = self._determine_optimal_data_type(symbol)
-                print(f"🔍 Requesting market data type {data_type} for {symbol}")
+                context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "Requesting market data subscription",
+                    symbol=symbol,
+                    context_provider={
+                        "request_id": req_id,
+                        "selected_data_type": data_type,
+                        "data_type_description": self._get_data_type_description(data_type),
+                        "market_open": self.market_hours.is_market_open(),
+                        "paper_account": self.use_delayed_data,
+                        "previous_errors": self.data_type_errors.get(symbol, 0)
+                    },
+                    decision_reason="MARKET_DATA_SUBSCRIPTION_REQUESTED"
+                )
                 
                 self.executor.reqMarketDataType(data_type)
                 self.executor.reqMktData(req_id, contract, "", False, False, [])
@@ -154,10 +260,39 @@ class MarketDataManager:
                     'data_type': 'pending',
                     'requested_type': data_type  # <Track requested data type - Begin>
                 }
-                print(f"✅ Subscribed to {symbol} with data type {data_type}")
+                
+                context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "Market data subscription established",
+                    symbol=symbol,
+                    context_provider={
+                        "request_id": req_id,
+                        "data_type": data_type,
+                        "total_subscriptions": len(self.subscriptions),
+                        "contract_details": {
+                            "symbol": contract.symbol,
+                            "sec_type": contract.secType,
+                            "exchange": contract.exchange,
+                            "currency": contract.currency
+                        }
+                    },
+                    decision_reason="MARKET_DATA_SUBSCRIPTION_SUCCESS"
+                )
 
             except Exception as e:
-                print(f"❌ Initial subscription failed for {symbol}: {e}")
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Initial subscription failed",
+                    symbol=symbol,
+                    context_provider={
+                        "request_id": req_id,
+                        "error_type": type(e).__name__,
+                        "error_details": str(e),
+                        "data_type_attempted": data_type,
+                        "operation": "subscribe"
+                    },
+                    decision_reason="MARKET_DATA_SUBSCRIPTION_FAILED"
+                )
                 self._handle_subscription_error(symbol, contract, req_id, e)
 
     # <New Method - Smart Data Type Determination - Begin>
@@ -179,7 +314,17 @@ class MarketDataManager:
         if symbol in self.data_type_errors:
             error_count = self.data_type_errors[symbol]
             if error_count >= 2:  # After 2 errors, use delayed data
-                print(f"⚠️  Using delayed data for {symbol} due to previous errors")
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using delayed data due to previous errors",
+                    symbol=symbol,
+                    context_provider={
+                        "previous_errors": error_count,
+                        "selected_data_type": 3,
+                        "reason": "error_count_exceeded_threshold"
+                    },
+                    decision_reason="DELAYED_DATA_SELECTED_DUE_TO_ERRORS"
+                )
                 return 3
         
         # Live account: try real-time first, with market hours awareness
@@ -187,11 +332,42 @@ class MarketDataManager:
             if self.market_hours.is_market_open():
                 return 1  # Real-time during market hours
             else:
-                print(f"⏰ Market closed - using frozen data for {symbol}")
+                context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "Market closed - using frozen data",
+                    symbol=symbol,
+                    context_provider={
+                        "market_open": False,
+                        "selected_data_type": 2,
+                        "reason": "market_closed"
+                    },
+                    decision_reason="FROZEN_DATA_SELECTED_MARKET_CLOSED"
+                )
                 return 2  # Frozen data when market closed
         
         # Paper account: use delayed data
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Paper account - using delayed data",
+            symbol=symbol,
+            context_provider={
+                "account_type": "paper",
+                "selected_data_type": 3,
+                "reason": "paper_account_default"
+            },
+            decision_reason="DELAYED_DATA_SELECTED_PAPER_ACCOUNT"
+        )
         return 3
+
+    def _get_data_type_description(self, data_type: int) -> str:
+        """Get human-readable description of IBKR data type."""
+        descriptions = {
+            1: "LIVE_REAL_TIME",
+            2: "FROZEN", 
+            3: "DELAYED",
+            4: "DELAYED_FROZEN"
+        }
+        return descriptions.get(data_type, f"UNKNOWN_{data_type}")
     # <New Method - Smart Data Type Determination - End>
 
     # <Enhanced Error Handling Method - Begin>
@@ -202,17 +378,58 @@ class MarketDataManager:
         # Track errors for this symbol
         self.data_type_errors[symbol] = self.data_type_errors.get(symbol, 0) + 1
         
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Handling subscription error",
+            symbol=symbol,
+            context_provider={
+                "request_id": req_id,
+                "error_type": type(error).__name__,
+                "error_message": error_msg,
+                "error_count_for_symbol": self.data_type_errors[symbol],
+                "fallback_strategy": "intelligent_fallback"
+            },
+            decision_reason="SUBSCRIPTION_ERROR_HANDLING_STARTED"
+        )
+        
         # Permission errors (10167) - downgrade to delayed data
         if '10167' in error_msg or 'permission' in error_msg or 'not subscribed' in error_msg:
-            print(f"🔁 No real-time permissions for {symbol}, trying delayed data...")
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "No real-time permissions - trying delayed data",
+                symbol=symbol,
+                context_provider={
+                    "error_category": "permission_denied",
+                    "fallback_action": "try_delayed_data"
+                },
+                decision_reason="PERMISSION_ERROR_FALLBACK_TO_DELAYED"
+            )
             self._try_delayed_data(symbol, contract, req_id)
         # Market closed or frozen data issues - try snapshot
         elif 'frozen' in error_msg or 'closed' in error_msg:
-            print(f"🔁 Market data unavailable for {symbol}, trying snapshot...")
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Market data unavailable - trying snapshot",
+                symbol=symbol,
+                context_provider={
+                    "error_category": "market_unavailable",
+                    "fallback_action": "try_snapshot_data"
+                },
+                decision_reason="MARKET_UNAVAILABLE_FALLBACK_TO_SNAPSHOT"
+            )
             self._try_snapshot_data(symbol, contract, req_id)
         else:
             # Generic error - try snapshot as last resort
-            print(f"🔁 Generic error for {symbol}, trying snapshot...")
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Generic error - trying snapshot as last resort",
+                symbol=symbol,
+                context_provider={
+                    "error_category": "generic_error",
+                    "fallback_action": "try_snapshot_data"
+                },
+                decision_reason="GENERIC_ERROR_FALLBACK_TO_SNAPSHOT"
+            )
             self._try_snapshot_data(symbol, contract, req_id)
     # <Enhanced Error Handling Method - End>
 
@@ -220,7 +437,17 @@ class MarketDataManager:
     def _try_delayed_data(self, symbol: str, contract, req_id: int) -> None:
         """Attempt to subscribe to delayed data as fallback."""
         try:
-            print(f"📡 Attempting delayed data (type 3) for {symbol}...")
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Attempting delayed data fallback",
+                symbol=symbol,
+                context_provider={
+                    "request_id": req_id,
+                    "data_type_attempted": 3,
+                    "fallback_attempt": "delayed_data"
+                }
+            )
+            
             self.executor.reqMarketDataType(3)  # Delayed data
             self.executor.reqMktData(req_id, contract, "", False, False, [])
             
@@ -234,20 +461,51 @@ class MarketDataManager:
                 'data_type': 'delayed',
                 'requested_type': 3
             }
-            print(f"✅ Using DELAYED data for {symbol}")
+            
+            context_logger.log_event(
+                TradingEventType.MARKET_CONDITION,
+                "Delayed data subscription successful",
+                symbol=symbol,
+                context_provider={
+                    "request_id": req_id,
+                    "data_type": "delayed",
+                    "fallback_success": True
+                },
+                decision_reason="DELAYED_DATA_SUBSCRIPTION_SUCCESS"
+            )
             
         except Exception as e:
-            print(f"❌ Delayed data also failed for {symbol}: {e}")
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Delayed data fallback failed",
+                symbol=symbol,
+                context_provider={
+                    "request_id": req_id,
+                    "error_type": type(e).__name__,
+                    "error_details": str(e),
+                    "fallback_attempt": "delayed_data",
+                    "next_action": "try_snapshot_data"
+                },
+                decision_reason="DELAYED_DATA_FALLBACK_FAILED"
+            )
             self._try_snapshot_data(symbol, contract, req_id)
     # <New Method - Delayed Data Fallback - End>
 
     def _try_snapshot_data(self, symbol, contract, req_id) -> None:
         """Attempt to subscribe to snapshot data as a fallback when streaming fails."""
         try:
-            # <Enhanced Snapshot Logging - Begin>
-            print(f"📸 Attempting snapshot data for {symbol}...")
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Attempting snapshot data fallback",
+                symbol=symbol,
+                context_provider={
+                    "request_id": req_id,
+                    "fallback_attempt": "snapshot_data",
+                    "last_resort": True
+                }
+            )
+            
             self.executor.reqMktData(req_id, contract, "", True, False, [])
-            # <Enhanced Snapshot Logging - End>
             
             self.subscriptions[symbol] = req_id
             self.prices[symbol] = {
@@ -259,11 +517,34 @@ class MarketDataManager:
                 'data_type': 'snapshot',
                 'requested_type': 'snapshot'  # <Track snapshot requests - Begin>
             }
-            print(f"✅ Using SNAPSHOT data for {symbol}")
+            
+            context_logger.log_event(
+                TradingEventType.MARKET_CONDITION,
+                "Snapshot data subscription successful",
+                symbol=symbol,
+                context_provider={
+                    "request_id": req_id,
+                    "data_type": "snapshot",
+                    "fallback_success": True,
+                    "data_availability": "single_snapshot_only"
+                },
+                decision_reason="SNAPSHOT_DATA_SUBSCRIPTION_SUCCESS"
+            )
 
         except Exception as e:
-            print(f"❌ Snapshot also failed for {symbol}: {e}")
-            print(f"💡 No market data available for {symbol} - manual entry required")
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "All subscription attempts failed",
+                symbol=symbol,
+                context_provider={
+                    "request_id": req_id,
+                    "error_type": type(e).__name__,
+                    "error_details": str(e),
+                    "total_fallback_attempts": 2,
+                    "final_outcome": "no_market_data_available"
+                },
+                decision_reason="ALL_SUBSCRIPTION_ATTEMPTS_FAILED"
+            )
 
     def get_current_price(self, symbol) -> dict:
         """Get the current price data dictionary for a subscribed symbol."""
@@ -298,7 +579,20 @@ class MarketDataManager:
                         # <Enhanced Price Update Logging - Begin>
                         if old_price == 0.0 and price > 0:
                             data_type = data.get('data_type', 'unknown')
-                            print(f"💰 FIRST PRICE UPDATE for {symbol}: ${price} ({tick_type_name}) - Data type: {data_type}")
+                            context_logger.log_event(
+                                TradingEventType.MARKET_CONDITION,
+                                "First price update received",
+                                symbol=symbol,
+                                context_provider={
+                                    "price": price,
+                                    "price_type": tick_type_name,
+                                    "data_type": data_type,
+                                    "request_id": req_id,
+                                    "total_updates": data['updates'],
+                                    "subscription_age_seconds": (datetime.datetime.now() - data.get('timestamp', datetime.datetime.now())).total_seconds() if data.get('timestamp') else 0
+                                },
+                                decision_reason="FIRST_PRICE_UPDATE_RECEIVED"
+                            )
                         # <Enhanced Price Update Logging - End>
                         
                         # <Price Event Publishing with Filtering - Begin>
@@ -314,10 +608,20 @@ class MarketDataManager:
                                     source="MarketDataManager"
                                 )
                                 self.event_bus.publish(event)
+                                
                                 if old_price == 0.0:  # Log first event publication
-                                    print(f"📢 Published FIRST price event for {symbol}: ${price}")
-                                # else: # Debug logging for filtered events
-                                #     print(f"🔇 Filtered price update for {symbol}: ${old_price} → ${price}")
+                                    context_logger.log_event(
+                                        TradingEventType.MARKET_CONDITION,
+                                        "First price event published",
+                                        symbol=symbol,
+                                        context_provider={
+                                            "price": price,
+                                            "price_type": tick_type_name,
+                                            "event_bus_available": True,
+                                            "event_type": "PriceUpdateEvent"
+                                        },
+                                        decision_reason="FIRST_PRICE_EVENT_PUBLISHED"
+                                    )
                         # <Price Event Publishing with Filtering - End>
                         break
 
@@ -325,20 +629,75 @@ class MarketDataManager:
         """Subscribe to market data for a symbol with retry logic for unreliable connections."""
         for attempt in range(retries + 1):
             try:
+                context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "Subscription attempt started",
+                    symbol=symbol,
+                    context_provider={
+                        "attempt_number": attempt + 1,
+                        "max_attempts": retries + 1,
+                        "request_id": self.next_req_id + attempt
+                    }
+                )
+                
                 self.subscribe(symbol, contract)
                 # <Verify Subscription Success - Begin>
                 time.sleep(1)  # Wait for initial price update
                 price_data = self.get_current_price(symbol)
                 if price_data and price_data.get('price', 0) > 0:
+                    context_logger.log_event(
+                        TradingEventType.MARKET_CONDITION,
+                        "Subscription verified successful",
+                        symbol=symbol,
+                        context_provider={
+                            "attempt_number": attempt + 1,
+                            "final_price": price_data['price'],
+                            "data_type": price_data.get('data_type', 'unknown'),
+                            "total_attempts_used": attempt + 1
+                        },
+                        decision_reason="SUBSCRIPTION_VERIFIED_SUCCESS"
+                    )
                     return True
                 elif attempt < retries:
-                    print(f"⚠️  Subscription attempt {attempt + 1} got price 0, retrying...")
+                    context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Subscription got zero price - retrying",
+                        symbol=symbol,
+                        context_provider={
+                            "attempt_number": attempt + 1,
+                            "current_price": price_data.get('price', 0) if price_data else 0,
+                            "remaining_attempts": retries - attempt
+                        },
+                        decision_reason="SUBSCRIPTION_RETRY_ZERO_PRICE"
+                    )
                 # <Verify Subscription Success - End>
             except Exception as e:
                 if attempt < retries:
-                    print(f"⚠️  Subscription attempt {attempt + 1} failed, retrying...")
+                    context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Subscription attempt failed - retrying",
+                        symbol=symbol,
+                        context_provider={
+                            "attempt_number": attempt + 1,
+                            "error_type": type(e).__name__,
+                            "error_details": str(e),
+                            "remaining_attempts": retries - attempt
+                        },
+                        decision_reason="SUBSCRIPTION_RETRY_ERROR"
+                    )
                     time.sleep(1)
                 else:
-                    print(f"❌ All subscription attempts failed for {symbol}: {e}")
+                    context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "All subscription attempts failed",
+                        symbol=symbol,
+                        context_provider={
+                            "total_attempts": retries + 1,
+                            "final_error_type": type(e).__name__,
+                            "final_error_details": str(e),
+                            "outcome": "subscription_failed"
+                        },
+                        decision_reason="ALL_SUBSCRIPTION_ATTEMPTS_FAILED"
+                    )
                     return False
         return False

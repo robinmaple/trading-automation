@@ -70,29 +70,37 @@ class OrderEligibilityService:
         self.probability_engine = probability_engine
         self.db_session = db_session  # SQLAlchemy session
         
+        # <Context-Aware Logging - Service Initialization - Begin>
         self.context_logger.log_event(
             event_type=TradingEventType.SYSTEM_HEALTH,
             message="OrderEligibilityService initialized",
             context_provider={
-                'planned_orders_count': lambda: len(planned_orders),
-                'has_db_session': lambda: db_session is not None
+                'planned_orders_count': len(planned_orders),
+                'probability_engine_available': probability_engine is not None,
+                'has_db_session': db_session is not None,
+                'service_phase': 'Phase_B'
             },
-            decision_reason="Service startup"
+            decision_reason="Service startup with Phase B features"
         )
+        # <Context-Aware Logging - Service Initialization - End>
     # Phase B Additions - End
 
     def can_trade(self, planned_order) -> bool:
         """Layer 2: Business logic validation - should this order be traded?"""
+        # <Context-Aware Logging - Single Order Validation Start - Begin>
         self.context_logger.log_event(
             event_type=TradingEventType.ORDER_VALIDATION,
-            message="Starting business logic validation",
+            message="Starting business logic validation for single order",
             symbol=planned_order.symbol,
             context_provider={
-                'order_action': lambda: planned_order.action.value if hasattr(planned_order, 'action') else 'unknown',
-                'order_type': lambda: planned_order.order_type.value if hasattr(planned_order, 'order_type') else 'unknown'
+                'order_action': planned_order.action.value if hasattr(planned_order, 'action') else 'unknown',
+                'order_type': planned_order.order_type.value if hasattr(planned_order, 'order_type') else 'unknown',
+                'security_type': planned_order.security_type.value if hasattr(planned_order, 'security_type') else 'unknown',
+                'position_strategy': planned_order.position_strategy.value if hasattr(planned_order, 'position_strategy') else 'unknown'
             },
             decision_reason="Begin Phase B eligibility check"
         )
+        # <Context-Aware Logging - Single Order Validation Start - End>
             
         try:
             # <Remove Duplicate Validation - Begin>
@@ -102,43 +110,50 @@ class OrderEligibilityService:
             
             # Check if order is expired (if expiration logic exists)
             if hasattr(planned_order, 'expiration') and self._is_order_expired(planned_order):
+                expiration_context = self._get_expiration_context(planned_order)
+                # <Context-Aware Logging - Order Expired - Begin>
                 self.context_logger.log_event(
                     event_type=TradingEventType.ORDER_VALIDATION,
                     message="Order expired - business rule violation",
                     symbol=planned_order.symbol,
-                    context_provider={
-                        'order_action': lambda: planned_order.action.value if hasattr(planned_order, 'action') else 'unknown',
-                        'expiration_check': lambda: self._get_expiration_context(planned_order)
-                    },
+                    context_provider=expiration_context,
                     decision_reason="Order expired based on business rules"
                 )
+                # <Context-Aware Logging - Order Expired - End>
                 return False
                 
             # Additional Phase B business rules can be added here
+            # <Context-Aware Logging - Order Eligibility Passed - Begin>
             self.context_logger.log_event(
                 event_type=TradingEventType.EXECUTION_DECISION,
                 message="Order passed Phase B eligibility",
                 symbol=planned_order.symbol,
                 context_provider={
-                    'order_action': lambda: planned_order.action.value if hasattr(planned_order, 'action') else 'unknown',
-                    'order_type': lambda: planned_order.order_type.value if hasattr(planned_order, 'order_type') else 'unknown',
-                    'priority': lambda: getattr(planned_order, 'priority', 1)
+                    'order_action': planned_order.action.value if hasattr(planned_order, 'action') else 'unknown',
+                    'order_type': planned_order.order_type.value if hasattr(planned_order, 'order_type') else 'unknown',
+                    'priority': getattr(planned_order, 'priority', 1),
+                    'risk_per_trade': float(getattr(planned_order, 'risk_per_trade', 0)) if hasattr(planned_order, 'risk_per_trade') else 0,
+                    'risk_reward_ratio': float(getattr(planned_order, 'risk_reward_ratio', 0)) if hasattr(planned_order, 'risk_reward_ratio') else 0
                 },
                 decision_reason="All business rules satisfied"
             )
+            # <Context-Aware Logging - Order Eligibility Passed - End>
             return True
             
         except Exception as e:
+            # <Context-Aware Logging - Validation Exception - Begin>
             self.context_logger.log_event(
                 event_type=TradingEventType.SYSTEM_HEALTH,
                 message="Business validation error",
                 symbol=planned_order.symbol,
                 context_provider={
-                    'error_type': lambda: type(e).__name__,
-                    'error_message': lambda: str(e)
+                    'error_type': type(e).__name__,
+                    'error_message': str(e),
+                    'order_action': planned_order.action.value if hasattr(planned_order, 'action') else 'unknown'
                 },
                 decision_reason="Exception during business rule validation"
             )
+            # <Context-Aware Logging - Validation Exception - End>
             return False
 
     def _get_expiration_context(self, order) -> dict:
@@ -149,11 +164,16 @@ class OrderEligibilityService:
                 context['has_expiration'] = True
                 context['expiration_value'] = str(order.expiration)
                 context['is_expired'] = self._is_order_expired(order)
+                # Add additional expiration details if available
+                if hasattr(order, '_import_time'):
+                    context['import_time'] = order._import_time.isoformat() if order._import_time else None
+                if hasattr(order, 'position_strategy'):
+                    context['position_strategy'] = order.position_strategy.value
             else:
                 context['has_expiration'] = False
             return context
-        except Exception:
-            return {'error': 'Failed to get expiration context'}
+        except Exception as e:
+            return {'error': f'Failed to get expiration context: {str(e)}'}
 
     # <Remove Duplicate Methods - Begin>
     # REMOVED: _validate_stop_loss_rules() - Duplicate of OrderLifecycleManager logic
@@ -162,25 +182,61 @@ class OrderEligibilityService:
 
     def _is_order_expired(self, order) -> bool:
         """Check if the order has expired based on its setup or timeframe."""
+        # <Context-Aware Logging - Expiration Check - Begin>
         # Placeholder - implement based on your expiration logic
-        return False
+        is_expired = False  # Default implementation
+        
+        # Log expiration check for monitoring
+        self.context_logger.log_event(
+            event_type=TradingEventType.ORDER_VALIDATION,
+            message="Expiration check performed",
+            symbol=order.symbol,
+            context_provider={
+                'is_expired': is_expired,
+                'has_expiration_attr': hasattr(order, 'expiration'),
+                'expiration_value': str(getattr(order, 'expiration', 'NO_EXPIRATION'))
+            },
+            decision_reason="Expiration logic evaluated"
+        )
+        # <Context-Aware Logging - Expiration Check - End>
+        
+        return is_expired
 
     def find_executable_orders(self) -> list:
         """Find all orders eligible for execution, enriched with probability scores and effective priority."""
+        # <Context-Aware Logging - Batch Processing Start - Begin>
         self.context_logger.log_event(
             event_type=TradingEventType.EXECUTION_DECISION,
-            message="Starting batch eligibility evaluation",
+            message="Starting batch eligibility evaluation for all orders",
             context_provider={
-                'total_orders': lambda: len(self.planned_orders),
-                'session_id': lambda: self.context_logger.session_id
+                'total_orders': len(self.planned_orders),
+                'session_id': self.context_logger.session_id,
+                'db_session_available': self.db_session is not None
             },
-            decision_reason="Begin Phase B filtering"
+            decision_reason="Begin Phase B filtering for execution candidates"
         )
+        # <Context-Aware Logging - Batch Processing Start - End>
         
         executable = []
         rejected_count = 0
+        processed_count = 0
 
         for order in self.planned_orders:
+            processed_count += 1
+            
+            # <Context-Aware Logging - Individual Order Processing - Begin>
+            self.context_logger.log_event(
+                event_type=TradingEventType.EXECUTION_DECISION,
+                message=f"Processing order {processed_count} of {len(self.planned_orders)}",
+                symbol=order.symbol,
+                context_provider={
+                    'processing_index': processed_count,
+                    'total_orders': len(self.planned_orders),
+                    'order_action': order.action.value if hasattr(order, 'action') else 'unknown'
+                }
+            )
+            # <Context-Aware Logging - Individual Order Processing - End>
+            
             if not self.can_trade(order):
                 rejected_count += 1
                 continue
@@ -192,20 +248,22 @@ class OrderEligibilityService:
             base_priority = getattr(order, "priority", 1)
             effective_priority = base_priority * fill_prob
 
-            # Log probability scoring result - Begin
+            # <Context-Aware Logging - Probability Scoring Result - Begin>
             self.context_logger.log_event(
                 event_type=TradingEventType.RISK_EVALUATION,
-                message="Probability score computed",
+                message="Probability score computed for order",
                 symbol=order.symbol,
                 context_provider={
-                    'fill_probability': lambda: round(fill_prob, 4),
-                    'base_priority': lambda: base_priority,
-                    'effective_priority': lambda: round(effective_priority, 4),
-                    'feature_count': lambda: len(features) if features else 0
+                    'fill_probability': round(fill_prob, 4),
+                    'base_priority': base_priority,
+                    'effective_priority': round(effective_priority, 4),
+                    'feature_count': len(features) if features else 0,
+                    'probability_engine_used': True,
+                    'features_available': features is not None
                 },
                 decision_reason="Probability engine scoring completed"
             )
-            # Log probability scoring result - End
+            # <Context-Aware Logging - Probability Scoring Result - End>
 
             # --- Phase B: persist probability score with comprehensive features ---
             if self.db_session:
@@ -223,28 +281,48 @@ class OrderEligibilityService:
                     self.db_session.add(prob_score)
                     self.db_session.commit()
                     
+                    # <Context-Aware Logging - Database Persistence Success - Begin>
                     self.context_logger.log_event(
                         event_type=TradingEventType.DATABASE_STATE,
                         message="Probability score persisted to database",
                         symbol=order.symbol,
                         context_provider={
-                            'fill_probability': lambda: round(fill_prob, 4),
-                            'effective_priority': lambda: round(effective_priority, 4)
+                            'fill_probability': round(fill_prob, 4),
+                            'effective_priority': round(effective_priority, 4),
+                            'database_id': prob_score.id if hasattr(prob_score, 'id') else 'unknown',
+                            'feature_count': len(features) if features else 0
                         },
-                        decision_reason="Score saved for model training"
+                        decision_reason="Score saved for model training and analysis"
                     )
+                    # <Context-Aware Logging - Database Persistence Success - End>
                 except Exception as e:
+                    # <Context-Aware Logging - Database Persistence Error - Begin>
                     self.context_logger.log_event(
                         event_type=TradingEventType.SYSTEM_HEALTH,
                         message="Database persistence failed for probability score",
                         symbol=order.symbol,
                         context_provider={
-                            'error_type': lambda: type(e).__name__,
-                            'error_message': lambda: str(e)[:100]  # Limit length
+                            'error_type': type(e).__name__,
+                            'error_message': str(e)[:100],  # Limit length
+                            'fill_probability': round(fill_prob, 4),
+                            'db_session_available': True
                         },
-                        decision_reason="Database write error"
+                        decision_reason="Database write error for probability score"
                     )
-            # --- End Phase B ---
+                    # <Context-Aware Logging - Database Persistence Error - End>
+            else:
+                # <Context-Aware Logging - No Database Session - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,  # event_type as positional first
+                    "No database session available for probability score persistence",  # message as positional second
+                    symbol=order.symbol,
+                    context_provider={
+                        'fill_probability': round(fill_prob, 4),
+                        'db_session_available': False
+                    },
+                    decision_reason="Probability score computed but not persisted"
+                )
+                # <Context-Aware Logging - No Database Session - End>
 
             executable.append({
                 'order': order,
@@ -255,21 +333,39 @@ class OrderEligibilityService:
                 'features': features  # Include features in executable result
             })
 
+            # <Context-Aware Logging - Order Added to Executable - Begin>
+            self.context_logger.log_event(
+                event_type=TradingEventType.EXECUTION_DECISION,
+                message="Order added to executable list",
+                symbol=order.symbol,
+                context_provider={
+                    'executable_index': len(executable),
+                    'fill_probability': round(fill_prob, 4),
+                    'effective_priority': round(effective_priority, 4)
+                },
+                decision_reason="Order meets all Phase B criteria"
+            )
+            # <Context-Aware Logging - Order Added to Executable - End>
+
         # Sort so that higher effective priority comes first
         executable.sort(key=lambda x: x['effective_priority'], reverse=True)
         
-        # Log batch processing results - Begin
+        # <Context-Aware Logging - Batch Processing Complete - Begin>
+        success_rate = round(len(executable) / len(self.planned_orders) * 100, 2) if self.planned_orders else 0
         self.context_logger.log_event(
             event_type=TradingEventType.EXECUTION_DECISION,
             message="Batch eligibility evaluation completed",
             context_provider={
-                'total_processed': lambda: len(self.planned_orders),
-                'executable_count': lambda: len(executable),
-                'rejected_count': lambda: rejected_count,
-                'success_rate': lambda: round(len(executable) / len(self.planned_orders) * 100, 2) if self.planned_orders else 0
+                'total_processed': len(self.planned_orders),
+                'executable_count': len(executable),
+                'rejected_count': rejected_count,
+                'success_rate': success_rate,
+                'top_effective_priority': round(executable[0]['effective_priority'], 4) if executable else 0,
+                'lowest_effective_priority': round(executable[-1]['effective_priority'], 4) if executable else 0,
+                'executable_symbols': [item['order'].symbol for item in executable] if executable else []
             },
-            decision_reason="Phase B filtering completed"
+            decision_reason=f"Phase B filtering completed: {len(executable)} executable orders found"
         )
-        # Log batch processing results - End
+        # <Context-Aware Logging - Batch Processing Complete - End>
         
         return executable

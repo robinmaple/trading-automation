@@ -1,7 +1,8 @@
+from decimal import Decimal
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 import datetime
-from src.core.planned_order import Action, PlannedOrder, SecurityType
+from src.core.planned_order import Action, OrderType, PlannedOrder, SecurityType, PositionStrategy
 from src.services.order_eligibility_service import OrderEligibilityService
 from src.core.models import ProbabilityScoreDB
 
@@ -99,12 +100,24 @@ class TestOrderEligibilityService:
         mock_probability_engine = Mock()
         service = OrderEligibilityService(mock_orders, mock_probability_engine)
         
-        test_order = Mock()
+        # Create a proper PlannedOrder mock with required attributes
+        test_order = MagicMock(spec=PlannedOrder)
+        test_order.symbol = "TEST"
+        test_order.action = Action.BUY
+        test_order.order_type = OrderType.LMT
+        test_order.entry_price = 100.0
+        test_order.stop_loss = 95.0
+        test_order.security_type = SecurityType.STK
+        test_order.position_strategy = PositionStrategy.DAY
+        test_order.risk_per_trade = Decimal('0.01')
+        test_order.risk_reward_ratio = Decimal('2.0')
+        test_order.priority = 3
+        test_order.overall_trend = "Neutral"
         
         result = service.can_trade(test_order)
         
         assert result == True
-    
+
     def test_find_executable_orders_empty_when_no_orders(self):
         """Test that empty list is returned when no planned orders"""
         mock_orders = []

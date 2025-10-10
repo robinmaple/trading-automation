@@ -195,8 +195,8 @@ def test_calculate_position_pnl_validation_errors():
     with pytest.raises(ValueError, match="Action cannot be None"):
         risk_service.calculate_position_pnl(100, 110, 10, None)
     
-    # Test invalid types
-    with pytest.raises(TypeError, match="Entry price must be numeric"):
+    # Test invalid types - FIXED: Changed from TypeError to ValueError
+    with pytest.raises(ValueError, match="Entry price must be numeric"):
         risk_service.calculate_position_pnl("invalid", 100, 10, 'BUY')
     
     # Test invalid values
@@ -205,6 +205,7 @@ def test_calculate_position_pnl_validation_errors():
     
     with pytest.raises(ValueError, match="Action must be 'BUY' or 'SELL'"):
         risk_service.calculate_position_pnl(100, 110, 10, 'INVALID')
+
 # Risk Management P&L Tests - End
 
 # Fixed Market Close Tests - Begin

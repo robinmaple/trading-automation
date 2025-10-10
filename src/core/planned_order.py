@@ -21,6 +21,10 @@ from config.trading_core_config import get_config
 from src.core.simple_logger import get_simple_logger
 logger = get_simple_logger(__name__)
 
+# <Context-Aware Logger Integration - Begin>
+from src.core.context_aware_logger import get_context_logger, TradingEventType
+# <Context-Aware Logger Integration - End>
+
 # Market Hours Utility Functions - Begin
 def is_market_hours(check_time: Optional[datetime.datetime] = None) -> bool:
     """
@@ -168,6 +172,51 @@ class PlannedOrder:
     risk_reward_ratio: Decimal = field(default=Decimal('2.0'))
     priority: int = field(default=3)
 
+    def __post_init__(self) -> None:
+        """Dataclass hook to validate and set expiration after initialization."""
+        # <Context-Aware Logger Initialization - Begin>
+        self.context_logger = get_context_logger()
+        # <Context-Aware Logger Initialization - End>
+        
+        # <Context-Aware Logging - PlannedOrder Initialization Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "PlannedOrder initialization starting",
+            symbol=self.symbol,
+            context_provider={
+                "security_type": self.security_type.value,
+                "action": self.action.value,
+                "order_type": self.order_type.value,
+                "position_strategy": self.position_strategy.value,
+                "entry_price": self.entry_price,
+                "stop_loss": self.stop_loss
+            }
+        )
+        # <Context-Aware Logging - PlannedOrder Initialization Start - End>
+        
+        # Minimal logging
+        if logger:
+            logger.debug(f"Initializing PlannedOrder: {self.symbol}")
+        
+        self.validate()
+        self._set_expiration_date()
+        
+        # <Context-Aware Logging - PlannedOrder Initialization Complete - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "PlannedOrder initialization completed successfully",
+            symbol=self.symbol,
+            context_provider={
+                "expiration_date": self.expiration_date.isoformat() if self.expiration_date else None,
+                "trend_alignment": self.trend_alignment,
+                "risk_per_trade": float(self.risk_per_trade),
+                "risk_reward_ratio": float(self.risk_reward_ratio),
+                "priority": self.priority
+            },
+            decision_reason="PlannedOrder validated and ready for execution"
+        )
+        # <Context-Aware Logging - PlannedOrder Initialization Complete - End>
+
     @property
     def trend_alignment(self) -> bool:
         """
@@ -183,90 +232,198 @@ class PlannedOrder:
             return True
         return False
 
-    def __post_init__(self) -> None:
-        """Dataclass hook to validate and set expiration after initialization."""
-        # Minimal logging
-        if logger:
-            logger.debug(f"Initializing PlannedOrder: {self.symbol}")
-        
-        self.validate()
-        self._set_expiration_date()
-
     def validate(self) -> None:
         """Enforce business rules and data integrity on order parameters."""
+        # <Context-Aware Logging - Validation Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "Starting PlannedOrder validation",
+            symbol=self.symbol,
+            context_provider={
+                "validation_phase": "essential_fields"
+            }
+        )
+        # <Context-Aware Logging - Validation Start - End>
+        
         # <Essential Field Validation - Begin>
         # These fields are required for any meaningful trading order
         if self.entry_price is None:
-            raise ValueError("Entry price is required")
+            validation_error = "Entry price is required"
+            self._log_validation_error(validation_error, "essential_fields")
+            raise ValueError(validation_error)
         if self.stop_loss is None:
-            raise ValueError("Stop loss is required")
+            validation_error = "Stop loss is required"
+            self._log_validation_error(validation_error, "essential_fields")
+            raise ValueError(validation_error)
         if not self.symbol or not isinstance(self.symbol, str) or self.symbol.strip() == "":
-            raise ValueError("Symbol is required and must be a non-empty string")
+            validation_error = "Symbol is required and must be a non-empty string"
+            self._log_validation_error(validation_error, "essential_fields")
+            raise ValueError(validation_error)
         if self.action is None:
-            raise ValueError("Action is required")
+            validation_error = "Action is required"
+            self._log_validation_error(validation_error, "essential_fields")
+            raise ValueError(validation_error)
         if self.security_type is None:
-            raise ValueError("Security type is required")
+            validation_error = "Security type is required"
+            self._log_validation_error(validation_error, "essential_fields")
+            raise ValueError(validation_error)
         if not self.exchange or self.exchange.strip() == "":
-            raise ValueError("Exchange is required")
+            validation_error = "Exchange is required"
+            self._log_validation_error(validation_error, "essential_fields")
+            raise ValueError(validation_error)
         if not self.currency or self.currency.strip() == "":
-            raise ValueError("Currency is required")
+            validation_error = "Currency is required"
+            self._log_validation_error(validation_error, "essential_fields")
+            raise ValueError(validation_error)
         # <Essential Field Validation - End>
 
+        # <Context-Aware Logging - Business Logic Validation Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "Starting business logic validation",
+            symbol=self.symbol,
+            context_provider={
+                "validation_phase": "business_logic"
+            }
+        )
+        # <Context-Aware Logging - Business Logic Validation Start - End>
+        
         # <Business Logic Validation - Begin>
         # Risk management validation
         if self.risk_per_trade is None:
-            raise ValueError("Risk per trade cannot be None")
+            validation_error = "Risk per trade cannot be None"
+            self._log_validation_error(validation_error, "business_logic")
+            raise ValueError(validation_error)
         if self.risk_reward_ratio is None:
-            raise ValueError("Risk reward ratio cannot be None")  
+            validation_error = "Risk reward ratio cannot be None"  
+            self._log_validation_error(validation_error, "business_logic")
+            raise ValueError(validation_error)
         if self.priority is None:
-            raise ValueError("Priority cannot be None")
+            validation_error = "Priority cannot be None"
+            self._log_validation_error(validation_error, "business_logic")
+            raise ValueError(validation_error)
 
         if not 1 <= self.priority <= 5:
-            raise ValueError("Priority must be between 1 and 5")
+            validation_error = "Priority must be between 1 and 5"
+            self._log_validation_error(validation_error, "business_logic")
+            raise ValueError(validation_error)
             
         if self.risk_per_trade <= 0:
-            raise ValueError("Risk per trade must be positive")
+            validation_error = "Risk per trade must be positive"
+            self._log_validation_error(validation_error, "business_logic")
+            raise ValueError(validation_error)
         if self.risk_per_trade > 0.02:  # 2% max risk
-            raise ValueError("Risk per trade cannot exceed 2%")
+            validation_error = "Risk per trade cannot exceed 2%"
+            self._log_validation_error(validation_error, "business_logic")
+            raise ValueError(validation_error)
         if self.risk_reward_ratio < 1.0:
-            raise ValueError("Risk/reward ratio must be at least 1.0")
+            validation_error = "Risk/reward ratio must be at least 1.0"
+            self._log_validation_error(validation_error, "business_logic")
+            raise ValueError(validation_error)
 
         # Stop loss positioning logic
         if (self.action == Action.BUY and self.stop_loss >= self.entry_price) or \
         (self.action == Action.SELL and self.stop_loss <= self.entry_price):
-            raise ValueError("Stop loss must be on the correct side of the entry price for a protective order")
+            validation_error = "Stop loss must be on the correct side of the entry price for a protective order"
+            self._log_validation_error(validation_error, "business_logic")
+            raise ValueError(validation_error)
         # <Business Logic Validation - End>
 
+        # <Context-Aware Logging - Phase Validation Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "Starting phase-specific validation",
+            symbol=self.symbol,
+            context_provider={
+                "validation_phase": "phase_validation"
+            }
+        )
+        # <Context-Aware Logging - Phase Validation Start - End>
+        
         # <Phase 1 Validation - Begin>
         # Phase 1 validation for overall_trend
         allowed_trends = ['Bull', 'Bear', 'Neutral']
         if self.overall_trend is None:
             self.overall_trend = "Neutral"  # Provide default
         elif self.overall_trend not in allowed_trends:
-            raise ValueError(f"overall_trend must be one of {allowed_trends}, got '{self.overall_trend}'")
+            validation_error = f"overall_trend must be one of {allowed_trends}, got '{self.overall_trend}'"
+            self._log_validation_error(validation_error, "phase_validation")
+            raise ValueError(validation_error)
         # <Phase 1 Validation - End>
 
         # <Phase B Validation - Begin>
         # Phase B additions
         if self.trading_setup and len(self.trading_setup) > 100:
-            raise ValueError("Trading setup description too long")
+            validation_error = "Trading setup description too long"
+            self._log_validation_error(validation_error, "phase_validation")
+            raise ValueError(validation_error)
         if self.core_timeframe and len(self.core_timeframe) > 50:
-            raise ValueError("Core timeframe description too long")
+            validation_error = "Core timeframe description too long"
+            self._log_validation_error(validation_error, "phase_validation")
+            raise ValueError(validation_error)
         # <Phase B Validation - End>
 
+        # <Context-Aware Logging - Data Quality Validation Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "Starting data quality validation",
+            symbol=self.symbol,
+            context_provider={
+                "validation_phase": "data_quality"
+            }
+        )
+        # <Context-Aware Logging - Data Quality Validation Start - End>
+        
         # <Data Quality Validation - Begin>
         # Additional data quality checks
         if self.entry_price <= 0:
-            raise ValueError("Entry price must be positive")
+            validation_error = "Entry price must be positive"
+            self._log_validation_error(validation_error, "data_quality")
+            raise ValueError(validation_error)
         if self.stop_loss <= 0:
-            raise ValueError("Stop loss must be positive")
+            validation_error = "Stop loss must be positive"
+            self._log_validation_error(validation_error, "data_quality")
+            raise ValueError(validation_error)
         if self.entry_price == self.stop_loss:
-            raise ValueError("Entry price and stop loss cannot be equal")
+            validation_error = "Entry price and stop loss cannot be equal"
+            self._log_validation_error(validation_error, "data_quality")
+            raise ValueError(validation_error)
         # <Data Quality Validation - End>
 
+        # <Context-Aware Logging - Validation Success - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "PlannedOrder validation completed successfully",
+            symbol=self.symbol,
+            context_provider={
+                "validation_phases_passed": ["essential_fields", "business_logic", "phase_validation", "data_quality"],
+                "overall_trend": self.overall_trend,
+                "trend_alignment": self.trend_alignment
+            },
+            decision_reason="All validation checks passed"
+        )
+        # <Context-Aware Logging - Validation Success - End>
+        
         # Minimal logging
         if logger:
             logger.debug(f"PlannedOrder validation passed: {self.symbol}")
+
+    def _log_validation_error(self, error_message: str, validation_phase: str) -> None:
+        """Helper method to log validation errors with structured context."""
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            f"PlannedOrder validation failed in {validation_phase}",
+            symbol=self.symbol,
+            context_provider={
+                "error_message": error_message,
+                "validation_phase": validation_phase,
+                "entry_price": self.entry_price,
+                "stop_loss": self.stop_loss,
+                "action": self.action.value if self.action else None,
+                "security_type": self.security_type.value if self.security_type else None
+            },
+            decision_reason=f"Validation error: {error_message}"
+        )
 
     # Modified Expiration Date Calculation - Begin
     def _set_expiration_date(self) -> None:
@@ -282,12 +439,54 @@ class PlannedOrder:
             self.expiration_date = self.expiration_date.replace(
                 hour=16, minute=0, second=0, microsecond=0
             )
+            
+            # <Context-Aware Logging - Expiration Calculation - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Expiration date calculated for order",
+                symbol=self.symbol,
+                context_provider={
+                    "position_strategy": self.position_strategy.value,
+                    "expiration_days": expiration_days,
+                    "expiration_date": self.expiration_date.isoformat(),
+                    "calculation_time": calculation_time.isoformat(),
+                    "market_hours": is_market_hours(calculation_time)
+                },
+                decision_reason=f"Expiration set to {expiration_days} days for {self.position_strategy.value} strategy"
+            )
+            # <Context-Aware Logging - Expiration Calculation - End>
     # Modified Expiration Date Calculation - End
 
     def calculate_quantity(self, total_capital: float) -> float:
         """Calculate position size based on risk management. Rounds appropriately for the security type."""
+        # <Context-Aware Logging - Quantity Calculation Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Starting position quantity calculation",
+            symbol=self.symbol,
+            context_provider={
+                "total_capital": total_capital,
+                "entry_price": self.entry_price,
+                "stop_loss": self.stop_loss,
+                "risk_per_trade": float(self.risk_per_trade),
+                "security_type": self.security_type.value
+            }
+        )
+        # <Context-Aware Logging - Quantity Calculation Start - End>
+        
         if self.entry_price is None or self.stop_loss is None:
-            raise ValueError("Entry price and stop loss required for quantity calculation")
+            calculation_error = "Entry price and stop loss required for quantity calculation"
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Quantity calculation failed - missing required data",
+                symbol=self.symbol,
+                context_provider={
+                    "entry_price_available": self.entry_price is not None,
+                    "stop_loss_available": self.stop_loss is not None
+                },
+                decision_reason=calculation_error
+            )
+            raise ValueError(calculation_error)
 
         risk_per_share = abs(self.entry_price - self.stop_loss)
         risk_amount = total_capital * self.risk_per_trade
@@ -303,6 +502,22 @@ class PlannedOrder:
 
         self._quantity = calculated_quantity
         
+        # <Context-Aware Logging - Quantity Calculation Success - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Position quantity calculated successfully",
+            symbol=self.symbol,
+            context_provider={
+                "calculated_quantity": calculated_quantity,
+                "risk_per_share": risk_per_share,
+                "risk_amount": risk_amount,
+                "base_quantity": base_quantity,
+                "minimum_units": MINIMUM_CASH_UNITS if self.security_type == SecurityType.CASH else 1
+            },
+            decision_reason=f"Position size calculated: {calculated_quantity} units"
+        )
+        # <Context-Aware Logging - Quantity Calculation Success - End>
+        
         # Minimal logging
         if logger:
             logger.debug(f"Calculated quantity for {self.symbol}: {calculated_quantity}")
@@ -311,14 +526,54 @@ class PlannedOrder:
 
     def calculate_profit_target(self) -> float:
         """Calculate profit target price based on risk/reward ratio."""
+        # <Context-Aware Logging - Profit Target Calculation Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Starting profit target calculation",
+            symbol=self.symbol,
+            context_provider={
+                "entry_price": self.entry_price,
+                "stop_loss": self.stop_loss,
+                "risk_reward_ratio": float(self.risk_reward_ratio),
+                "action": self.action.value
+            }
+        )
+        # <Context-Aware Logging - Profit Target Calculation Start - End>
+        
         if self.entry_price is None or self.stop_loss is None:
-            raise ValueError("Entry price and stop loss required for profit target")
+            calculation_error = "Entry price and stop loss required for profit target"
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Profit target calculation failed - missing required data",
+                symbol=self.symbol,
+                context_provider={
+                    "entry_price_available": self.entry_price is not None,
+                    "stop_loss_available": self.stop_loss is not None
+                },
+                decision_reason=calculation_error
+            )
+            raise ValueError(calculation_error)
 
         risk_amount = abs(self.entry_price - self.stop_loss)
         if self.action == Action.BUY:
             self._profit_target = self.entry_price + (risk_amount * self.risk_reward_ratio)
         else:
             self._profit_target = self.entry_price - (risk_amount * self.risk_reward_ratio)
+            
+        # <Context-Aware Logging - Profit Target Calculation Success - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Profit target calculated successfully",
+            symbol=self.symbol,
+            context_provider={
+                "profit_target": self._profit_target,
+                "risk_amount": risk_amount,
+                "calculation_method": "BUY_ADD" if self.action == Action.BUY else "SELL_SUBTRACT"
+            },
+            decision_reason=f"Profit target set to ${self._profit_target:.2f}"
+        )
+        # <Context-Aware Logging - Profit Target Calculation Success - End>
+        
         return self._profit_target
 
     def to_ib_contract(self) -> Contract:
@@ -328,6 +583,21 @@ class PlannedOrder:
         contract.secType = self.security_type.value
         contract.exchange = self.exchange
         contract.currency = self.currency
+        
+        # <Context-Aware Logging - IB Contract Creation - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "IBKR Contract created from PlannedOrder",
+            symbol=self.symbol,
+            context_provider={
+                "contract_symbol": contract.symbol,
+                "security_type": contract.secType,
+                "exchange": contract.exchange,
+                "currency": contract.currency
+            }
+        )
+        # <Context-Aware Logging - IB Contract Creation - End>
+        
         return contract
 
     def to_ib_order(self, total_capital: float) -> Order:
@@ -347,6 +617,24 @@ class PlannedOrder:
         else:
             order.tif = "GTC"
 
+        # <Context-Aware Logging - IB Order Creation - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "IBKR Order created from PlannedOrder",
+            symbol=self.symbol,
+            context_provider={
+                "order_action": order.action,
+                "order_type": order.orderType,
+                "total_quantity": order.totalQuantity,
+                "limit_price": getattr(order, 'lmtPrice', None),
+                "stop_price": getattr(order, 'auxPrice', None),
+                "time_in_force": order.tif,
+                "position_strategy": self.position_strategy.value
+            },
+            decision_reason="PlannedOrder converted to IBKR Order object"
+        )
+        # <Context-Aware Logging - IB Order Creation - End>
+
         return order
 
 class PlannedOrderManager:
@@ -355,6 +643,21 @@ class PlannedOrderManager:
     @staticmethod
     def from_excel(file_path: str, config: Optional[Dict[str, Any]] = None) -> List[PlannedOrder]:
         """Load and parse planned orders from an Excel template - ORIGINAL WORKING VERSION with zero-row filtering"""
+        # <Context-Aware Logger Initialization - Begin>
+        context_logger = get_context_logger()
+        # <Context-Aware Logger Initialization - End>
+        
+        # <Context-Aware Logging - Excel Loading Start - Begin>
+        context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "Starting Excel file loading for planned orders",
+            context_provider={
+                "file_path": file_path,
+                "config_provided": config is not None
+            }
+        )
+        # <Context-Aware Logging - Excel Loading Start - End>
+        
         # Use provided config or get default (live environment)
         if config is None:
             from config.trading_core_config import get_config
@@ -369,14 +672,31 @@ class PlannedOrderManager:
         try:
             df = pd.read_excel(file_path)
             
+            # <Context-Aware Logging - Excel File Loaded - Begin>
+            context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Excel file loaded successfully",
+                context_provider={
+                    "total_rows": len(df),
+                    "file_path": file_path,
+                    "columns": list(df.columns)
+                }
+            )
+            # <Context-Aware Logging - Excel File Loaded - End>
+            
             # Minimal logging
             if logger:
                 logger.info(f"Loading planned orders from: {file_path}")
 
+            valid_rows = 0
+            skipped_rows = 0
+            error_rows = 0
+            
             for index, row in df.iterrows():
                 try:
                     # NEW: Skip all-zero rows (the only enhancement needed)
                     if PlannedOrderManager._is_all_zero_row(row):
+                        skipped_rows += 1
                         continue
                     
                     # ORIGINAL WORKING CODE BELOW - don't change this
@@ -429,12 +749,59 @@ class PlannedOrderManager:
                     order._import_time = import_time
                     
                     orders.append(order)
+                    valid_rows += 1
+                    
+                    # <Context-Aware Logging - Row Processing Success - Begin>
+                    context_logger.log_event(
+                        TradingEventType.ORDER_VALIDATION,
+                        "Excel row processed successfully",
+                        symbol=order.symbol,
+                        context_provider={
+                            "row_index": index + 2,  # +2 for Excel row numbers (header + 1-based)
+                            "security_type": security_type.value,
+                            "action": action.value,
+                            "position_strategy": position_strategy.value,
+                            "entry_price": entry_price,
+                            "stop_loss": stop_loss
+                        },
+                        decision_reason="Row successfully converted to PlannedOrder"
+                    )
+                    # <Context-Aware Logging - Row Processing Success - End>
 
                 except Exception as row_error:
+                    error_rows += 1
+                    # <Context-Aware Logging - Row Processing Error - Begin>
+                    context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Error processing Excel row",
+                        context_provider={
+                            "row_index": index + 2,
+                            "error_type": type(row_error).__name__,
+                            "error_message": str(row_error),
+                            "symbol": str(row.get('Symbol', 'UNKNOWN')).strip() if 'Symbol' in row else 'UNKNOWN'
+                        },
+                        decision_reason=f"Row processing failed: {row_error}"
+                    )
+                    # <Context-Aware Logging - Row Processing Error - End>
                     if logger:
                         logger.error(f"Error processing row {index + 2}: {row_error}")
                     continue
 
+            # <Context-Aware Logging - Excel Loading Summary - Begin>
+            context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Excel file processing completed",
+                context_provider={
+                    "total_rows_processed": len(df),
+                    "valid_orders_created": valid_rows,
+                    "skipped_zero_rows": skipped_rows,
+                    "error_rows": error_rows,
+                    "success_rate_percent": round((valid_rows / len(df)) * 100, 2) if len(df) > 0 else 0
+                },
+                decision_reason=f"Successfully loaded {valid_rows} orders from {len(df)} total rows"
+            )
+            # <Context-Aware Logging - Excel Loading Summary - End>
+            
             # Minimal logging
             if logger:
                 logger.info(f"Successfully loaded {len(orders)} orders from Excel")
@@ -442,10 +809,32 @@ class PlannedOrderManager:
             return orders
 
         except FileNotFoundError:
+            # <Context-Aware Logging - File Not Found - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Excel file not found",
+                context_provider={
+                    "file_path": file_path
+                },
+                decision_reason="FileNotFoundError - Excel file does not exist"
+            )
+            # <Context-Aware Logging - File Not Found - End>
             if logger:
                 logger.error(f"Excel file not found: {file_path}")
             return []
         except Exception as e:
+            # <Context-Aware Logging - Excel Loading Error - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Error loading Excel file",
+                context_provider={
+                    "file_path": file_path,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                },
+                decision_reason=f"Excel file loading failed: {e}"
+            )
+            # <Context-Aware Logging - Excel Loading Error - End>
             if logger:
                 logger.error(f"Error loading Excel file: {e}")
             return []
@@ -542,6 +931,10 @@ class ActiveOrder:
     is_live_trading: bool
     fill_probability: float  # Probability at time of submission
 
+    def __post_init__(self):
+        """Initialize context logger for ActiveOrder."""
+        self.context_logger = get_context_logger()
+
     @property
     def symbol(self) -> str:
         """Convenience property to access the symbol from the planned order."""
@@ -561,6 +954,24 @@ class ActiveOrder:
 
     def update_status(self, new_status: str) -> None:
         """Update the status of this order."""
+        # <Context-Aware Logging - ActiveOrder Status Change - Begin>
+        if self.status != new_status:
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "ActiveOrder status change",
+                symbol=self.symbol,
+                context_provider={
+                    "old_status": self.status,
+                    "new_status": new_status,
+                    "order_ids": self.order_ids,
+                    "age_seconds": self.age_seconds(),
+                    "capital_commitment": self.capital_commitment,
+                    "fill_probability": self.fill_probability
+                },
+                decision_reason=f"Order status changed from {self.status} to {new_status}"
+            )
+        # <Context-Aware Logging - ActiveOrder Status Change - End>
+        
         # Minimal logging
         if logger and self.status != new_status:
             logger.debug(f"ActiveOrder status change: {self.symbol} {self.status} -> {new_status}")

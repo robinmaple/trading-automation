@@ -60,6 +60,20 @@ class TradingManager:
                 risk_config: Optional[Dict] = None,
                 event_bus: EventBus = None):
         """Initialize the trading manager with all necessary dependencies and services."""
+        # <Context-Aware Logging - TradingManager Initialization Start - Begin>
+        self.context_logger = get_context_logger()
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "TradingManager initialization starting",
+            context_provider={
+                "excel_path": excel_path,
+                "enable_advanced_features": enable_advanced_features,
+                "has_event_bus": event_bus is not None,
+                "has_ibkr_client": ibkr_client is not None
+            }
+        )
+        # <Context-Aware Logging - TradingManager Initialization Start - End>
+        
         # Minimal logging
         if logger:
             logger.info(f"Initializing TradingManager with {excel_path}")
@@ -73,11 +87,6 @@ class TradingManager:
         self.active_orders: Dict[int, ActiveOrder] = {}
         self.monitoring = False
         self.monitor_thread: Optional[threading.Thread] = None
-
-        # <Context-Aware Logging Integration - Begin>
-        # Initialize context-aware logger
-        self.context_logger = get_context_logger()
-        # <Context-Aware Logging Integration - End>
 
         # Account Context Tracking - Begin
         self.current_account_number: Optional[str] = None
@@ -168,11 +177,39 @@ class TradingManager:
             self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update)
             if logger:
                 logger.info("TradingManager subscribed to PRICE_UPDATE events")
+            # <Context-Aware Logging - Event Bus Subscription - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Event bus subscription established",
+                context_provider={
+                    "event_type": "PRICE_UPDATE",
+                    "component": "TradingManager"
+                }
+            )
+            # <Context-Aware Logging - Event Bus Subscription - End>
         # <Event Bus Subscription - End>
 
         # End of Day Service Integration - Begin
         self._initialize_end_of_day_service()
         # End of Day Service Integration - End
+        
+        # <Context-Aware Logging - TradingManager Initialization Complete - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "TradingManager initialization completed successfully",
+            context_provider={
+                "services_initialized": [
+                    "OrderExecutionService", "PositionSizingService", "OrderLoadingService",
+                    "FillProbabilityEngine", "OrderEligibilityService", "RiskManagementService",
+                    "PrioritizationService"
+                ],
+                "advanced_features_enabled": enable_advanced_features,
+                "total_capital": self.total_capital,
+                "max_open_orders": self.max_open_orders,
+                "execution_threshold": self.execution_threshold
+            }
+        )
+        # <Context-Aware Logging - TradingManager Initialization Complete - End>
 
     # End of Day Service Initialization - Begin
     def _initialize_end_of_day_service(self) -> None:
@@ -196,8 +233,8 @@ class TradingManager:
             )
             
             self.context_logger.log_event(
-                event_type=TradingEventType.SYSTEM_HEALTH,
-                message="EndOfDayService initialized successfully",
+                TradingEventType.SYSTEM_HEALTH,
+                "EndOfDayService initialized successfully",
                 context_provider={
                     'enabled': lambda: eod_config.enabled,
                     'close_buffer_minutes': lambda: eod_config.close_buffer_minutes,
@@ -210,8 +247,8 @@ class TradingManager:
         except Exception as e:
             # Fallback to default configuration if initialization fails
             self.context_logger.log_event(
-                event_type=TradingEventType.SYSTEM_HEALTH,
-                message="EndOfDayService initialization failed, using defaults",
+                TradingEventType.SYSTEM_HEALTH,
+                "EndOfDayService initialization failed, using defaults",
                 context_provider={
                     'error_type': lambda: type(e).__name__,
                     'error_message': lambda: str(e)
@@ -238,11 +275,37 @@ class TradingManager:
             if symbol_monitored:
                 if logger:
                     logger.debug(f"Price update for monitored symbol {event.symbol}: ${event.price}")
+                
+                # <Context-Aware Logging - Price Update Processing - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    f"Price update received for monitored symbol",
+                    symbol=event.symbol,
+                    context_provider={
+                        'price': event.price,
+                        'timestamp': event.timestamp,
+                        'monitored_symbols_count': len(self.planned_orders)
+                    }
+                )
+                # <Context-Aware Logging - Price Update Processing - End>
+                
                 self._check_and_execute_orders()
                 
         except Exception as e:
             if logger:
                 logger.error(f"Error handling price update for {event.symbol}: {e}")
+            # <Context-Aware Logging - Price Update Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                f"Error processing price update for {event.symbol}",
+                symbol=event.symbol,
+                context_provider={
+                    'error': str(e),
+                    'price': event.price if hasattr(event, 'price') else 'unknown'
+                },
+                decision_reason=f"Price update processing failed: {e}"
+            )
+            # <Context-Aware Logging - Price Update Error - End>
     # <Price Event Handler - End>
 
     # <Monitored Symbols Management - Begin>
@@ -274,6 +337,17 @@ class TradingManager:
             self.data_feed.market_data_manager.set_monitored_symbols(monitored_symbols)
             if logger:
                 logger.info(f"Monitoring {len(monitored_symbols)} symbols for price events")
+            
+            # <Context-Aware Logging - Symbol Monitoring Update - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Symbol monitoring updated",
+                context_provider={
+                    'monitored_symbols_count': len(monitored_symbols),
+                    'symbols': list(monitored_symbols)[:10]  # Log first 10 symbols
+                }
+            )
+            # <Context-Aware Logging - Symbol Monitoring Update - End>
     # <Monitored Symbols Management - End>
 
     # Account Context Methods - Begin
@@ -302,6 +376,17 @@ class TradingManager:
         self.current_account_number = account_number
         if logger:
             logger.info(f"Account number set to: {account_number}")
+            
+        # <Context-Aware Logging - Account Number Set - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Account number explicitly set",
+            context_provider={
+                'account_number': account_number,
+                'method': 'manual_set'
+            }
+        )
+        # <Context-Aware Logging - Account Number Set - End>
     # Account Context Methods - End
 
     def _initialize_components(self, enable_advanced_features: bool) -> None:
@@ -354,6 +439,22 @@ class TradingManager:
             sizing_service=self.sizing_service,
             config=self.prioritization_config
         )
+        
+        # <Context-Aware Logging - Component Initialization - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "TradingManager components initialized",
+            context_provider={
+                'components': [
+                    'OrderExecutionOrchestrator', 'MonitoringService', 
+                    'OrderLoadingOrchestrator', 'OrderLifecycleManager',
+                    'AdvancedFeatureCoordinator', 'PrioritizationService'
+                ],
+                'monitoring_interval_seconds': interval_seconds,
+                'advanced_features_enabled': enable_advanced_features
+            }
+        )
+        # <Context-Aware Logging - Component Initialization - End>
 
     def _initialize(self) -> bool:
         """Complete initialization with advanced services and validation."""
@@ -366,7 +467,19 @@ class TradingManager:
         self._validate_ibkr_connection()
 
         # Initialize account context
-        self._get_current_account_number()
+        account_number = self._get_current_account_number()
+        
+        # <Context-Aware Logging - Account Context Initialized - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Account context initialized",
+            context_provider={
+                'account_number': account_number,
+                'data_feed_connected': self.data_feed.is_connected(),
+                'ibkr_client_connected': self.ibkr_client.connected if self.ibkr_client else False
+            }
+        )
+        # <Context-Aware Logging - Account Context Initialized - End>
 
         # Initialize advanced services if enabled
         if self.advanced_features.enabled:
@@ -379,11 +492,36 @@ class TradingManager:
 
         self.execution_service.set_dependencies(self.order_persistence_service, self.active_orders)
         self._initialized = True
+        
+        # <Context-Aware Logging - Initialization Complete - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "TradingManager initialization finalized",
+            context_provider={
+                'advanced_features_initialized': self.advanced_features.enabled,
+                'execution_service_ready': True,
+                'total_initialized_components': 8  # Count of core components
+            }
+        )
+        # <Context-Aware Logging - Initialization Complete - End>
+        
         return True
 
     def cancel_active_order(self, active_order: ActiveOrder) -> bool:
         """Cancel an active order through the IBKR API."""
         if not self.ibkr_client or not self.ibkr_client.connected:
+            # <Context-Aware Logging - Order Cancel Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Order cancellation failed - IBKR client not connected",
+                symbol=active_order.symbol,
+                context_provider={
+                    'order_ids': active_order.order_ids,
+                    'ibkr_connected': False
+                },
+                decision_reason="IBKR client not available for order cancellation"
+            )
+            # <Context-Aware Logging - Order Cancel Failed - End>
             return False
 
         try:
@@ -395,8 +533,34 @@ class TradingManager:
             active_order.update_status('CANCELLED')
             if logger:
                 logger.info(f"Cancelled active order: {active_order.symbol}")
+                
+            # <Context-Aware Logging - Order Cancel Success - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Active order cancelled successfully",
+                symbol=active_order.symbol,
+                context_provider={
+                    'order_ids': active_order.order_ids,
+                    'new_status': 'CANCELLED'
+                },
+                decision_reason="Order cancellation completed via IBKR API"
+            )
+            # <Context-Aware Logging - Order Cancel Success - End>
+            
             return True
-        except Exception:
+        except Exception as e:
+            # <Context-Aware Logging - Order Cancel Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Order cancellation error",
+                symbol=active_order.symbol,
+                context_provider={
+                    'order_ids': active_order.order_ids,
+                    'error': str(e)
+                },
+                decision_reason=f"Order cancellation failed: {e}"
+            )
+            # <Context-Aware Logging - Order Cancel Error - End>
             return False
 
     def cleanup_completed_orders(self) -> None:
@@ -404,6 +568,18 @@ class TradingManager:
         orders_to_remove = [order_id for order_id, active_order in self.active_orders.items() if not active_order.is_working()]
         for order_id in orders_to_remove:
             del self.active_orders[order_id]
+            
+        # <Context-Aware Logging - Order Cleanup - Begin>
+        if orders_to_remove:
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Completed orders cleaned up from active tracking",
+                context_provider={
+                    'orders_removed_count': len(orders_to_remove),
+                    'remaining_active_orders': len(self.active_orders)
+                }
+            )
+        # <Context-Aware Logging - Order Cleanup - End>
 
     def get_active_orders_summary(self) -> List[Dict]:
         """Get a summary of all active orders for monitoring purposes."""
@@ -411,10 +587,34 @@ class TradingManager:
 
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel, persisting valid ones to the database."""
+        # <Context-Aware Logging - Order Loading Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "Starting planned order loading from Excel",
+            context_provider={
+                'excel_path': self.excel_path,
+                'existing_planned_orders': len(self.planned_orders)
+            }
+        )
+        # <Context-Aware Logging - Order Loading Start - End>
+        
         self.planned_orders = self.order_lifecycle_manager.load_and_persist_orders(self.excel_path)
         
         if logger:
             logger.info(f"Loaded {len(self.planned_orders)} planned orders")
+        
+        # <Context-Aware Logging - Order Loading Complete - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "Planned order loading completed",
+            context_provider={
+                'orders_loaded_count': len(self.planned_orders),
+                'excel_path': self.excel_path,
+                'operation': 'load_and_persist_orders'
+            },
+            decision_reason=f"Successfully loaded {len(self.planned_orders)} orders from Excel"
+        )
+        # <Context-Aware Logging - Order Loading Complete - End>
         
         # <Update Monitored Symbols After Loading Orders - Begin>
         # Update the monitored symbols after loading new planned orders
@@ -425,12 +625,36 @@ class TradingManager:
 
     def stop_monitoring(self) -> None:
         """Stop the monitoring loop and perform cleanup of resources."""
+        # <Context-Aware Logging - Monitoring Stop Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Stopping trading monitoring and performing cleanup",
+            context_provider={
+                'monitoring_active': self.monitoring,
+                'active_orders_count': len(self.active_orders),
+                'planned_orders_count': len(self.planned_orders)
+            }
+        )
+        # <Context-Aware Logging - Monitoring Stop Start - End>
+        
         if logger:
             logger.info("Stopping trading monitoring")
         self.monitoring_service.stop_monitoring()
         self.reconciliation_engine.stop()
         if self.db_session:
             self.db_session.close()
+            
+        # <Context-Aware Logging - Monitoring Stop Complete - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Trading monitoring stopped and resources cleaned up",
+            context_provider={
+                'monitoring_active': False,
+                'db_session_closed': True,
+                'reconciliation_engine_stopped': True
+            }
+        )
+        # <Context-Aware Logging - Monitoring Stop Complete - End>
 
     def _get_trading_mode(self) -> bool:
         """Determine if the system is in live trading mode based on the IBKR connection."""
@@ -483,7 +707,33 @@ class TradingManager:
     def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
                            new_fill_probability: float) -> bool:
         """Replace a stale active order with a new order."""
+        # <Context-Aware Logging - Order Replacement Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            "Starting order replacement process",
+            symbol=old_order.symbol,
+            context_provider={
+                'old_order_symbol': old_order.symbol,
+                'new_order_symbol': new_planned_order.symbol,
+                'new_fill_probability': new_fill_probability,
+                'old_order_ids': old_order.order_ids
+            }
+        )
+        # <Context-Aware Logging - Order Replacement Start - End>
+        
         if not self.cancel_active_order(old_order):
+            # <Context-Aware Logging - Order Replacement Cancel Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Order replacement failed - could not cancel old order",
+                symbol=old_order.symbol,
+                context_provider={
+                    'old_order_symbol': old_order.symbol,
+                    'new_order_symbol': new_planned_order.symbol
+                },
+                decision_reason="Old order cancellation failed, replacement aborted"
+            )
+            # <Context-Aware Logging - Order Replacement Cancel Failed - End>
             return False
 
         effective_priority = new_planned_order.priority * new_fill_probability
@@ -497,6 +747,35 @@ class TradingManager:
             old_order.update_status('REPLACED')
             if logger:
                 logger.info(f"Replaced order: {old_order.symbol} -> {new_planned_order.symbol}")
+            
+            # <Context-Aware Logging - Order Replacement Success - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Order successfully replaced",
+                symbol=new_planned_order.symbol,
+                context_provider={
+                    'old_order_symbol': old_order.symbol,
+                    'new_order_symbol': new_planned_order.symbol,
+                    'effective_priority': effective_priority,
+                    'account_number': account_number
+                },
+                decision_reason="Order replacement completed successfully"
+            )
+            # <Context-Aware Logging - Order Replacement Success - End>
+        else:
+            # <Context-Aware Logging - Order Replacement Execution Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Order replacement failed - new order execution failed",
+                symbol=new_planned_order.symbol,
+                context_provider={
+                    'old_order_symbol': old_order.symbol,
+                    'new_order_symbol': new_planned_order.symbol,
+                    'effective_priority': effective_priority
+                },
+                decision_reason="New order execution failed after old order cancellation"
+            )
+            # <Context-Aware Logging - Order Replacement Execution Failed - End>
         
         return success
 
@@ -567,6 +846,19 @@ class TradingManager:
             if logger:
                 logger.info(f"Loaded {environment} trading configuration")
             
+            # <Context-Aware Logging - Configuration Loaded - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Trading configuration loaded successfully",
+                context_provider={
+                    'environment': environment,
+                    'config_sections': list(self.trading_config.keys()),
+                    'max_open_orders': self.trading_config['risk_limits']['max_open_orders'],
+                    'fill_probability_threshold': float(self.trading_config['execution']['fill_probability_threshold'])
+                }
+            )
+            # <Context-Aware Logging - Configuration Loaded - End>
+            
         except Exception as e:
             # Fallback to hardcoded defaults
             if logger:
@@ -611,6 +903,19 @@ class TradingManager:
                 'state_change_hours_back': 1
             }
         }
+        
+        # <Context-Aware Logging - Fallback Configuration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Fallback configuration loaded due to configuration failure",
+            context_provider={
+                'reason': 'configuration_load_failed',
+                'fallback_max_open_orders': 5,
+                'fallback_default_equity': 100000
+            },
+            decision_reason="Using hardcoded fallback configuration"
+        )
+        # <Context-Aware Logging - Fallback Configuration - End>
 
     # src/core/trading_manager.py - Fix other config access methods
     def _label_completed_orders(self) -> None:
@@ -772,10 +1077,34 @@ class TradingManager:
 
     def start_monitoring(self, interval_seconds: Optional[int] = None) -> bool:
         """Start the continuous monitoring loop with automatic initialization."""
+        # <Context-Aware Logging - Monitoring Start Initiated - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Starting trading monitoring process",
+            context_provider={
+                'provided_interval_seconds': interval_seconds,
+                'data_feed_connected': self.data_feed.is_connected(),
+                'planned_orders_count': len(self.planned_orders),
+                'initialized': self._initialized
+            }
+        )
+        # <Context-Aware Logging - Monitoring Start Initiated - End>
+        
         if logger:
             logger.info("Starting trading monitoring")
             
         if not self._initialize():
+            # <Context-Aware Logging - Monitoring Start Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Monitoring start failed - initialization unsuccessful",
+                context_provider={
+                    'data_feed_connected': self.data_feed.is_connected(),
+                    'initialized': self._initialized
+                },
+                decision_reason="System initialization failed, monitoring cannot start"
+            )
+            # <Context-Aware Logging - Monitoring Start Failed - End>
             return False
 
         if self.ibkr_client and self.ibkr_client.connected:
@@ -801,10 +1130,35 @@ class TradingManager:
         self.debug_order_status()
         
         # FIX: Remove interval_seconds parameter
-        return self.monitoring_service.start_monitoring(
+        success = self.monitoring_service.start_monitoring(
             check_callback=self._check_and_execute_orders,
             label_callback=self._label_completed_orders
-        )    
+        )
+        
+        # <Context-Aware Logging - Monitoring Start Result - Begin>
+        if success:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Trading monitoring started successfully",
+                context_provider={
+                    'monitoring_interval': interval_seconds,
+                    'planned_orders_monitored': len(self.planned_orders),
+                    'reconciliation_engine_active': self.ibkr_client.connected if self.ibkr_client else False
+                },
+                decision_reason="Monitoring service started successfully"
+            )
+        else:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Trading monitoring failed to start",
+                context_provider={
+                    'monitoring_interval': interval_seconds
+                },
+                decision_reason="Monitoring service returned failure"
+            )
+        # <Context-Aware Logging - Monitoring Start Result - End>
+        
+        return success
 
     # ADD NEW METHOD TO TradingManager
     def _subscribe_to_planned_order_symbols(self) -> None:
@@ -857,9 +1211,31 @@ class TradingManager:
         try:
             self.market_context_service = MarketContextService(self.data_feed)
             self.historical_performance_service = HistoricalPerformanceService(self.db_session)
+            
+            # <Context-Aware Logging - Advanced Services Initialized - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Advanced trading services initialized",
+                context_provider={
+                    'services': ['MarketContextService', 'HistoricalPerformanceService'],
+                    'advanced_features_enabled': True
+                }
+            )
+            # <Context-Aware Logging - Advanced Services Initialized - End>
         except Exception as e:
             if logger:
                 logger.error(f"Failed to initialize advanced services: {e}")
+            # <Context-Aware Logging - Advanced Services Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Advanced services initialization failed",
+                context_provider={
+                    'error': str(e),
+                    'advanced_features_enabled': True
+                },
+                decision_reason=f"Advanced services initialization error: {e}"
+            )
+            # <Context-Aware Logging - Advanced Services Error - End>
     
     def _check_market_close_actions(self) -> None:
         """Check if any DAY positions need to be closed before market close."""
@@ -910,6 +1286,16 @@ class TradingManager:
     def _check_and_execute_orders(self) -> None:
         """Check market conditions and execute orders that meet the criteria."""
         if not self.planned_orders:
+            # <Context-Aware Logging - No Planned Orders - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                "No planned orders available for execution check",
+                context_provider={
+                    'planned_orders_count': 0
+                },
+                decision_reason="Skipping execution cycle - no planned orders"
+            )
+            # <Context-Aware Logging - No Planned Orders - End>
             return
 
         # <Context-Aware Logging - Execution Cycle Start - Begin>

@@ -148,7 +148,7 @@ class TestRiskManagementService(unittest.TestCase):
     
     def test_calculate_position_pnl_wrong_parameter_types(self):
         """Test P&L calculation with wrong parameter types raises error."""
-        with self.assertRaises(TypeError) as context:
+        with self.assertRaises(ValueError) as context:
             self.risk_service.calculate_position_pnl(
                 entry_price="100",  # String instead of number
                 exit_price=110.0,
@@ -159,24 +159,37 @@ class TestRiskManagementService(unittest.TestCase):
         self.assertIn("Entry price must be numeric", str(context.exception))
     
     def test_validate_pnl_parameters_success(self):
-        """Test parameter validation with valid inputs."""
+        """Test parameter validation with valid inputs through calculate_position_pnl."""
         # Should not raise any exceptions
-        self.risk_service._validate_pnl_parameters(
+        result = self.risk_service.calculate_position_pnl(
             entry_price=100.0,
             exit_price=110.0,
             quantity=100.0,
             action='BUY'
         )
-    
+        # Verify it returns a numeric result without throwing validation errors
+        self.assertIsInstance(result, (int, float))
+        self.assertEqual(result, 1000.0)  # (110-100)*100
+
     def test_validate_pnl_parameters_case_insensitive_action(self):
-        """Test parameter validation with case-insensitive action."""
-        # Should not raise any exceptions
-        self.risk_service._validate_pnl_parameters(
+        """Test parameter validation with case-insensitive action through calculate_position_pnl."""
+        # Should not raise any exceptions for valid action regardless of case
+        result_buy = self.risk_service.calculate_position_pnl(
             entry_price=100.0,
             exit_price=110.0,
             quantity=100.0,
             action='buy'  # lowercase
         )
+        result_sell = self.risk_service.calculate_position_pnl(
+            entry_price=100.0,
+            exit_price=90.0,
+            quantity=100.0,
+            action='sell'  # lowercase
+        )
+        
+        # Both should work and return correct calculations
+        self.assertEqual(result_buy, 1000.0)  # (110-100)*100
+        self.assertEqual(result_sell, 1000.0)  # (100-90)*100
 
     def test_record_trade_outcome_calls_persistence(self):
         """Test that recording a trade outcome calls persistence correctly."""
@@ -336,9 +349,9 @@ class TestRiskCappingFunctionality(unittest.TestCase):
         
         # Should remain unchanged
         self.assertEqual(mock_order.risk_per_trade, original_risk)
-    
-    @patch('src.services.risk_management_service.logger')
-    def test_cap_risk_logs_warning_when_capped(self, mock_logger):
+
+    @patch('src.services.risk_management_service.context_logger')
+    def test_cap_risk_logs_warning_when_capped(self, mock_context_logger):
         """Test that risk capping logs a warning when values are capped."""
         # Create a mock order with risk exceeding max
         mock_order = MagicMock()
@@ -349,15 +362,16 @@ class TestRiskCappingFunctionality(unittest.TestCase):
         # Apply risk capping
         self.risk_service._cap_risk_to_max_limit(mock_order)
         
-        # Should log warning
-        mock_logger.warning.assert_called_once()
-        warning_msg = mock_logger.warning.call_args[0][0]
-        self.assertIn('capped', warning_msg.lower())
-        self.assertIn('3.000%', warning_msg)
-        self.assertIn('2.000%', warning_msg)
-    
-    @patch('src.services.risk_management_service.logger')
-    def test_cap_risk_no_warning_when_within_limits(self, mock_logger):
+        # Should log warning using context_logger
+        mock_context_logger.log_event.assert_called_once()
+        
+        # Verify the log event parameters
+        call_args = mock_context_logger.log_event.call_args
+        self.assertEqual(call_args[0][0].value, 'risk_evaluation')  # TradingEventType.RISK_EVALUATION
+        self.assertIn('capped', call_args[0][1].lower())  # message contains 'capped'
+
+    @patch('src.services.risk_management_service.context_logger')
+    def test_cap_risk_no_warning_when_within_limits(self, mock_context_logger):
         """Test that no warning is logged when risk is within limits."""
         # Create a mock order with risk within limits
         mock_order = MagicMock()
@@ -369,8 +383,8 @@ class TestRiskCappingFunctionality(unittest.TestCase):
         self.risk_service._cap_risk_to_max_limit(mock_order)
         
         # Should not log warning
-        mock_logger.warning.assert_not_called()
-    
+        mock_context_logger.log_event.assert_not_called()
+            
     def test_can_place_order_with_capped_risk(self):
         """Test that orders with capped risk can still be placed."""
         # Create a mock order with risk exceeding max

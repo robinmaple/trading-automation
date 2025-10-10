@@ -18,11 +18,32 @@ from src.core.account_utils import is_paper_account, get_ibkr_port
 from src.core.simple_logger import get_simple_logger
 logger = get_simple_logger(__name__)
 
+# <Context-Aware Logger Integration - Begin>
+from src.core.context_aware_logger import get_context_logger, TradingEventType
+# <Context-Aware Logger Integration - End>
+
 class IbkrClient(EClient, EWrapper):
     """Manages the connection and all communication with the IBKR trading API."""
 
     def __init__(self, host='127.0.0.1', port=None, client_id=1, mode='auto'):
         """Initialize the client, connection flags, and data stores."""
+        # <Context-Aware Logger Initialization - Begin>
+        self.context_logger = get_context_logger()
+        # <Context-Aware Logger Initialization - End>
+        
+        # <Context-Aware Logging - IbkrClient Initialization Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "IbkrClient initialization starting",
+            context_provider={
+                "host": host,
+                "port": port,
+                "client_id": client_id,
+                "mode": mode
+            }
+        )
+        # <Context-Aware Logging - IbkrClient Initialization Start - End>
+        
         # Minimal logging
         if logger:
             logger.debug("Initializing IbkrClient")
@@ -68,6 +89,18 @@ class IbkrClient(EClient, EWrapper):
             self.port = port
         self.mode = mode
 
+        # <Context-Aware Logging - IbkrClient Initialization Complete - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "IbkrClient initialization completed",
+            context_provider={
+                "resolved_port": self.port,
+                "mode": mode,
+                "market_data_manager_ready": False
+            }
+        )
+        # <Context-Aware Logging - IbkrClient Initialization Complete - End>
+
     # <AON Order Methods - Begin>
     def submit_aon_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
                                risk_per_trade, risk_reward_ratio, total_capital) -> Optional[List[int]]:
@@ -89,6 +122,21 @@ class IbkrClient(EClient, EWrapper):
             List of order IDs for the bracket order, or None if failed
         """
         if not self.connected or self.next_valid_id is None:
+            # <Context-Aware Logging - AON Order Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "AON bracket order failed - not connected or no valid order ID",
+                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
+                context_provider={
+                    'connected': self.connected,
+                    'next_valid_id': self.next_valid_id,
+                    'action': action,
+                    'order_type': order_type,
+                    'entry_price': entry_price
+                },
+                decision_reason="IBKR connection not ready for order placement"
+            )
+            # <Context-Aware Logging - AON Order Failed - End>
             if logger:
                 logger.error("Not connected to IBKR or no valid order ID for AON order")
             return None
@@ -101,6 +149,26 @@ class IbkrClient(EClient, EWrapper):
 
             if logger:
                 logger.info(f"Placing AON bracket order for {contract.symbol}")
+
+            # <Context-Aware Logging - AON Order Placement Start - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Placing AON bracket order",
+                symbol=contract.symbol,
+                context_provider={
+                    'action': action,
+                    'order_type': order_type,
+                    'entry_price': entry_price,
+                    'stop_loss': stop_loss,
+                    'risk_per_trade': risk_per_trade,
+                    'risk_reward_ratio': risk_reward_ratio,
+                    'total_capital': total_capital,
+                    'starting_order_id': self.next_valid_id,
+                    'order_count': len(orders)
+                },
+                decision_reason="AON bracket order meets placement criteria"
+            )
+            # <Context-Aware Logging - AON Order Placement Start - End>
 
             order_ids = []
             for order in orders:
@@ -122,9 +190,38 @@ class IbkrClient(EClient, EWrapper):
             
             if logger:
                 logger.info(f"AON bracket order placed successfully: {contract.symbol}")
+                
+            # <Context-Aware Logging - AON Order Placement Success - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "AON bracket order placed successfully",
+                symbol=contract.symbol,
+                context_provider={
+                    'order_ids': order_ids,
+                    'final_order_id': self.next_valid_id,
+                    'order_count': len(orders)
+                },
+                decision_reason="AON bracket order submitted to IBKR API"
+            )
+            # <Context-Aware Logging - AON Order Placement Success - End>
+            
             return order_ids
 
         except Exception as e:
+            # <Context-Aware Logging - AON Order Placement Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "AON bracket order placement failed",
+                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
+                context_provider={
+                    'error': str(e),
+                    'action': action,
+                    'entry_price': entry_price,
+                    'starting_order_id': self.next_valid_id
+                },
+                decision_reason=f"AON order placement exception: {e}"
+            )
+            # <Context-Aware Logging - AON Order Placement Error - End>
             if logger:
                 logger.error(f"Failed to place AON bracket order: {e}")
             return None
@@ -198,6 +295,17 @@ class IbkrClient(EClient, EWrapper):
             self.market_data_manager = manager
             if logger:
                 logger.info(f"MarketDataManager connected to IbkrClient")
+                
+            # <Context-Aware Logging - Market Data Manager Connected - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "MarketDataManager connected to IbkrClient",
+                context_provider={
+                    'manager_type': type(manager).__name__,
+                    'connected': True
+                }
+            )
+            # <Context-Aware Logging - Market Data Manager Connected - End>
 
     def get_market_data_health(self) -> dict:
         """
@@ -236,6 +344,19 @@ class IbkrClient(EClient, EWrapper):
         connect_port = port or self.port
         connect_client_id = client_id or self.client_id
 
+        # <Context-Aware Logging - Connection Attempt Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Attempting IBKR connection",
+            context_provider={
+                'host': connect_host,
+                'port': connect_port,
+                'client_id': connect_client_id,
+                'mode': self.mode
+            }
+        )
+        # <Context-Aware Logging - Connection Attempt Start - End>
+        
         if logger:
             logger.info(f"Connecting to IB API at {connect_host}:{connect_port}")
 
@@ -246,6 +367,20 @@ class IbkrClient(EClient, EWrapper):
         # Wait for both: valid ID and account info
         ready = self.connection_event.wait(10) and self.account_ready_event.wait(10)
         if not ready:
+            # <Context-Aware Logging - Connection Timeout - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "IBKR connection timeout",
+                context_provider={
+                    'host': connect_host,
+                    'port': connect_port,
+                    'timeout_seconds': 10,
+                    'connection_event_set': self.connection_event.is_set(),
+                    'account_ready_event_set': self.account_ready_event.is_set()
+                },
+                decision_reason="Connection timeout waiting for account details"
+            )
+            # <Context-Aware Logging - Connection Timeout - End>
             if logger:
                 logger.error("Connection timed out waiting for account details")
             return False
@@ -253,11 +388,39 @@ class IbkrClient(EClient, EWrapper):
         # Validate account ↔ port
         expected_port = get_ibkr_port(self.account_name)
         if connect_port != expected_port:
+            # <Context-Aware Logging - Port Mismatch - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "IBKR port mismatch detected",
+                context_provider={
+                    'account_name': self.account_name,
+                    'expected_port': expected_port,
+                    'actual_port': connect_port,
+                    'is_paper_account': self.is_paper_account
+                },
+                decision_reason=f"Account {self.account_name} requires port {expected_port}, but connected to {connect_port}"
+            )
+            # <Context-Aware Logging - Port Mismatch - End>
             if logger:
                 logger.error(f"Port mismatch: account {self.account_name} requires port {expected_port}, but tried {connect_port}")
             self.disconnect()
             return False
 
+        # <Context-Aware Logging - Connection Success - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "IBKR connection established successfully",
+            context_provider={
+                'account_name': self.account_name,
+                'account_number': self.account_number,
+                'is_paper_account': self.is_paper_account,
+                'port': connect_port,
+                'next_valid_id': self.next_valid_id
+            },
+            decision_reason=f"Connected to {self.account_name} ({'PAPER' if self.is_paper_account else 'LIVE'})"
+        )
+        # <Context-Aware Logging - Connection Success - End>
+        
         if logger:
             logger.info(f"Connected to {self.account_name} ({'PAPER' if self.is_paper_account else 'LIVE'}) on port {connect_port}")
         return True
@@ -265,10 +428,34 @@ class IbkrClient(EClient, EWrapper):
     def disconnect(self) -> None:
         """Cleanly disconnect from TWS."""
         if self.connected:
+            # <Context-Aware Logging - Disconnection Start - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Disconnecting from IBKR TWS",
+                context_provider={
+                    'account_name': self.account_name,
+                    'next_valid_id': self.next_valid_id,
+                    'open_orders_count': len(self.open_orders),
+                    'positions_count': len(self.positions)
+                }
+            )
+            # <Context-Aware Logging - Disconnection Start - End>
+            
             if logger:
                 logger.info("Disconnecting from IBKR TWS")
             super().disconnect()
             self.connected = False
+            
+            # <Context-Aware Logging - Disconnection Complete - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Disconnected from IBKR TWS",
+                context_provider={
+                    'connected': False,
+                    'connection_event_cleared': True
+                }
+            )
+            # <Context-Aware Logging - Disconnection Complete - End>
 
     def get_account_name(self) -> Optional[str]:
         """Get the connected account name."""
@@ -277,6 +464,17 @@ class IbkrClient(EClient, EWrapper):
     def get_account_value(self) -> float:
         """Request and return the Net Liquidation value of the account."""
         if not self.connected:
+            # <Context-Aware Logging - Account Value Fallback - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Using fallback account value - not connected to IBKR",
+                context_provider={
+                    'connected': False,
+                    'fallback_value': 100000.0
+                },
+                decision_reason="IBKR not connected, using simulation account value"
+            )
+            # <Context-Aware Logging - Account Value Fallback - End>
             if logger:
                 logger.warning("Not connected to IBKR - using fallback account value")
             return 100000.0
@@ -285,6 +483,17 @@ class IbkrClient(EClient, EWrapper):
         self.reqAccountUpdates(True, self.account_number)
 
         if not self.account_value_received.wait(5.0):
+            # <Context-Aware Logging - Account Value Timeout - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Timeout waiting for account value data",
+                context_provider={
+                    'account_number': self.account_number,
+                    'timeout_seconds': 5.0
+                },
+                decision_reason="Account value request timeout, using fallback"
+            )
+            # <Context-Aware Logging - Account Value Timeout - End>
             if logger:
                 logger.warning("Timeout waiting for account value data - using fallback value")
             self.reqAccountUpdates(False, self.account_number)
@@ -292,12 +501,32 @@ class IbkrClient(EClient, EWrapper):
 
         net_liquidation = self.account_values.get("NetLiquidation")
         if net_liquidation is not None:
+            # <Context-Aware Logging - Account Value Success - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Account value retrieved successfully",
+                context_provider={
+                    'net_liquidation': net_liquidation,
+                    'account_number': self.account_number
+                }
+            )
+            # <Context-Aware Logging - Account Value Success - End>
             if logger:
                 logger.info(f"Current account value: ${net_liquidation:,.2f}")
             self.reqAccountUpdates(False, self.account_number)
             return net_liquidation
 
         cash_value = self.account_values.get("TotalCashValue", 100000.0)
+        # <Context-Aware Logging - Account Value Fallback to Cash - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Using cash value as NetLiquidation not available",
+            context_provider={
+                'cash_value': cash_value,
+                'net_liquidation_available': False
+            }
+        )
+        # <Context-Aware Logging - Account Value Fallback to Cash - End>
         if logger:
             logger.warning(f"Using cash value: ${cash_value:,.2f} (NetLiquidation not available)")
         self.reqAccountUpdates(False, self.account_number)
@@ -307,6 +536,20 @@ class IbkrClient(EClient, EWrapper):
                           risk_per_trade, risk_reward_ratio, total_capital) -> Optional[List[int]]:
         """Place a complete bracket order (entry, take-profit, stop-loss). Returns list of order IDs or None."""
         if not self.connected or self.next_valid_id is None:
+            # <Context-Aware Logging - Bracket Order Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Bracket order failed - not connected or no valid order ID",
+                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
+                context_provider={
+                    'connected': self.connected,
+                    'next_valid_id': self.next_valid_id,
+                    'action': action,
+                    'order_type': order_type
+                },
+                decision_reason="IBKR connection not ready for bracket order"
+            )
+            # <Context-Aware Logging - Bracket Order Failed - End>
             if logger:
                 logger.error("Not connected to IBKR or no valid order ID")
             return None
@@ -319,6 +562,26 @@ class IbkrClient(EClient, EWrapper):
 
             if logger:
                 logger.info(f"Placing bracket order for {contract.symbol}")
+
+            # <Context-Aware Logging - Bracket Order Placement Start - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Placing bracket order",
+                symbol=contract.symbol,
+                context_provider={
+                    'action': action,
+                    'order_type': order_type,
+                    'entry_price': entry_price,
+                    'stop_loss': stop_loss,
+                    'risk_per_trade': risk_per_trade,
+                    'risk_reward_ratio': risk_reward_ratio,
+                    'total_capital': total_capital,
+                    'starting_order_id': self.next_valid_id,
+                    'order_count': len(orders)
+                },
+                decision_reason="Bracket order meets placement criteria"
+            )
+            # <Context-Aware Logging - Bracket Order Placement Start - End>
 
             order_ids = []
             for order in orders:
@@ -339,9 +602,38 @@ class IbkrClient(EClient, EWrapper):
             
             if logger:
                 logger.info(f"Bracket order placed successfully: {contract.symbol}")
+                
+            # <Context-Aware Logging - Bracket Order Placement Success - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Bracket order placed successfully",
+                symbol=contract.symbol,
+                context_provider={
+                    'order_ids': order_ids,
+                    'final_order_id': self.next_valid_id,
+                    'order_count': len(orders)
+                },
+                decision_reason="Bracket order submitted to IBKR API"
+            )
+            # <Context-Aware Logging - Bracket Order Placement Success - End>
+            
             return order_ids
 
         except Exception as e:
+            # <Context-Aware Logging - Bracket Order Placement Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Bracket order placement failed",
+                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
+                context_provider={
+                    'error': str(e),
+                    'action': action,
+                    'entry_price': entry_price,
+                    'starting_order_id': self.next_valid_id
+                },
+                decision_reason=f"Bracket order placement exception: {e}"
+            )
+            # <Context-Aware Logging - Bracket Order Placement Error - End>
             if logger:
                 logger.error(f"Failed to place bracket order: {e}")
             return None
@@ -442,16 +734,49 @@ class IbkrClient(EClient, EWrapper):
     def cancel_order(self, order_id: int) -> bool:
         """Cancel an order through the IBKR API. Returns success status."""
         if not self.connected:
+            # <Context-Aware Logging - Cancel Order Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Order cancellation failed - not connected to IBKR",
+                context_provider={
+                    'order_id': order_id,
+                    'connected': False
+                },
+                decision_reason="IBKR not connected, cannot cancel order"
+            )
+            # <Context-Aware Logging - Cancel Order Failed - End>
             if logger:
                 logger.error(f"Cannot cancel order {order_id} - not connected to IBKR")
             return False
 
         try:
             self.cancelOrder(order_id)
+            # <Context-Aware Logging - Cancel Order Requested - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Order cancellation requested",
+                context_provider={
+                    'order_id': order_id,
+                    'connected': True
+                },
+                decision_reason="Cancel order request sent to IBKR API"
+            )
+            # <Context-Aware Logging - Cancel Order Requested - End>
             if logger:
                 logger.info(f"Sent cancel request for order {order_id}")
             return True
         except Exception as e:
+            # <Context-Aware Logging - Cancel Order Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Order cancellation failed with exception",
+                context_provider={
+                    'order_id': order_id,
+                    'error': str(e)
+                },
+                decision_reason=f"Cancel order exception: {e}"
+            )
+            # <Context-Aware Logging - Cancel Order Error - End>
             if logger:
                 logger.error(f"Failed to cancel order {order_id}: {e}")
             return False
@@ -459,6 +784,16 @@ class IbkrClient(EClient, EWrapper):
     def get_open_orders(self) -> List[IbkrOrder]:
         """Fetch all open orders from IBKR API synchronously. Returns a list of IbkrOrder objects."""
         if not self.connected:
+            # <Context-Aware Logging - Open Orders Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Open orders request failed - not connected to IBKR",
+                context_provider={
+                    'connected': False
+                },
+                decision_reason="IBKR not connected, cannot fetch open orders"
+            )
+            # <Context-Aware Logging - Open Orders Failed - End>
             if logger:
                 logger.error("Not connected to IBKR - cannot fetch open orders")
             return []
@@ -468,20 +803,59 @@ class IbkrClient(EClient, EWrapper):
             self.open_orders_end_received = False
             self.orders_received_event.clear()
 
+            # <Context-Aware Logging - Open Orders Request Start - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Requesting open orders from IBKR",
+                context_provider={
+                    'timeout_seconds': 10.0
+                }
+            )
+            # <Context-Aware Logging - Open Orders Request Start - End>
+            
             if logger:
                 logger.debug("Requesting open orders from IBKR...")
             self.reqAllOpenOrders()
 
             if self.orders_received_event.wait(10.0):
+                # <Context-Aware Logging - Open Orders Success - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Open orders retrieved successfully",
+                    context_provider={
+                        'open_orders_count': len(self.open_orders)
+                    }
+                )
+                # <Context-Aware Logging - Open Orders Success - End>
                 if logger:
                     logger.info(f"Received {len(self.open_orders)} open orders")
                 return self.open_orders.copy()
             else:
+                # <Context-Aware Logging - Open Orders Timeout - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Timeout waiting for open orders data",
+                    context_provider={
+                        'timeout_seconds': 10.0
+                    },
+                    decision_reason="Open orders request timeout"
+                )
+                # <Context-Aware Logging - Open Orders Timeout - End>
                 if logger:
                     logger.error("Timeout waiting for open orders data")
                 return []
 
         except Exception as e:
+            # <Context-Aware Logging - Open Orders Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Open orders request failed with exception",
+                context_provider={
+                    'error': str(e)
+                },
+                decision_reason=f"Open orders exception: {e}"
+            )
+            # <Context-Aware Logging - Open Orders Error - End>
             if logger:
                 logger.error(f"Failed to fetch open orders: {e}")
             return []
@@ -489,6 +863,16 @@ class IbkrClient(EClient, EWrapper):
     def get_positions(self) -> List[IbkrPosition]:
         """Fetch all positions from IBKR API synchronously. Returns a list of IbkrPosition objects."""
         if not self.connected:
+            # <Context-Aware Logging - Positions Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Positions request failed - not connected to IBKR",
+                context_provider={
+                    'connected': False
+                },
+                decision_reason="IBKR not connected, cannot fetch positions"
+            )
+            # <Context-Aware Logging - Positions Failed - End>
             if logger:
                 logger.error("Not connected to IBKR - cannot fetch positions")
             return []
@@ -498,20 +882,59 @@ class IbkrClient(EClient, EWrapper):
             self.positions_end_received = False
             self.positions_received_event.clear()
 
+            # <Context-Aware Logging - Positions Request Start - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Requesting positions from IBKR",
+                context_provider={
+                    'timeout_seconds': 10.0
+                }
+            )
+            # <Context-Aware Logging - Positions Request Start - End>
+            
             if logger:
                 logger.debug("Requesting positions from IBKR...")
             self.reqPositions()
 
             if self.positions_received_event.wait(10.0):
+                # <Context-Aware Logging - Positions Success - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Positions retrieved successfully",
+                    context_provider={
+                        'positions_count': len(self.positions)
+                    }
+                )
+                # <Context-Aware Logging - Positions Success - End>
                 if logger:
                     logger.info(f"Received {len(self.positions)} positions")
                 return self.positions.copy()
             else:
+                # <Context-Aware Logging - Positions Timeout - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Timeout waiting for positions data",
+                    context_provider={
+                        'timeout_seconds': 10.0
+                    },
+                    decision_reason="Positions request timeout"
+                )
+                # <Context-Aware Logging - Positions Timeout - End>
                 if logger:
                     logger.error("Timeout waiting for positions data")
                 return []
 
         except Exception as e:
+            # <Context-Aware Logging - Positions Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Positions request failed with exception",
+                context_provider={
+                    'error': str(e)
+                },
+                decision_reason=f"Positions exception: {e}"
+            )
+            # <Context-Aware Logging - Positions Error - End>
             if logger:
                 logger.error(f"Failed to fetch positions: {e}")
             return []
@@ -519,6 +942,17 @@ class IbkrClient(EClient, EWrapper):
     # --- IBKR API Callbacks ---
     def nextValidId(self, orderId: int) -> None:
         """Callback: Connection is ready and we have a valid order ID."""
+        # <Context-Aware Logging - Next Valid ID Received - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "IBKR connection ready - next valid order ID received",
+            context_provider={
+                'next_valid_id': orderId,
+                'connection_ready': True
+            },
+            decision_reason="IBKR connection established and ready for order placement"
+        )
+        # <Context-Aware Logging - Next Valid ID Received - End>
         if logger:
             logger.info(f"Connection established. Next valid order ID: {orderId}")
         self.next_valid_id = orderId
@@ -535,23 +969,64 @@ class IbkrClient(EClient, EWrapper):
 
         self.displayed_errors.add(error_key)
 
+        # <Context-Aware Logging - IBKR Error - Begin>
+        error_context = {
+            'req_id': reqId,
+            'error_code': errorCode,
+            'error_string': errorString,
+            'advanced_order_reject': advancedOrderReject,
+            'total_unique_errors': len(self.displayed_errors)
+        }
+        
+        # Categorize error severity for structured logging
         if errorCode in [10089, 10167, 322, 10201, 10202]:
             is_snapshot = "snapshot" in errorString.lower() or "not subscribed" in errorString.lower()
             if is_snapshot:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"IBKR Snapshot Error {errorCode}",
+                    context_provider=error_context,
+                    decision_reason=f"Snapshot error: {errorString}"
+                )
                 if logger:
                     logger.warning(f"Snapshot Error {errorCode}: {errorString}")
             else:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"IBKR Streaming Error {errorCode}",
+                    context_provider=error_context,
+                    decision_reason=f"Streaming error: {errorString}"
+                )
                 if logger:
                     logger.warning(f"Streaming Error {errorCode}: {errorString}")
         elif errorCode in [2104, 2106, 2158]:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                f"IBKR Connection Message",
+                context_provider=error_context,
+                decision_reason=f"Connection message: {errorString}"
+            )
             if logger:
                 logger.info(f"Connection: {errorString}")
         elif errorCode == 399:
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                f"IBKR Order Warning {errorCode}",
+                context_provider=error_context,
+                decision_reason=f"Order warning: {errorString}"
+            )
             if logger:
                 logger.warning(f"Order Warning: {errorString}")
         else:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                f"IBKR Error {errorCode}",
+                context_provider=error_context,
+                decision_reason=f"API error: {errorString}"
+            )
             if logger:
                 logger.error(f"Error {errorCode}: {errorString}")
+        # <Context-Aware Logging - IBKR Error - End>
 
         if errorCode in [321, 322]:
             self.positions_received_event.set()
@@ -585,6 +1060,22 @@ class IbkrClient(EClient, EWrapper):
             self.is_paper_account = is_paper_account(self.account_name)  # Use utility function
             
             env = "PAPER" if self.is_paper_account else "PRODUCTION"
+            
+            # <Context-Aware Logging - Account Detection - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "IBKR account detected",
+                context_provider={
+                    'account_name': self.account_name,
+                    'account_number': self.account_number,
+                    'is_paper_account': self.is_paper_account,
+                    'environment': env,
+                    'all_accounts': accountsList
+                },
+                decision_reason=f"Auto-detected {env} trading environment"
+            )
+            # <Context-Aware Logging - Account Detection - End>
+            
             if logger:
                 logger.info(f"Auto-detected environment: {env} (Account: {self.account_name})")
             self.account_ready_event.set()
@@ -600,6 +1091,24 @@ class IbkrClient(EClient, EWrapper):
 
                 if status == 'Filled' and avgFillPrice > 0:
                     order['avg_fill_price'] = avgFillPrice
+
+        # <Context-Aware Logging - Order Status Update - Begin>
+        if status in ['Filled', 'Cancelled', 'Submitted']:
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                f"Order status update: {status}",
+                context_provider={
+                    'order_id': orderId,
+                    'status': status,
+                    'filled_quantity': float(filled),
+                    'remaining_quantity': float(remaining),
+                    'avg_fill_price': avgFillPrice,
+                    'perm_id': permId,
+                    'parent_id': parentId
+                },
+                decision_reason=f"Order {orderId} status changed to {status}"
+            )
+        # <Context-Aware Logging - Order Status Update - End>
 
         if logger:
             logger.debug(f"Order status: {orderId} - {status}, Filled: {filled}, Remaining: {remaining}")
@@ -626,6 +1135,18 @@ class IbkrClient(EClient, EWrapper):
             )
             self.open_orders.append(ibkr_order)
         except Exception as e:
+            # <Context-Aware Logging - Open Order Processing Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Error processing open order data",
+                context_provider={
+                    'order_id': orderId,
+                    'error': str(e),
+                    'symbol': getattr(contract, 'symbol', 'UNKNOWN')
+                },
+                decision_reason=f"Open order processing error: {e}"
+            )
+            # <Context-Aware Logging - Open Order Processing Error - End>
             if logger:
                 logger.error(f"Error processing open order {orderId}: {e}")
 
@@ -633,6 +1154,16 @@ class IbkrClient(EClient, EWrapper):
         """Callback: Finished receiving open orders."""
         self.open_orders_end_received = True
         self.orders_received_event.set()
+        # <Context-Aware Logging - Open Orders Complete - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Open orders request completed",
+            context_provider={
+                'open_orders_count': len(self.open_orders),
+                'end_received': True
+            }
+        )
+        # <Context-Aware Logging - Open Orders Complete - End>
         if logger:
             logger.debug("Open orders request completed")
 
@@ -650,6 +1181,18 @@ class IbkrClient(EClient, EWrapper):
             )
             self.positions.append(ibkr_position)
         except Exception as e:
+            # <Context-Aware Logging - Position Processing Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Error processing position data",
+                context_provider={
+                    'symbol': getattr(contract, 'symbol', 'UNKNOWN'),
+                    'error': str(e),
+                    'position_value': position
+                },
+                decision_reason=f"Position processing error: {e}"
+            )
+            # <Context-Aware Logging - Position Processing Error - End>
             if logger:
                 logger.error(f"Error processing position for {contract.symbol}: {e}")
 
@@ -657,6 +1200,16 @@ class IbkrClient(EClient, EWrapper):
         """Callback: Finished receiving positions."""
         self.positions_end_received = True
         self.positions_received_event.set()
+        # <Context-Aware Logging - Positions Complete - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Positions request completed",
+            context_provider={
+                'positions_count': len(self.positions),
+                'end_received': True
+            }
+        )
+        # <Context-Aware Logging - Positions Complete - End>
         if logger:
             logger.debug("Positions request completed")
 
@@ -681,6 +1234,18 @@ class IbkrClient(EClient, EWrapper):
                     # Log first successful tick for debugging
                     if self._total_ticks_processed == 1:
                         tick_type_name = {1: 'BID', 2: 'ASK', 4: 'LAST'}.get(tickType, f'UNKNOWN({tickType})')
+                        # <Context-Aware Logging - First Tick Processed - Begin>
+                        self.context_logger.log_event(
+                            TradingEventType.MARKET_CONDITION,
+                            "First market data tick processed",
+                            context_provider={
+                                'tick_type': tick_type_name,
+                                'price': price,
+                                'req_id': reqId,
+                                'total_ticks_processed': 1
+                            }
+                        )
+                        # <Context-Aware Logging - First Tick Processed - End>
                         if logger:
                             logger.info(f"FIRST TICK PROCESSED: Type {tick_type_name}, Price ${price}")
                         
@@ -690,11 +1255,38 @@ class IbkrClient(EClient, EWrapper):
                     
                     # Only log periodic errors to avoid spam
                     if error_count <= 3 or error_count % 10 == 0:
+                        # <Context-Aware Logging - Tick Processing Error - Begin>
+                        self.context_logger.log_event(
+                            TradingEventType.SYSTEM_HEALTH,
+                            "Market data tick processing error",
+                            context_provider={
+                                'error_count': error_count,
+                                'total_ticks_processed': self._total_ticks_processed,
+                                'error': str(e),
+                                'req_id': reqId,
+                                'tick_type': tickType
+                            },
+                            decision_reason=f"Tick processing error #{error_count}: {e}"
+                        )
+                        # <Context-Aware Logging - Tick Processing Error - End>
                         if logger:
                             logger.warning(f"Error in market data processing (Error #{error_count}): {e}")
             else:
                 # Only log missing manager occasionally to avoid spam
                 if self._total_ticks_processed <= 5 or self._total_ticks_processed % 50 == 0:
+                    # <Context-Aware Logging - Missing Market Data Manager - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Market data tick received but no manager connected",
+                        context_provider={
+                            'total_ticks_processed': self._total_ticks_processed,
+                            'req_id': reqId,
+                            'tick_type': tickType,
+                            'price': price
+                        },
+                        decision_reason=f"No MarketDataManager for tick processing (total: {self._total_ticks_processed})"
+                    )
+                    # <Context-Aware Logging - Missing Market Data Manager - End>
                     if logger:
                         logger.debug(f"Tick received but no MarketDataManager connected (Total ticks: {self._total_ticks_processed})")
     # <Enhanced tickPrice with Thread Safety and Error Handling - End>

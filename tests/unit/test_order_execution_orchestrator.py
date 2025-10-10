@@ -7,7 +7,7 @@ from decimal import Decimal
 import datetime
 
 from src.core.order_execution_orchestrator import OrderExecutionOrchestrator
-from src.core.planned_order import PlannedOrder, Action, OrderType, PositionStrategy
+from src.core.planned_order import PlannedOrder, Action, OrderType, PositionStrategy, SecurityType
 
 # -----------------------------
 # Mock helpers
@@ -15,7 +15,8 @@ from src.core.planned_order import PlannedOrder, Action, OrderType, PositionStra
 
 def create_mock_planned_order(symbol="AAPL", action=Action.BUY, order_type=OrderType.LMT,
                               entry_price=150.0, stop_loss=145.0, risk_per_trade=0.01,
-                              risk_reward_ratio=2.0, priority=1, position_strategy=PositionStrategy.DAY):
+                              risk_reward_ratio=2.0, priority=1, position_strategy=PositionStrategy.DAY,
+                              security_type=SecurityType.STK):  # CHANGE: Use SecurityType.STK enum, not string
     """Create a mock PlannedOrder for testing."""
     mock_order = MagicMock(spec=PlannedOrder)
     mock_order.symbol = symbol
@@ -27,6 +28,7 @@ def create_mock_planned_order(symbol="AAPL", action=Action.BUY, order_type=Order
     mock_order.risk_reward_ratio = risk_reward_ratio
     mock_order.priority = priority
     mock_order.position_strategy = position_strategy
+    mock_order.security_type = security_type  # Now it's SecurityType.STK enum with .value attribute
     return mock_order
 
 def create_mock_active_order(is_working=True, planned_order=None):

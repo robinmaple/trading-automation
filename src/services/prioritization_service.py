@@ -14,7 +14,14 @@ from src.services.market_context_service import MarketContextService
 from src.services.historical_performance_service import HistoricalPerformanceService
 # <Advanced Feature Integration - End>
 
-# Minimal safe logging import
+# Context-aware logging imports
+from src.core.context_aware_logger import (
+    get_context_logger, 
+    TradingEventType,
+    SafeContext
+)
+
+# Minimal safe logging import for fallback
 from src.core.simple_logger import get_simple_logger
 logger = get_simple_logger(__name__)
 
@@ -29,8 +36,19 @@ class PrioritizationService:
     def __init__(self, sizing_service: PositionSizingService, config: Optional[Dict] = None,
                 market_context_service: Optional[MarketContextService] = None,
                 historical_performance_service: Optional[HistoricalPerformanceService] = None):
-        if logger:
-            logger.debug("Initializing PrioritizationService")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger = get_context_logger()
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Initializing PrioritizationService",
+            context_provider={
+                "sizing_service_type": type(sizing_service).__name__,
+                "config_provided": config is not None,
+                "market_context_service_provided": market_context_service is not None,
+                "historical_performance_service_provided": historical_performance_service is not None
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         self.sizing_service = sizing_service
         self.config = config or self._get_default_config()
@@ -43,16 +61,29 @@ class PrioritizationService:
         
         # Log configuration type for debugging
         two_layer_enabled = self.config.get('two_layer_prioritization', {}).get('enabled', False)
-        if logger:
-            logger.info(f"Prioritization Service: Two-layer system {'ENABLED' if two_layer_enabled else 'DISABLED'}")
-            
-        if logger:
-            logger.info("PrioritizationService initialized successfully")
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "PrioritizationService configuration loaded",
+            context_provider={
+                "two_layer_prioritization_enabled": two_layer_enabled,
+                "max_open_orders": self.config.get('max_open_orders'),
+                "max_capital_utilization": self.config.get('max_capital_utilization'),
+                "enable_advanced_features": self.config.get('enable_advanced_features', False)
+            }
+        )
+        # <Context-Aware Logging Integration - End>
 
     def _get_default_config(self) -> Dict:
         """Get default configuration that matches the new prioritization_config.py structure."""
-        if logger:
-            logger.debug("Loading default prioritization configuration")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Loading default prioritization configuration",
+            context_provider={}
+        )
+        # <Context-Aware Logging Integration - End>
             
         return {
             'weights': {
@@ -100,29 +131,47 @@ class PrioritizationService:
 
     def _validate_config(self, config: Dict) -> bool:
         """Validate that the configuration has the expected structure."""
-        if logger:
-            logger.debug("Validating prioritization configuration")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Validating prioritization configuration",
+            context_provider={
+                "config_keys": list(config.keys()) if config else [],
+                "config_has_two_layer": 'two_layer_prioritization' in config
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         if not config:
-            if logger:
-                logger.error("Empty configuration provided")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Empty configuration provided",
+                context_provider={},
+                decision_reason="Configuration validation failed"
+            )
+            # <Context-Aware Logging Integration - End>
             return False
         
         # Check if this is the new two-layer config format
         if 'two_layer_prioritization' in config:
             two_layer = config['two_layer_prioritization']
             if not isinstance(two_layer, dict):
-                if logger:
-                    logger.error("Invalid two_layer_prioritization configuration")
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Invalid two_layer_prioritization configuration",
+                    context_provider={
+                        "two_layer_type": type(two_layer).__name__
+                    },
+                    decision_reason="Configuration validation failed"
+                )
+                # <Context-Aware Logging Integration - End>
                 return False
             if 'enabled' not in two_layer:
                 two_layer['enabled'] = True  # Default to enabled
-                if logger:
-                    logger.debug("Set default two_layer_prioritization enabled: True")
             if 'min_fill_probability' not in two_layer:
                 two_layer['min_fill_probability'] = 0.4  # Default value
-                if logger:
-                    logger.debug("Set default min_fill_probability: 0.4")
             if 'quality_weights' not in two_layer:
                 two_layer['quality_weights'] = {
                     'manual_priority': 0.30,
@@ -131,11 +180,16 @@ class PrioritizationService:
                     'timeframe_match': 0.10,
                     'setup_bias': 0.10
                 }
-                if logger:
-                    logger.debug("Set default quality_weights")
         
-        if logger:
-            logger.debug("Configuration validation successful")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Configuration validation successful",
+            context_provider={
+                "two_layer_enabled": config.get('two_layer_prioritization', {}).get('enabled', False)
+            }
+        )
+        # <Context-Aware Logging Integration - End>
         return True
 
     def calculate_efficiency(self, order: PlannedOrder, total_capital: float) -> float:
@@ -144,28 +198,65 @@ class PrioritizationService:
         Returns 0.0 for invalid orders, None inputs, or calculation errors
         """
         # Safe logging for potentially None order
-        if logger:
-            safe_symbol = order.symbol if order and hasattr(order, 'symbol') else 'None'
-            logger.debug(f"Calculating efficiency for {safe_symbol}")
+        safe_symbol = order.symbol if order and hasattr(order, 'symbol') else 'None'
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Calculating efficiency for {safe_symbol}",
+            symbol=safe_symbol if safe_symbol != 'None' else None,
+            context_provider={
+                "total_capital": total_capital,
+                "order_provided": order is not None,
+                "order_has_attributes": hasattr(order, 'entry_price') and hasattr(order, 'stop_loss') if order else False
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         # NULL CHECK MUST BE FIRST - BEFORE ANY ATTRIBUTE ACCESS
         if order is None:
-            if logger:
-                logger.warning("Order is None, returning efficiency 0.0")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                "Order is None, returning efficiency 0.0",
+                context_provider={},
+                decision_reason="Invalid order input"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.0
             
         # Check if object has required attributes
         if not hasattr(order, 'entry_price') or not hasattr(order, 'stop_loss'):
-            if logger:
-                safe_symbol = getattr(order, 'symbol', 'Unknown')
-                logger.warning(f"Order {safe_symbol} missing required attributes, returning efficiency 0.0")
+            safe_symbol = getattr(order, 'symbol', 'Unknown')
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Order {safe_symbol} missing required attributes, returning efficiency 0.0",
+                symbol=safe_symbol,
+                context_provider={
+                    "has_entry_price": hasattr(order, 'entry_price'),
+                    "has_stop_loss": hasattr(order, 'stop_loss')
+                },
+                decision_reason="Missing required order attributes"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.0
             
         # Check if required price data is available
         if order.entry_price is None or order.stop_loss is None:
-            if logger:
-                safe_symbol = getattr(order, 'symbol', 'Unknown')
-                logger.warning(f"Order {safe_symbol} has None price data, returning efficiency 0.0")
+            safe_symbol = getattr(order, 'symbol', 'Unknown')
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Order {safe_symbol} has None price data, returning efficiency 0.0",
+                symbol=safe_symbol,
+                context_provider={
+                    "entry_price": order.entry_price,
+                    "stop_loss": order.stop_loss
+                },
+                decision_reason="Missing price data"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.0
             
         try:
@@ -173,9 +264,20 @@ class PrioritizationService:
             capital_commitment = order.entry_price * quantity
             
             if capital_commitment <= 0:
-                if logger:
-                    safe_symbol = getattr(order, 'symbol', 'Unknown')
-                    logger.warning(f"Order {safe_symbol} has zero/negative capital commitment, returning efficiency 0.0")
+                safe_symbol = getattr(order, 'symbol', 'Unknown')
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"Order {safe_symbol} has zero/negative capital commitment, returning efficiency 0.0",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "capital_commitment": capital_commitment,
+                        "quantity": quantity,
+                        "entry_price": order.entry_price
+                    },
+                    decision_reason="Invalid capital commitment"
+                )
+                # <Context-Aware Logging Integration - End>
                 return 0.0
                 
             # ==================== SAFE ATTRIBUTE ACCESS - BEGIN ====================
@@ -191,9 +293,18 @@ class PrioritizationService:
                 action_value = None
                 
             if action_value is None:
-                if logger:
-                    safe_symbol = getattr(order, 'symbol', 'Unknown')
-                    logger.warning(f"Order {safe_symbol} has invalid action, returning efficiency 0.0")
+                safe_symbol = getattr(order, 'symbol', 'Unknown')
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"Order {safe_symbol} has invalid action, returning efficiency 0.0",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "action_attribute": hasattr(order, 'action')
+                    },
+                    decision_reason="Invalid order action"
+                )
+                # <Context-Aware Logging Integration - End>
                 return 0.0
             # ==================== SAFE ATTRIBUTE ACCESS - END ====================
                 
@@ -208,25 +319,72 @@ class PrioritizationService:
             efficiency = expected_profit_total / capital_commitment
             
             result = max(0.0, efficiency)
-            if logger:
-                safe_symbol = getattr(order, 'symbol', 'Unknown')
-                logger.debug(f"Efficiency for {safe_symbol}: {result:.4f}")
+            
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Efficiency calculation completed for {safe_symbol}",
+                symbol=safe_symbol,
+                context_provider={
+                    "efficiency_result": result,
+                    "quantity": quantity,
+                    "capital_commitment": capital_commitment,
+                    "expected_profit_total": expected_profit_total,
+                    "action": action_value,
+                    "profit_target": profit_target,
+                    "expected_profit_per_share": expected_profit_per_share
+                },
+                decision_reason="Efficiency calculation successful"
+            )
+            # <Context-Aware Logging Integration - End>
             return result
             
         except (ValueError, ZeroDivisionError, AttributeError, TypeError) as e:
-            if logger:
-                safe_symbol = getattr(order, 'symbol', 'Unknown')
-                logger.error(f"Error calculating efficiency for {safe_symbol}: {e}")
+            safe_symbol = getattr(order, 'symbol', 'Unknown')
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Error calculating efficiency for {safe_symbol}",
+                symbol=safe_symbol,
+                context_provider={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                },
+                decision_reason="Efficiency calculation failed"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.0
     
     # Calculate timeframe compatibility with market conditions - Begin
     def calculate_timeframe_match_score(self, order: PlannedOrder) -> float:
-        if logger:
-            logger.debug(f"Calculating timeframe match for {order.symbol}")
+        safe_symbol = getattr(order, 'symbol', 'Unknown')
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Calculating timeframe match for {safe_symbol}",
+            symbol=safe_symbol,
+            context_provider={
+                "order_timeframe": getattr(order, 'core_timeframe', 'Unknown'),
+                "enable_advanced_features": self.config.get('enable_advanced_features', False),
+                "market_context_service_available": self.market_context_service is not None
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         if not self.config.get('enable_advanced_features', False) or not self.market_context_service:
-            if logger:
-                logger.debug("Advanced features disabled, returning default timeframe match 0.5")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Advanced features disabled, returning default timeframe match 0.5 for {safe_symbol}",
+                symbol=safe_symbol,
+                context_provider={
+                    "enable_advanced_features": self.config.get('enable_advanced_features', False),
+                    "market_context_service_available": self.market_context_service is not None
+                },
+                decision_reason="Advanced features disabled"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.5
             
         try:
@@ -234,50 +392,134 @@ class PrioritizationService:
             order_timeframe = order.core_timeframe
             
             if order_timeframe == dominant_timeframe:
-                if logger:
-                    logger.debug(f"Perfect timeframe match for {order.symbol}: {order_timeframe}")
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"Perfect timeframe match for {safe_symbol}",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "order_timeframe": order_timeframe,
+                        "dominant_timeframe": dominant_timeframe,
+                        "score": 1.0
+                    },
+                    decision_reason="Perfect timeframe match"
+                )
+                # <Context-Aware Logging Integration - End>
                 return 1.0
             
             compatible_timeframes = self.config.get('timeframe_compatibility_map', {}).get(
                 dominant_timeframe, []
             )
             if order_timeframe in compatible_timeframes:
-                if logger:
-                    logger.debug(f"Compatible timeframe for {order.symbol}: {order_timeframe} with {dominant_timeframe}")
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"Compatible timeframe for {safe_symbol}",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "order_timeframe": order_timeframe,
+                        "dominant_timeframe": dominant_timeframe,
+                        "compatible_timeframes": compatible_timeframes,
+                        "score": 0.7
+                    },
+                    decision_reason="Compatible timeframe"
+                )
+                # <Context-Aware Logging Integration - End>
                 return 0.7
                 
-            if logger:
-                logger.debug(f"Incompatible timeframe for {order.symbol}: {order_timeframe} with {dominant_timeframe}")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Incompatible timeframe for {safe_symbol}",
+                symbol=safe_symbol,
+                context_provider={
+                    "order_timeframe": order_timeframe,
+                    "dominant_timeframe": dominant_timeframe,
+                    "compatible_timeframes": compatible_timeframes,
+                    "score": 0.3
+                },
+                decision_reason="Incompatible timeframe"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.3
             
         except Exception as e:
-            if logger:
-                logger.error(f"Error calculating timeframe match for {order.symbol}: {e}")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Error calculating timeframe match for {safe_symbol}",
+                symbol=safe_symbol,
+                context_provider={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                },
+                decision_reason="Timeframe match calculation failed"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.5
     # Calculate timeframe compatibility with market conditions - End
 
     # Calculate bias based on historical setup performance - Begin
     def calculate_setup_bias_score(self, order: PlannedOrder) -> float:
-        if logger:
-            logger.debug(f"Calculating setup bias for {order.symbol}")
+        safe_symbol = getattr(order, 'symbol', 'Unknown')
+        setup_name = getattr(order, 'trading_setup', 'Unknown')
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Calculating setup bias for {safe_symbol}",
+            symbol=safe_symbol,
+            context_provider={
+                "setup_name": setup_name,
+                "enable_advanced_features": self.config.get('enable_advanced_features', False),
+                "historical_performance_service_available": self.historical_performance_service is not None
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         if not self.config.get('enable_advanced_features', False) or not self.historical_performance_service:
-            if logger:
-                logger.debug("Advanced features disabled, returning default setup bias 0.5")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Advanced features disabled, returning default setup bias 0.5 for {safe_symbol}",
+                symbol=safe_symbol,
+                context_provider={
+                    "enable_advanced_features": self.config.get('enable_advanced_features', False),
+                    "historical_performance_service_available": self.historical_performance_service is not None
+                },
+                decision_reason="Advanced features disabled"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.5
             
         try:
             setup_name = order.trading_setup
             if not setup_name:
-                if logger:
-                    logger.debug(f"No setup name for {order.symbol}, returning default 0.5")
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"No setup name for {safe_symbol}, returning default 0.5",
+                    symbol=safe_symbol,
+                    context_provider={},
+                    decision_reason="No setup name provided"
+                )
+                # <Context-Aware Logging Integration - End>
                 return 0.5
                 
             performance = self.historical_performance_service.get_setup_performance(setup_name)
             
             if not performance:
-                if logger:
-                    logger.debug(f"No performance data for setup {setup_name}, returning default 0.5")
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"No performance data for setup {setup_name}, returning default 0.5",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "setup_name": setup_name
+                    },
+                    decision_reason="No performance data available"
+                )
+                # <Context-Aware Logging Integration - End>
                 return 0.5
                 
             thresholds = self.config.get('setup_performance_thresholds', {})
@@ -288,8 +530,23 @@ class PrioritizationService:
             if (performance.get('total_trades', 0) < min_trades or
                 performance.get('win_rate', 0) < min_win_rate or
                 performance.get('profit_factor', 0) < min_profit_factor):
-                if logger:
-                    logger.debug(f"Setup {setup_name} below thresholds, returning 0.3")
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.EXECUTION_DECISION,
+                    f"Setup {setup_name} below thresholds, returning 0.3",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "setup_name": setup_name,
+                        "total_trades": performance.get('total_trades', 0),
+                        "win_rate": performance.get('win_rate', 0),
+                        "profit_factor": performance.get('profit_factor', 0),
+                        "min_trades": min_trades,
+                        "min_win_rate": min_win_rate,
+                        "min_profit_factor": min_profit_factor
+                    },
+                    decision_reason="Setup below performance thresholds"
+                )
+                # <Context-Aware Logging Integration - End>
                 return 0.3
                 
             win_rate = performance.get('win_rate', 0.5)
@@ -298,21 +555,56 @@ class PrioritizationService:
             score = (win_rate * 0.6) + (profit_factor * 0.4) / 5.0
             result = max(0.1, min(score, 1.0))
             
-            if logger:
-                logger.debug(f"Setup bias for {setup_name}: {result:.4f} (win_rate: {win_rate:.3f}, profit_factor: {profit_factor:.3f})")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Setup bias calculation completed for {setup_name}",
+                symbol=safe_symbol,
+                context_provider={
+                    "setup_name": setup_name,
+                    "score": result,
+                    "win_rate": win_rate,
+                    "profit_factor": profit_factor,
+                    "total_trades": performance.get('total_trades', 0)
+                },
+                decision_reason="Setup bias calculation successful"
+            )
+            # <Context-Aware Logging Integration - End>
             return result
             
         except Exception as e:
-            if logger:
-                logger.error(f"Error calculating setup bias for {order.trading_setup}: {e}")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Error calculating setup bias for {setup_name}",
+                symbol=safe_symbol,
+                context_provider={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "setup_name": setup_name
+                },
+                decision_reason="Setup bias calculation failed"
+            )
+            # <Context-Aware Logging Integration - End>
             return 0.5
     # Calculate bias based on historical setup performance - End
 
     # <Two-Layer Prioritization - Begin>
     def calculate_risk_reward_score(self, order: PlannedOrder) -> float:
         """Calculate score based on risk/reward ratio quality."""
-        if logger:
-            logger.debug(f"Calculating risk/reward score for {order.symbol}")
+        safe_symbol = getattr(order, 'symbol', 'Unknown')
+        rr_ratio = getattr(order, 'risk_reward_ratio', 0)
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Calculating risk/reward score for {safe_symbol}",
+            symbol=safe_symbol,
+            context_provider={
+                "risk_reward_ratio": rr_ratio
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         rr_ratio = order.risk_reward_ratio
         
@@ -323,14 +615,37 @@ class PrioritizationService:
         probability_adjustment = 1.0 - (rr_ratio - 1) * 0.1
         rr_score *= max(probability_adjustment, 0.6)
         
-        if logger:
-            logger.debug(f"Risk/reward score for {order.symbol}: {rr_score:.4f} (R/R: {rr_ratio:.2f})")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Risk/reward score calculation completed for {safe_symbol}",
+            symbol=safe_symbol,
+            context_provider={
+                "risk_reward_ratio": rr_ratio,
+                "base_score": min(0.5 + (rr_ratio - 1) * 0.25, 1.2),
+                "probability_adjustment": probability_adjustment,
+                "final_score": rr_score
+            },
+            decision_reason="Risk/reward score calculation successful"
+        )
+        # <Context-Aware Logging Integration - End>
         return rr_score
 
     def calculate_quality_score(self, order: PlannedOrder, total_capital: float) -> Dict:
         """Calculate quality score for viable orders only."""
-        if logger:
-            logger.debug(f"Calculating quality score for {order.symbol}")
+        safe_symbol = getattr(order, 'symbol', 'Unknown')
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Calculating quality score for {safe_symbol}",
+            symbol=safe_symbol,
+            context_provider={
+                "total_capital": total_capital,
+                "two_layer_enabled": self.config.get('two_layer_prioritization', {}).get('enabled', False)
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         two_layer_config = self.config.get('two_layer_prioritization', {})
         quality_weights = two_layer_config.get('quality_weights', {})
@@ -369,36 +684,98 @@ class PrioritizationService:
             'weights': quality_weights
         }
         
-        if logger:
-            logger.debug(f"Quality score for {order.symbol}: {quality_score:.4f}")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Quality score calculation completed for {safe_symbol}",
+            symbol=safe_symbol,
+            context_provider={
+                "quality_score": quality_score,
+                "priority_norm": priority_norm,
+                "efficiency": efficiency,
+                "risk_reward_score": risk_reward_score,
+                "timeframe_match": timeframe_match,
+                "setup_bias": setup_bias,
+                "weights": quality_weights
+            },
+            decision_reason="Quality score calculation successful"
+        )
+        # <Context-Aware Logging Integration - End>
         return result
 
     def is_order_viable(self, order_data: Dict) -> Tuple[bool, str]:
         """Check if order meets minimum viability criteria."""
+        order = order_data.get('order')
+        safe_symbol = getattr(order, 'symbol', 'Unknown') if order else 'Unknown'
+        fill_prob = order_data.get('fill_probability', 0)
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            f"Checking viability for {safe_symbol}",
+            symbol=safe_symbol if safe_symbol != 'Unknown' else None,
+            context_provider={
+                "fill_probability": fill_prob,
+                "order_provided": order is not None
+            }
+        )
+        # <Context-Aware Logging Integration - End>
+            
         two_layer_config = self.config.get('two_layer_prioritization', {})
         min_fill_prob = two_layer_config.get('min_fill_probability', 0.4)
         
-        fill_prob = order_data.get('fill_probability', 0)
-        
         if fill_prob < min_fill_prob:
             reason = f"Fill probability below minimum ({fill_prob:.2f} < {min_fill_prob})"
-            if logger:
-                logger.debug(f"Order {order_data['order'].symbol} not viable: {reason}")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                f"Order {safe_symbol} not viable: {reason}",
+                symbol=safe_symbol,
+                context_provider={
+                    "fill_probability": fill_prob,
+                    "min_fill_probability": min_fill_prob
+                },
+                decision_reason="Fill probability below threshold"
+            )
+            # <Context-Aware Logging Integration - End>
             return False, reason
         
         # Add additional viability checks here if needed
         # Example: minimum volume, maximum spread, etc.
         
-        if logger:
-            logger.debug(f"Order {order_data['order'].symbol} is viable (fill_prob: {fill_prob:.2f})")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            f"Order {safe_symbol} is viable",
+            symbol=safe_symbol,
+            context_provider={
+                "fill_probability": fill_prob,
+                "min_fill_probability": min_fill_prob
+            },
+            decision_reason="Order meets viability criteria"
+        )
+        # <Context-Aware Logging Integration - End>
         return True, "Viable"
     # <Two-Layer Prioritization - End>
 
     # Compute final score using Phase B formula - Begin
     def calculate_deterministic_score(self, order: PlannedOrder, fill_prob: float, 
                                    total_capital: float, current_scores: Optional[List[float]] = None) -> Dict:
-        if logger:
-            logger.debug(f"Calculating deterministic score for {order.symbol}")
+        safe_symbol = getattr(order, 'symbol', 'Unknown')
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Calculating deterministic score for {safe_symbol}",
+            symbol=safe_symbol,
+            context_provider={
+                "fill_probability": fill_prob,
+                "total_capital": total_capital,
+                "current_scores_provided": current_scores is not None,
+                "current_scores_count": len(current_scores) if current_scores else 0
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         weights = self.config['weights']
         
@@ -447,20 +824,52 @@ class PrioritizationService:
                                   if order.entry_price else 0
         }
         
-        if logger:
-            logger.debug(f"Deterministic score for {order.symbol}: {score:.4f}")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Deterministic score calculation completed for {safe_symbol}",
+            symbol=safe_symbol,
+            context_provider={
+                "final_score": score,
+                "fill_prob": fill_prob,
+                "priority_norm": priority_norm,
+                "efficiency": efficiency,
+                "efficiency_norm": efficiency_norm,
+                "size_pref": size_pref,
+                "timeframe_match": timeframe_match,
+                "setup_bias": setup_bias,
+                "weights": weights
+            },
+            decision_reason="Deterministic score calculation successful"
+        )
+        # <Context-Aware Logging Integration - End>
         return result
     # Compute final score using Phase B formula - End
 
     # Prioritize orders and allocate capital based on scoring - Begin
     def prioritize_orders(self, executable_orders: List[Dict], total_capital: float, 
                         current_working_orders: Optional[List] = None) -> List[Dict]:
-        if logger:
-            logger.info(f"Prioritizing {len(executable_orders)} orders with total capital ${total_capital:,.2f}")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            f"Starting prioritization of {len(executable_orders)} orders",
+            context_provider={
+                "total_capital": total_capital,
+                "executable_orders_count": len(executable_orders),
+                "current_working_orders_count": len(current_working_orders) if current_working_orders else 0
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         if not executable_orders:
-            if logger:
-                logger.warning("No executable orders to prioritize")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                "No executable orders to prioritize",
+                context_provider={},
+                decision_reason="No orders to process"
+            )
+            # <Context-Aware Logging Integration - End>
             return []
             
         # Check if two-layer prioritization is enabled
@@ -468,8 +877,14 @@ class PrioritizationService:
         two_layer_enabled = two_layer_config.get('enabled', False)
         
         if not two_layer_enabled:
-            if logger:
-                logger.debug("Using legacy single-layer prioritization")
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                "Using legacy single-layer prioritization",
+                context_provider={},
+                decision_reason="Two-layer prioritization disabled"
+            )
+            # <Context-Aware Logging Integration - End>
             # Fall back to legacy single-layer prioritization
             return self._prioritize_orders_legacy(executable_orders, total_capital, current_working_orders)
 
@@ -486,8 +901,20 @@ class PrioritizationService:
         available_slots = self.config['max_open_orders'] - working_order_count
         available_slots = max(0, available_slots)
         
-        if logger:
-            logger.debug(f"Available capital: ${available_capital:,.2f}, available slots: {available_slots}")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Capital and slot availability calculated",
+            context_provider={
+                "available_capital": available_capital,
+                "available_slots": available_slots,
+                "committed_capital": committed_capital,
+                "working_order_count": working_order_count,
+                "max_capital_utilization": self.config['max_capital_utilization'],
+                "max_open_orders": self.config['max_open_orders']
+            }
+        )
+        # <Context-Aware Logging Integration - End>
 
         # <Two-Layer Prioritization - Begin>
         # First pass: Check viability and calculate quality scores
@@ -496,6 +923,7 @@ class PrioritizationService:
         
         for order_data in executable_orders:
             order = order_data['order']
+            safe_symbol = getattr(order, 'symbol', 'Unknown')
             
             # Check viability
             is_viable, reason = self.is_order_viable(order_data)
@@ -518,6 +946,20 @@ class PrioritizationService:
                     'allocated': False
                 }
                 viable_orders.append(viable_order)
+                
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.ORDER_VALIDATION,
+                    f"Order {safe_symbol} marked as viable",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "quality_score": quality_result['quality_score'],
+                        "capital_commitment": capital_commitment,
+                        "quantity": quantity
+                    },
+                    decision_reason="Order passed viability check"
+                )
+                # <Context-Aware Logging Integration - End>
             else:
                 non_viable_order = {
                     **order_data,
@@ -526,9 +968,29 @@ class PrioritizationService:
                     'allocated': False
                 }
                 non_viable_orders.append(non_viable_order)
+                
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.ORDER_VALIDATION,
+                    f"Order {safe_symbol} marked as non-viable",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "reason": reason
+                    },
+                    decision_reason="Order failed viability check"
+                )
+                # <Context-Aware Logging Integration - End>
         
-        if logger:
-            logger.info(f"Viability check: {len(viable_orders)} viable, {len(non_viable_orders)} non-viable")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Viability check completed",
+            context_provider={
+                "viable_orders_count": len(viable_orders),
+                "non_viable_orders_count": len(non_viable_orders)
+            }
+        )
+        # <Context-Aware Logging Integration - End>
 
         # Sort viable orders by quality score (highest first)
         viable_orders.sort(key=lambda x: x['quality_score'], reverse=True)
@@ -539,12 +1001,39 @@ class PrioritizationService:
         allocated_count = 0
         
         for order in viable_orders:
+            safe_symbol = getattr(order['order'], 'symbol', 'Unknown')
+            
             if allocated_count >= available_slots:
                 order['allocation_reason'] = 'Max open orders reached'
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    f"Order {safe_symbol} not allocated - max open orders reached",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "allocated_count": allocated_count,
+                        "available_slots": available_slots
+                    },
+                    decision_reason="Order slot limit reached"
+                )
+                # <Context-Aware Logging Integration - End>
                 continue
                 
             if total_allocated_capital + order['capital_commitment'] > available_capital:
                 order['allocation_reason'] = 'Insufficient capital'
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    f"Order {safe_symbol} not allocated - insufficient capital",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "total_allocated_capital": total_allocated_capital,
+                        "order_capital_commitment": order['capital_commitment'],
+                        "available_capital": available_capital
+                    },
+                    decision_reason="Capital limit reached"
+                )
+                # <Context-Aware Logging Integration - End>
                 continue
                 
             order['allocated'] = True
@@ -552,23 +1041,67 @@ class PrioritizationService:
             total_allocated_capital += order['capital_commitment']
             allocated_count += 1
             allocated_orders.append(order)
+            
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                f"Order {safe_symbol} allocated successfully",
+                symbol=safe_symbol,
+                context_provider={
+                    "quality_score": order['quality_score'],
+                    "capital_commitment": order['capital_commitment'],
+                    "total_allocated_capital": total_allocated_capital,
+                    "allocated_count": allocated_count
+                },
+                decision_reason="Order allocated"
+            )
+            # <Context-Aware Logging Integration - End>
         
-        if logger:
-            logger.info(f"Allocation result: {len(allocated_orders)} allocated, "
-                       f"total capital: ${total_allocated_capital:,.2f}")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Prioritization allocation completed",
+            context_provider={
+                "allocated_orders_count": len(allocated_orders),
+                "total_allocated_capital": total_allocated_capital,
+                "available_capital_remaining": available_capital - total_allocated_capital,
+                "available_slots_remaining": available_slots - allocated_count
+            },
+            decision_reason="Prioritization process completed"
+        )
+        # <Context-Aware Logging Integration - End>
 
         # Combine all orders for return (viable allocated, viable not allocated, non-viable)
         result = viable_orders + non_viable_orders
-        if logger:
-            logger.info(f"Prioritization completed: {len(result)} total orders processed")
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Prioritization process finished",
+            context_provider={
+                "total_orders_processed": len(result),
+                "allocated_orders": len(allocated_orders),
+                "viable_but_not_allocated": len(viable_orders) - len(allocated_orders),
+                "non_viable_orders": len(non_viable_orders)
+            }
+        )
+        # <Context-Aware Logging Integration - End>
         return result
         # <Two-Layer Prioritization - End>
 
     def _prioritize_orders_legacy(self, executable_orders: List[Dict], total_capital: float,
                                 current_working_orders: Optional[List] = None) -> List[Dict]:
         """Legacy single-layer prioritization for backward compatibility."""
-        if logger:
-            logger.debug("Using legacy single-layer prioritization")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Using legacy single-layer prioritization",
+            context_provider={
+                "executable_orders_count": len(executable_orders),
+                "total_capital": total_capital
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         if not executable_orders:
             return []
@@ -590,6 +1123,7 @@ class PrioritizationService:
         scored_orders = []
         for order_data in executable_orders:
             order = order_data['order']
+            safe_symbol = getattr(order, 'symbol', 'Unknown')
             fill_prob = order_data.get('fill_probability', 0)
             
             score_result = self.calculate_deterministic_score(order, fill_prob, total_capital)
@@ -608,6 +1142,19 @@ class PrioritizationService:
                 'viable': True  # All orders are viable in legacy mode
             }
             scored_orders.append(scored_order)
+            
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                f"Legacy scoring completed for {safe_symbol}",
+                symbol=safe_symbol,
+                context_provider={
+                    "deterministic_score": score_result['final_score'],
+                    "capital_commitment": capital_commitment,
+                    "fill_probability": fill_prob
+                }
+            )
+            # <Context-Aware Logging Integration - End>
         
         # Sort by score (highest first)
         scored_orders.sort(key=lambda x: x['deterministic_score'], reverse=True)
@@ -618,12 +1165,37 @@ class PrioritizationService:
         allocated_count = 0
         
         for order in scored_orders:
+            safe_symbol = getattr(order['order'], 'symbol', 'Unknown')
+            
             if allocated_count >= available_slots:
                 order['allocation_reason'] = 'Max open orders reached'
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    f"Legacy: Order {safe_symbol} not allocated - max open orders",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "allocated_count": allocated_count,
+                        "available_slots": available_slots
+                    }
+                )
+                # <Context-Aware Logging Integration - End>
                 continue
                 
             if total_allocated_capital + order['capital_commitment'] > available_capital:
                 order['allocation_reason'] = 'Insufficient capital'
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    f"Legacy: Order {safe_symbol} not allocated - insufficient capital",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "total_allocated_capital": total_allocated_capital,
+                        "order_capital_commitment": order['capital_commitment'],
+                        "available_capital": available_capital
+                    }
+                )
+                # <Context-Aware Logging Integration - End>
                 continue
                 
             order['allocated'] = True
@@ -631,15 +1203,42 @@ class PrioritizationService:
             total_allocated_capital += order['capital_commitment']
             allocated_count += 1
             allocated_orders.append(order)
+            
+            # <Context-Aware Logging Integration - Begin>
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                f"Legacy: Order {safe_symbol} allocated",
+                symbol=safe_symbol,
+                context_provider={
+                    "deterministic_score": order['deterministic_score'],
+                    "capital_commitment": order['capital_commitment']
+                }
+            )
+            # <Context-Aware Logging Integration - End>
         
-        if logger:
-            logger.info(f"Legacy prioritization: {len(allocated_orders)} allocated out of {len(scored_orders)}")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Legacy prioritization completed",
+            context_provider={
+                "allocated_orders_count": len(allocated_orders),
+                "total_allocated_capital": total_allocated_capital
+            }
+        )
+        # <Context-Aware Logging Integration - End>
         return scored_orders
 
     # Generate summary of prioritization results - Begin
     def get_prioritization_summary(self, prioritized_orders: List[Dict]) -> Dict:
-        if logger:
-            logger.debug("Generating prioritization summary")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Generating prioritization summary",
+            context_provider={
+                "prioritized_orders_count": len(prioritized_orders)
+            }
+        )
+        # <Context-Aware Logging Integration - End>
             
         allocated = [o for o in prioritized_orders if o.get('allocated', False)]
         not_allocated = [o for o in prioritized_orders if not o.get('allocated', False)]
@@ -676,8 +1275,14 @@ class PrioritizationService:
             'allocation_reasons': allocation_reasons
         }
         
-        if logger:
-            logger.info(f"Prioritization summary: {summary}")
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Prioritization summary generated",
+            context_provider=summary,
+            decision_reason="Summary calculation completed"
+        )
+        # <Context-Aware Logging Integration - End>
         return summary
     # Generate summary of prioritization results - End
 # Prioritization Service - Main class definition - End

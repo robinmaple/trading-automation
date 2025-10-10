@@ -25,6 +25,7 @@ class TestAccountTracking(unittest.TestCase):
         # Mock dependencies 
         self.mock_data_feed = MagicMock(spec=AbstractDataFeed)
         self.mock_ibkr_client = MagicMock(spec=IbkrClient)
+        self.mock_ibkr_client.connected = True  # THE CRITICAL FIX
         self.mock_db_session = MagicMock()
         
         # Initialize trading manager

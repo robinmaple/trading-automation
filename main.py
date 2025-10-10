@@ -20,6 +20,9 @@ from src.core.event_bus import EventBus
 # <Session Management Integration - Begin>
 from src.core.simple_logger import start_trading_session, end_trading_session, get_current_session_file
 # <Session Management Integration - End>
+# <Context-Aware Logger Integration - Begin>
+from src.core.context_aware_logger import get_context_logger, TradingEventType
+# <Context-Aware Logger Integration - End>
 
 def run_scanner_from_main(ibkr_client, data_feed, config=None):
     try:
@@ -86,6 +89,10 @@ def main():
     ibkr_client = None
     # <Session Management - End>
     
+    # <Context-Aware Logger Initialization - Begin>
+    context_logger = get_context_logger()
+    # <Context-Aware Logger Initialization - End>
+    
     try:
         # <Session Management - Begin>
         # Start session explicitly at the beginning of main execution
@@ -93,6 +100,17 @@ def main():
         print(f"📝 Trading session started: {session_file}")
         print(f"⏰ Session start time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         # <Session Management - End>
+        
+        # <System Startup Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Trading system starting",
+            context_provider={
+                "start_time": lambda: datetime.datetime.now().isoformat(),
+                "session_file": lambda: session_file
+            }
+        )
+        # <System Startup Logging - End>
 
         parser = argparse.ArgumentParser(description="Trading System")
         parser.add_argument(
@@ -113,8 +131,31 @@ def main():
 
         args = parser.parse_args()
 
+        # <Argument Parsing Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Command line arguments parsed",
+            context_provider={
+                "mode": lambda: args.mode,
+                "debug_market_data": lambda: args.debug_market_data,
+                "scanner": lambda: args.scanner,
+                "scanner_only": lambda: args.scanner_only
+            }
+        )
+        # <Argument Parsing Logging - End>
+
         # Initialize DB
         init_database()
+        
+        # <Database Initialization Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.DATABASE_STATE,
+            "Database initialized successfully",
+            context_provider={
+                "operation": "init_database"
+            }
+        )
+        # <Database Initialization Logging - End>
 
         # Print valid values
         print("📋 Valid Security Types:", [st.value for st in SecurityType])
@@ -126,8 +167,30 @@ def main():
         try:
             planned_orders = PlannedOrderManager.from_excel("plan.xlsx")
             print(f"✅ Loaded {len(planned_orders)} planned orders")
+            # <Order Loading Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Planned orders loaded from Excel",
+                context_provider={
+                    "order_count": lambda: len(planned_orders),
+                    "file_path": "plan.xlsx",
+                    "operation": "from_excel"
+                }
+            )
+            # <Order Loading Logging - End>
         except Exception as e:
             print(f"❌ Failed to load planned orders: {e}")
+            # <Order Loading Error Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Failed to load planned orders from Excel",
+                context_provider={
+                    "error": lambda: str(e),
+                    "file_path": "plan.xlsx"
+                },
+                decision_reason="File may be missing or corrupted"
+            )
+            # <Order Loading Error Logging - End>
             # Don't return yet - scanner might still work without planned orders
 
         # <Event Bus Creation - Begin>
@@ -135,19 +198,67 @@ def main():
         event_bus = EventBus()
         print("✅ EventBus created - enabling real-time price notifications")
         # <Event Bus Creation - End>
+        
+        # <Event Bus Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Event bus initialized",
+            context_provider={
+                "component": "EventBus"
+            }
+        )
+        # <Event Bus Logging - End>
 
         # Setup IBKR client
         ibkr_client = IbkrClient()
         port = 7496 if args.mode == "live" else 7497
         print(f"🔌 Connecting to IB API at 127.0.0.1:{port} ({args.mode.upper()} mode)...")
+        
+        # <Connection Attempt Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Attempting IBKR connection",
+            context_provider={
+                "host": "127.0.0.1",
+                "port": lambda: port,
+                "mode": lambda: args.mode,
+                "client_id": 0
+            }
+        )
+        # <Connection Attempt Logging - End>
 
         if not ibkr_client.connect("127.0.0.1", port, 0):
             print("❌ Failed to connect to IB")
+            # <Connection Failure Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "IBKR connection failed",
+                context_provider={
+                    "host": "127.0.0.1",
+                    "port": lambda: port,
+                    "mode": lambda: args.mode
+                },
+                decision_reason="Connection timeout or IB Gateway not running"
+            )
+            # <Connection Failure Logging - End>
             # <Session Management - Begin>
             end_trading_session()
             print("✅ Trading session ended due to connection failure")
             # <Session Management - End>
             return
+
+        # <Connection Success Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "IBKR connection established successfully",
+            context_provider={
+                "host": "127.0.0.1",
+                "port": lambda: port,
+                "mode": lambda: args.mode,
+                "connected": lambda: ibkr_client.connected
+            }
+        )
+        # <Connection Success Logging - End>
 
         # Create data feed with already-connected client
         data_feed = IBKRDataFeed(ibkr_client, event_bus)
@@ -156,6 +267,19 @@ def main():
         # Verify the data feed is properly initialized
         print(f"✅ Data feed status: {data_feed.is_connected()}")
         print(f"✅ IBKR client connected: {ibkr_client.connected}")
+        
+        # <Data Feed Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Data feed initialized",
+            context_provider={
+                "component": "IBKRDataFeed",
+                "data_feed_connected": lambda: data_feed.is_connected(),
+                "ibkr_client_connected": lambda: ibkr_client.connected,
+                "event_bus_connected": True
+            }
+        )
+        # <Data Feed Logging - End>
 
         # SCANNER INTEGRATION - Run before normal trading
         scanner_candidates = None
@@ -164,7 +288,30 @@ def main():
             print("🔍 SCANNER MODE ACTIVATED")
             print("="*60)
             
+            # <Scanner Start Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Scanner mode activated",
+                context_provider={
+                    "scanner_only": lambda: args.scanner_only,
+                    "scanner_with_trading": lambda: args.scanner and not args.scanner_only
+                }
+            )
+            # <Scanner Start Logging - End>
+            
             scanner_candidates = run_scanner_from_main(ibkr_client, data_feed)
+            
+            # <Scanner Results Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                "Scanner execution completed",
+                context_provider={
+                    "candidates_found": lambda: len(scanner_candidates) if scanner_candidates else 0,
+                    "scanner_only_mode": lambda: args.scanner_only
+                },
+                decision_reason="Exit after scanner" if args.scanner_only else "Continue to trading"
+            )
+            # <Scanner Results Logging - End>
             
             if args.scanner_only:
                 print("\n🎯 Scanner-only mode complete. Exiting.")
@@ -197,6 +344,18 @@ def main():
         )
         print("✅ TradingManager connected to EventBus for price notifications")
         # <Event-Driven Trading Manager - End>
+        
+        # <Trading Manager Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Trading manager initialized",
+            context_provider={
+                "component": "TradingManager",
+                "excel_path": "plan.xlsx",
+                "event_bus_connected": True
+            }
+        )
+        # <Trading Manager Logging - End>
 
         # <Event-Driven Market Data Manager - Begin>
         # Get the MarketDataManager from data feed and connect it to EventBus
@@ -211,15 +370,45 @@ def main():
         try:
             trading_mgr.load_planned_orders()
             print(f"✅ Registered {len(trading_mgr.planned_orders)} planned orders")
+            # <Order Registration Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Planned orders registered in trading manager",
+                context_provider={
+                    "registered_orders": lambda: len(trading_mgr.planned_orders),
+                    "operation": "load_planned_orders"
+                }
+            )
+            # <Order Registration Logging - End>
         except Exception as e:
             print(f"⚠️  Could not register planned orders: {e}")
             print("Continuing without planned orders...")
+            # <Order Registration Error Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Failed to register planned orders in trading manager",
+                context_provider={
+                    "error": lambda: str(e)
+                },
+                decision_reason="Continue without planned orders"
+            )
+            # <Order Registration Error Logging - End>
 
         # If we have scanner candidates, you could integrate them here
         if scanner_candidates:
             print(f"💡 Scanner provided {len(scanner_candidates)} candidates for trading consideration")
             # You could add logic here to use scanner candidates in your trading strategy
             # For example: trading_mgr.integrate_scanner_candidates(scanner_candidates)
+            # <Scanner Integration Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.EXECUTION_DECISION,
+                "Scanner candidates available for trading",
+                context_provider={
+                    "scanner_candidates_count": lambda: len(scanner_candidates)
+                },
+                decision_reason="Candidates can be integrated into trading strategy"
+            )
+            # <Scanner Integration Logging - End>
 
         # Start monitoring with debug output
         print("\n🚀 Starting trading monitoring...")
@@ -228,13 +417,49 @@ def main():
         print(f"🔍 Data feed connected: {data_feed.is_connected()}")
         print(f"🔍 IBKR client connected: {ibkr_client.connected}")
         print(f"🔍 Planned orders count: {len(trading_mgr.planned_orders)}")
+        
+        # <System State Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Pre-monitoring system state check",
+            context_provider={
+                "data_feed_connected": lambda: data_feed.is_connected(),
+                "ibkr_client_connected": lambda: ibkr_client.connected,
+                "planned_orders_count": lambda: len(trading_mgr.planned_orders),
+                "scanner_candidates_available": lambda: len(scanner_candidates) if scanner_candidates else 0
+            }
+        )
+        # <System State Logging - End>
 
         # Try to get a test price
         try:
             test_price = data_feed.get_current_price("AAPL")
             print(f"🔍 Test AAPL price: {test_price}")
+            # <Market Data Test Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.MARKET_CONDITION,
+                "Market data connectivity test",
+                symbol="AAPL",
+                context_provider={
+                    "test_symbol": "AAPL",
+                    "test_price": lambda: test_price,
+                    "operation": "get_current_price"
+                }
+            )
+            # <Market Data Test Logging - End>
         except Exception as e:
             print(f"🔍 Price check failed: {e}")
+            # <Market Data Test Error Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Market data test failed",
+                context_provider={
+                    "test_symbol": "AAPL",
+                    "error": lambda: str(e)
+                },
+                decision_reason="Market data feed may have issues"
+            )
+            # <Market Data Test Error Logging - End>
 
         # Start monitoring with result check
         success = trading_mgr.start_monitoring(interval_seconds=30)
@@ -245,9 +470,32 @@ def main():
             # <Session Management - Begin>
             print(f"📝 Session logging to: {session_file}")
             # <Session Management - End>
+            # <Monitoring Start Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Trading monitoring started successfully",
+                context_provider={
+                    "monitoring_interval": 30,
+                    "session_file": lambda: session_file,
+                    "system_state": "ACTIVE"
+                }
+            )
+            # <Monitoring Start Logging - End>
         else:
             print("❌ Failed to start monitoring - check logs above")
             print("💡 Possible issues: data feed not connected, no planned orders, or initialization failed")
+            # <Monitoring Failure Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Failed to start trading monitoring",
+                context_provider={
+                    "monitoring_interval": 30,
+                    "data_feed_connected": lambda: data_feed.is_connected(),
+                    "planned_orders_count": lambda: len(trading_mgr.planned_orders)
+                },
+                decision_reason="System initialization failure"
+            )
+            # <Monitoring Failure Logging - End>
             # <Session Management - Begin>
             end_trading_session()
             print("✅ Trading session ended due to monitoring failure")
@@ -260,6 +508,17 @@ def main():
             print(f"📊 Session logs being written to: {session_file}")
             # <Session Management - End>
             
+            # <Main Loop Start Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Entering main monitoring loop",
+                context_provider={
+                    "loop_interval": 60,
+                    "system_state": "RUNNING"
+                }
+            )
+            # <Main Loop Start Logging - End>
+            
             while True:
                 # <Session Management - Begin>
                 # Reduced frequency for status messages since detailed logs go to session file
@@ -269,41 +528,133 @@ def main():
                 
         except KeyboardInterrupt:
             print("\n⏹️  Shutting down gracefully...")
+            # <Graceful Shutdown Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Graceful shutdown initiated by user",
+                context_provider={
+                    "reason": "KeyboardInterrupt",
+                    "system_state": "SHUTTING_DOWN"
+                }
+            )
+            # <Graceful Shutdown Logging - End>
         except Exception as e:
             print(f"❌ Fatal error in monitoring loop: {e}")
             import traceback
             traceback.print_exc()
+            # <Fatal Error Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Fatal error in monitoring loop",
+                context_provider={
+                    "error": lambda: str(e),
+                    "system_state": "ERROR"
+                },
+                decision_reason="Unhandled exception in main loop"
+            )
+            # <Fatal Error Logging - End>
 
     except Exception as e:
         print(f"❌ Fatal error: {e}")
         import traceback
         traceback.print_exc()
+        # <Global Exception Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Global fatal error in main execution",
+            context_provider={
+                "error": lambda: str(e),
+                "system_state": "CRITICAL_ERROR"
+            },
+            decision_reason="Unhandled exception in main function"
+        )
+        # <Global Exception Logging - End>
         sys.exit(1)
 
     finally:
         print("🧹 Cleaning up resources...")
+        # <Cleanup Start Logging - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Starting system cleanup",
+            context_provider={
+                "system_state": "CLEANUP"
+            }
+        )
+        # <Cleanup Start Logging - End>
+        
         try:
             # <Session Management - Begin>
             # Stop trading manager first
             if trading_mgr:
                 trading_mgr.stop_monitoring()  # This will also call end_trading_session() internally
+                # <Trading Manager Stop Logging - Begin>
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Trading manager monitoring stopped",
+                    context_provider={
+                        "component": "TradingManager",
+                        "operation": "stop_monitoring"
+                    }
+                )
+                # <Trading Manager Stop Logging - End>
             else:
                 # If trading manager wasn't created, end session manually
                 end_trading_session()
                 print("✅ Trading session ended")
+                # <Session End Logging - Begin>
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Trading session ended manually",
+                    context_provider={
+                        "operation": "end_trading_session"
+                    }
+                )
+                # <Session End Logging - End>
             # <Session Management - End>
             
             # Disconnect IBKR client
             if ibkr_client:
                 ibkr_client.disconnect()
+                # <IBKR Disconnect Logging - Begin>
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "IBKR client disconnected",
+                    context_provider={
+                        "component": "IbkrClient",
+                        "operation": "disconnect"
+                    }
+                )
+                # <IBKR Disconnect Logging - End>
                 
             print("✅ Cleanup completed")
             # <Session Management - Begin>
             print(f"📁 Session log saved: {session_file}")
             # <Session Management - End>
             
+            # <Cleanup Complete Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "System cleanup completed successfully",
+                context_provider={
+                    "session_file": lambda: session_file,
+                    "system_state": "SHUTDOWN"
+                }
+            )
+            # <Cleanup Complete Logging - End>
+            
         except Exception as e:
             print(f"⚠️  Cleanup warning: {e}")
+            # <Cleanup Error Logging - Begin>
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Warning during system cleanup",
+                context_provider={
+                    "error": lambda: str(e),
+                    "system_state": "CLEANUP_WARNING"
+                }
+            )
+            # <Cleanup Error Logging - End>
             # <Session Management - Begin>
             # Ensure session is ended even if cleanup fails
             end_trading_session()
