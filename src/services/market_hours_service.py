@@ -69,5 +69,30 @@ class MarketHoursService:
             return f"OPEN ({minutes_until_close} minutes until close)"
         
         return "OPEN"
-    
-# Market Hours Service - End
+
+    def get_next_market_open(self) -> datetime.datetime:
+        """
+        Calculate the next market open time.
+        
+        Returns:
+            Timezone-aware datetime of next market open
+        """
+        now_et = datetime.datetime.now(self.et_timezone)
+        current_weekday = now_et.weekday()
+        
+        # If today is a weekday and before market open, market opens today
+        if current_weekday < 5:  # Monday-Friday
+            today_open = now_et.replace(hour=self.MARKET_OPEN.hour, minute=self.MARKET_OPEN.minute, 
+                                      second=0, microsecond=0)
+            if now_et < today_open:
+                return today_open
+        
+        # Otherwise, find next weekday
+        days_to_add = 1
+        while True:
+            next_day = now_et + datetime.timedelta(days=days_to_add)
+            if next_day.weekday() < 5:  # Monday-Friday
+                next_open = next_day.replace(hour=self.MARKET_OPEN.hour, minute=self.MARKET_OPEN.minute,
+                                           second=0, microsecond=0)
+                return next_open
+            days_to_add += 1

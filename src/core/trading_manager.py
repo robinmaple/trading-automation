@@ -943,7 +943,6 @@ class TradingManager:
         # <Update Monitored Symbols on Position Changes - End>
 
     def _monitoring_loop(self, interval_seconds: int) -> None:
-
         """Main monitoring loop for Phase A with error handling and recovery."""
         monitoring_config = self.trading_config.get('monitoring', {})
         max_errors = monitoring_config.get('max_errors', 10)
@@ -983,8 +982,8 @@ class TradingManager:
             except Exception:
                 error_count += 1
                 backoff_time = min(error_backoff_base * error_count, max_backoff)
-                time.sleep(backoff_time)
-
+                time.sleep(backoff_time)    
+                
     # Operational Window Check Method - Begin
     def _should_run_in_operational_window(self) -> bool:
         """

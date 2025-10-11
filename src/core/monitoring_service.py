@@ -10,6 +10,9 @@ import datetime
 from typing import Set, Dict, List, Optional, Callable
 from src.core.abstract_data_feed import AbstractDataFeed
 from src.core.planned_order import PlannedOrder
+# <Market Hours Service Import - Begin>
+from src.services.market_hours_service import MarketHoursService
+# <Market Hours Service Import - End>
 
 # Context-aware logging import
 from src.core.context_aware_logger import get_context_logger, TradingEventType
@@ -34,6 +37,10 @@ class MonitoringService:
         self.max_errors = 10
         self._check_callback: Optional[Callable] = None
         self._label_callback: Optional[Callable] = None
+        # <Market Hours Service Integration - Begin>
+        self.market_hours = MarketHoursService()
+        self.last_market_status = None
+        # <Market Hours Service Integration - End>
         
         context_logger.log_event(
             TradingEventType.SYSTEM_HEALTH,
@@ -42,7 +49,10 @@ class MonitoringService:
                 "data_feed_provided": data_feed is not None,
                 "data_feed_type": type(data_feed).__name__ if data_feed else "None",
                 "initial_interval_seconds": interval_seconds,
-                "max_errors_allowed": self.max_errors
+                "max_errors_allowed": self.max_errors,
+                # <Market Hours Service Logging - Begin>
+                "market_hours_service_initialized": True
+                # <Market Hours Service Logging - End>
             },
             decision_reason="MONITORING_SERVICE_INITIALIZED"
         )
@@ -80,7 +90,10 @@ class MonitoringService:
                 "check_callback_provided": check_callback is not None,
                 "label_callback_provided": label_callback is not None,
                 "thread_name": self.monitor_thread.name,
-                "thread_daemon": self.monitor_thread.daemon
+                "thread_daemon": self.monitor_thread.daemon,
+                # <Market Hours Aware Start - Begin>
+                "market_aware_monitoring": True
+                # <Market Hours Aware Start - End>
             },
             decision_reason="MONITORING_SERVICE_STARTED"
         )
@@ -121,14 +134,42 @@ class MonitoringService:
             context_provider={
                 "thread_name": threading.current_thread().name,
                 "monitoring_interval_seconds": self.interval_seconds,
-                "initial_error_count": self.error_count
+                "initial_error_count": self.error_count,
+                # <Market Aware Loop Start - Begin>
+                "market_aware_execution": True
+                # <Market Aware Loop Start - End>
             },
             decision_reason="MONITORING_LOOP_STARTED"
         )
         
         while self.monitoring and self.error_count < self.max_errors:
             try:
-                # Execute the main check callback
+                # <Market Status Check - Begin>
+                current_market_open = self.market_hours.is_market_open()
+                
+                # Log market status transitions
+                if current_market_open != self.last_market_status:
+                    self._log_market_status(current_market_open)
+                    self.last_market_status = current_market_open
+                
+                # Skip order execution if markets are closed
+                if not current_market_open:
+                    sleep_interval = self._get_sleep_interval_based_on_market_status(current_market_open)
+                    context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Market closed - skipping order execution",
+                        context_provider={
+                            "market_status": "CLOSED",
+                            "sleep_interval": sleep_interval,
+                            "execution_skipped": True
+                        },
+                        decision_reason="MARKET_CLOSED_EXECUTION_SKIPPED"
+                    )
+                    time.sleep(sleep_interval)
+                    continue
+                # <Market Status Check - End>
+
+                # Execute the main check callback (only during market hours)
                 if self._check_callback:
                     self._check_callback()
                 
@@ -138,8 +179,9 @@ class MonitoringService:
                 # Reset error counter on successful iteration
                 self.error_count = 0
                 
-                # Sleep for the configured interval
-                time.sleep(self.interval_seconds)
+                # Use market-aware sleep interval
+                sleep_interval = self._get_sleep_interval_based_on_market_status(current_market_open)
+                time.sleep(sleep_interval)
                 
             except Exception as e:
                 self._handle_monitoring_error(e)
@@ -157,6 +199,49 @@ class MonitoringService:
                 decision_reason="MONITORING_STOPPED_DUE_TO_ERRORS"
             )
             self.monitoring = False
+
+    # <Market Status Aware Methods - Begin>
+    def _get_sleep_interval_based_on_market_status(self, market_open: bool) -> int:
+        """
+        Determine appropriate sleep interval based on market status.
+        
+        Args:
+            market_open: Whether markets are currently open
+            
+        Returns:
+            Sleep interval in seconds
+        """
+        if market_open:
+            return 5  # Aggressive monitoring during market hours
+        else:
+            return 60  # Conservative monitoring when markets are closed
+    
+    def _log_market_status(self, market_open: bool) -> None:
+        """Log market status transitions for observability."""
+        status = "OPEN" if market_open else "CLOSED"
+        
+        # Calculate time until next market state change
+        next_event = "N/A"
+        if market_open:
+            time_until_close = self.market_hours.time_until_market_close()
+            if time_until_close:
+                next_event = f"close in {int(time_until_close.total_seconds() / 60)} minutes"
+        else:
+            next_open = self.market_hours.get_next_market_open()
+            time_until_open = next_open - datetime.datetime.now(self.market_hours.et_timezone)
+            next_event = f"open in {int(time_until_open.total_seconds() / 3600)} hours"
+        
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            f"Market status: {status} - next event: {next_event}",
+            context_provider={
+                'market_status': status,
+                'next_market_event': next_event,
+                'monitoring_mode': 'ACTIVE' if market_open else 'PAUSED'
+            },
+            decision_reason=f"Market status transition detected - {status}"
+        )
+    # <Market Status Aware Methods - End>
             
     def _handle_monitoring_error(self, error: Exception) -> None:
         """Handle monitoring errors with exponential backoff."""
