@@ -48,10 +48,14 @@ class TestOrderEligibilityService:
         mock_probability_engine = Mock()
         mock_probability_engine.score_fill.return_value = (0.8, {"feature": 1.0, "symbol": "TEST"})
 
-        service = OrderEligibilityService(mock_orders, mock_probability_engine)
+        # Fix constructor call - remove planned_orders parameter - Begin
+        service = OrderEligibilityService(mock_probability_engine)
+        # Fix constructor call - remove planned_orders parameter - End
 
         # Act
-        results = service.find_executable_orders()
+        # Fix method call - add planned_orders parameter - Begin
+        results = service.find_executable_orders(mock_orders)
+        # Fix method call - add planned_orders parameter - End
 
         # Assert
         assert len(results) == 2
@@ -81,10 +85,14 @@ class TestOrderEligibilityService:
         mock_probability_engine = Mock()
         mock_probability_engine.score_fill.return_value = (0.6, {"feature": 2.0, "symbol": "TSLA"})
 
-        service = OrderEligibilityService(mock_orders, mock_probability_engine)
+        # Fix constructor call - remove planned_orders parameter - Begin
+        service = OrderEligibilityService(mock_probability_engine)
+        # Fix constructor call - remove planned_orders parameter - End
 
         # Act
-        results = service.find_executable_orders()
+        # Fix method call - add planned_orders parameter - Begin
+        results = service.find_executable_orders(mock_orders)
+        # Fix method call - add planned_orders parameter - End
 
         # Assert
         assert len(results) == 1
@@ -96,9 +104,10 @@ class TestOrderEligibilityService:
 
     def test_can_trade_returns_true_by_default(self):
         """Test that can_trade method returns True (placeholder implementation)"""
-        mock_orders = []
+        # Fix constructor call - remove planned_orders parameter - Begin
         mock_probability_engine = Mock()
-        service = OrderEligibilityService(mock_orders, mock_probability_engine)
+        service = OrderEligibilityService(mock_probability_engine)
+        # Fix constructor call - remove planned_orders parameter - End
         
         # Create a proper PlannedOrder mock with required attributes
         test_order = MagicMock(spec=PlannedOrder)
@@ -120,12 +129,14 @@ class TestOrderEligibilityService:
 
     def test_find_executable_orders_empty_when_no_orders(self):
         """Test that empty list is returned when no planned orders"""
-        mock_orders = []
+        # Fix constructor call - remove planned_orders parameter - Begin
         mock_probability_engine = Mock()
+        service = OrderEligibilityService(mock_probability_engine)
+        # Fix constructor call - remove planned_orders parameter - End
         
-        service = OrderEligibilityService(mock_orders, mock_probability_engine)
-        
-        executable = service.find_executable_orders()
+        # Fix method call - pass empty list - Begin
+        executable = service.find_executable_orders([])
+        # Fix method call - pass empty list - End
         
         assert len(executable) == 0
         assert executable == []
@@ -156,10 +167,14 @@ class TestOrderEligibilityService:
         }
         mock_probability_engine.score_fill.return_value = (0.85, mock_features)
 
-        service = OrderEligibilityService(mock_orders, mock_probability_engine, mock_db_session)
+        # Fix constructor call - remove planned_orders parameter - Begin
+        service = OrderEligibilityService(mock_probability_engine, mock_db_session)
+        # Fix constructor call - remove planned_orders parameter - End
 
         # Act
-        results = service.find_executable_orders()
+        # Fix method call - add planned_orders parameter - Begin
+        results = service.find_executable_orders(mock_orders)
+        # Fix method call - add planned_orders parameter - End
 
         # Assert
         assert len(results) == 1
@@ -194,10 +209,14 @@ class TestOrderEligibilityService:
         mock_probability_engine = Mock()
         mock_probability_engine.score_fill.return_value = (0.85, {"feature": "test"})
 
-        service = OrderEligibilityService(mock_orders, mock_probability_engine, None)
+        # Fix constructor call - remove planned_orders parameter - Begin
+        service = OrderEligibilityService(mock_probability_engine, None)
+        # Fix constructor call - remove planned_orders parameter - End
 
         # Act - should not raise any database-related errors
-        results = service.find_executable_orders()
+        # Fix method call - add planned_orders parameter - Begin
+        results = service.find_executable_orders(mock_orders)
+        # Fix method call - add planned_orders parameter - End
 
         # Assert
         assert len(results) == 1
@@ -228,10 +247,14 @@ class TestOrderEligibilityService:
         }
         mock_probability_engine.score_fill.return_value = (0.75, expected_features)
 
-        service = OrderEligibilityService(mock_orders, mock_probability_engine)
+        # Fix constructor call - remove planned_orders parameter - Begin
+        service = OrderEligibilityService(mock_probability_engine)
+        # Fix constructor call - remove planned_orders parameter - End
 
         # Act
-        results = service.find_executable_orders()
+        # Fix method call - add planned_orders parameter - Begin
+        results = service.find_executable_orders(mock_orders)
+        # Fix method call - add planned_orders parameter - End
 
         # Assert
         assert len(results) == 1

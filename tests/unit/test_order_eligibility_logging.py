@@ -34,14 +34,12 @@ class TestOrderEligibilityLogging:
     @pytest.fixture
     def eligibility_service(self, mock_probability_engine, mock_db_session):
         """Create OrderEligibilityService instance for testing."""
-        planned_orders = []
-        
+        # Fix constructor call - remove planned_orders parameter - Begin
         with patch('src.services.order_eligibility_service.get_context_logger') as mock_get_logger:
             mock_logger = Mock()
             mock_get_logger.return_value = mock_logger
             
             service = OrderEligibilityService(
-                planned_orders=planned_orders,
                 probability_engine=mock_probability_engine,
                 db_session=mock_db_session
             )
@@ -50,6 +48,7 @@ class TestOrderEligibilityLogging:
             service.context_logger = mock_logger
             
             return service
+        # Fix constructor call - remove planned_orders parameter - End
 
     @pytest.fixture
     def sample_planned_order(self):
@@ -119,20 +118,16 @@ class TestOrderEligibilityLogging:
 
     def test_probability_scoring_logging(self, eligibility_service, sample_planned_order):
         """Test logging for probability scoring results."""
-        # Add order to service's planned orders
-        eligibility_service.planned_orders = [sample_planned_order]
-
+        # Fix method call - pass planned_orders to find_executable_orders - Begin
         # Execute batch processing
-        results = eligibility_service.find_executable_orders()
+        results = eligibility_service.find_executable_orders([sample_planned_order])
+        # Fix method call - pass planned_orders to find_executable_orders - End
 
         # Verify that some form of logging occurred
         assert eligibility_service.context_logger.log_event.called
 
     def test_batch_processing_logging(self, eligibility_service, sample_planned_order):
         """Test logging for batch eligibility evaluation."""
-        # Add multiple valid orders
-        order1 = sample_planned_order
-        
         # Create a second valid order
         order2 = PlannedOrder(
             security_type=SecurityType.STK,
@@ -149,70 +144,69 @@ class TestOrderEligibilityLogging:
             priority=2
         )
 
-        eligibility_service.planned_orders = [order1, order2]
-
-        results = eligibility_service.find_executable_orders()
+        # Fix method call - pass planned_orders to find_executable_orders - Begin
+        results = eligibility_service.find_executable_orders([sample_planned_order, order2])
+        # Fix method call - pass planned_orders to find_executable_orders - End
 
         # Verify batch processing logging occurred
         assert eligibility_service.context_logger.log_event.called
 
     def test_database_persistence_logging_success(self, eligibility_service, sample_planned_order):
         """Test logging for successful probability score persistence."""
-        eligibility_service.planned_orders = [sample_planned_order]
-
-        results = eligibility_service.find_executable_orders()
+        # Fix method call - pass planned_orders to find_executable_orders - Begin
+        results = eligibility_service.find_executable_orders([sample_planned_order])
+        # Fix method call - pass planned_orders to find_executable_orders - End
 
         # Verify that some database-related logging occurred
         assert eligibility_service.context_logger.log_event.called
 
     def test_database_persistence_logging_failure(self, eligibility_service, sample_planned_order):
         """Test logging for failed probability score persistence."""
-        eligibility_service.planned_orders = [sample_planned_order]
-
         # Mock database commit failure
         eligibility_service.db_session.commit.side_effect = Exception("Database connection failed")
 
-        results = eligibility_service.find_executable_orders()
+        # Fix method call - pass planned_orders to find_executable_orders - Begin
+        results = eligibility_service.find_executable_orders([sample_planned_order])
+        # Fix method call - pass planned_orders to find_executable_orders - End
 
         # Verify error logging occurred
         assert eligibility_service.context_logger.log_event.called
 
     def test_service_initialization_logging(self, mock_probability_engine, mock_db_session):
         """Test logging during service initialization."""
-        planned_orders = []
-
+        # Fix constructor call - remove planned_orders parameter - Begin
         with patch('src.services.order_eligibility_service.get_context_logger') as mock_get_logger:
             mock_logger = Mock()
             mock_get_logger.return_value = mock_logger
 
             # Create service - this should trigger initialization logging
             service = OrderEligibilityService(
-                planned_orders=planned_orders,
                 probability_engine=mock_probability_engine,
                 db_session=mock_db_session
             )
 
             # Verify initialization was logged
             mock_logger.log_event.assert_called()
+        # Fix constructor call - remove planned_orders parameter - End
 
     def test_empty_order_list_logging(self, eligibility_service):
         """Test logging when processing empty order list."""
-        eligibility_service.planned_orders = []
-
-        results = eligibility_service.find_executable_orders()
+        # Fix method call - pass empty list to find_executable_orders - Begin
+        results = eligibility_service.find_executable_orders([])
+        # Fix method call - pass empty list to find_executable_orders - End
 
         # Verify that logging still occurred even with empty list
         assert eligibility_service.context_logger.log_event.called
 
     def test_probability_engine_error_logging(self, eligibility_service, sample_planned_order):
         """Test logging for probability engine errors."""
-        eligibility_service.planned_orders = [sample_planned_order]
-
         # Mock probability engine to raise exception but catch it
         eligibility_service.probability_engine.score_fill.side_effect = Exception("Probability engine failed")
 
         try:
-            results = eligibility_service.find_executable_orders()
+            # Fix method call - pass planned_orders to find_executable_orders - Begin
+            results = eligibility_service.find_executable_orders([sample_planned_order])
+            # Fix method call - pass planned_orders to find_executable_orders - End
         except Exception:
             pass  # Expected to fail
 
@@ -221,8 +215,6 @@ class TestOrderEligibilityLogging:
 
     def test_effective_priority_calculation_logging(self, eligibility_service, sample_planned_order):
         """Test logging for effective priority calculations."""
-        eligibility_service.planned_orders = [sample_planned_order]
-
         # Test with different priority values
         test_cases = [
             (1, 0.85),   # Low priority, high probability
@@ -236,7 +228,9 @@ class TestOrderEligibilityLogging:
             with patch.object(eligibility_service.probability_engine, 'score_fill') as mock_score:
                 mock_score.return_value = (fill_prob, {})
 
-                results = eligibility_service.find_executable_orders()
+                # Fix method call - pass planned_orders to find_executable_orders - Begin
+                results = eligibility_service.find_executable_orders([sample_planned_order])
+                # Fix method call - pass planned_orders to find_executable_orders - End
 
                 # Verify that logging occurred
                 assert eligibility_service.context_logger.log_event.called
@@ -268,8 +262,6 @@ class TestOrderEligibilityLogging:
             )
             orders.append(order)
 
-        eligibility_service.planned_orders = orders
-
         # Mock probability engine to return different probabilities
         def mock_score_fill(order, return_features=True):
             prob_map = {
@@ -281,7 +273,9 @@ class TestOrderEligibilityLogging:
 
         eligibility_service.probability_engine.score_fill = mock_score_fill
 
-        results = eligibility_service.find_executable_orders()
+        # Fix method call - pass planned_orders to find_executable_orders - Begin
+        results = eligibility_service.find_executable_orders(orders)
+        # Fix method call - pass planned_orders to find_executable_orders - End
 
         # Verify that we got results and logging occurred
         assert len(results) > 0
@@ -300,9 +294,10 @@ class TestOrderEligibilityLogging:
         }
 
         eligibility_service.probability_engine.score_fill.return_value = (0.82, comprehensive_features)
-        eligibility_service.planned_orders = [sample_planned_order]
 
-        results = eligibility_service.find_executable_orders()
+        # Fix method call - pass planned_orders to find_executable_orders - Begin
+        results = eligibility_service.find_executable_orders([sample_planned_order])
+        # Fix method call - pass planned_orders to find_executable_orders - End
 
         # Verify that logging occurred with features
         assert eligibility_service.context_logger.log_event.called

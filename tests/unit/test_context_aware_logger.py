@@ -26,7 +26,7 @@ class TestContextAwareLogger:
         logger = ContextAwareLogger(max_events_per_second=100, max_recursion_depth=5)
         
         success = logger.log_event(
-            event_type=TradingEventType.ORDER_VALIDATION,
+            event_type=TradingEventType.ORDER_VALIDATION,  # MEDIUM importance
             message="Test order validation",
             symbol="AAPL",
             context_provider={
@@ -46,11 +46,11 @@ class TestContextAwareLogger:
         """Test circuit breaker prevents event storms."""
         logger = ContextAwareLogger(max_events_per_second=5, max_recursion_depth=3)
         
-        # Log events rapidly to trigger circuit breaker
+        # Log events rapidly to trigger circuit breaker - use HIGH importance events
         successful_logs = 0
         for i in range(10):
             success = logger.log_event(
-                event_type=TradingEventType.EXECUTION_DECISION,
+                event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
                 message=f"Test event {i}",
                 symbol="SPY"
             )
@@ -65,10 +65,10 @@ class TestContextAwareLogger:
         """Test circuit breaker resets after time window."""
         logger = ContextAwareLogger(max_events_per_second=2)
         
-        # Log events to trigger circuit breaker
+        # Log events to trigger circuit breaker - use HIGH importance
         for i in range(5):
             logger.log_event(
-                event_type=TradingEventType.MARKET_CONDITION,
+                event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
                 message=f"Event {i}"
             )
         
@@ -80,7 +80,7 @@ class TestContextAwareLogger:
         
         # Now events should succeed again
         success = logger.log_event(
-            event_type=TradingEventType.MARKET_CONDITION,
+            event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
             message="Event after reset"
         )
         
@@ -96,7 +96,7 @@ class TestContextAwareLogger:
         def recursive_context_provider():
             # This nested call should trigger recursion protection
             logger.log_event(
-                event_type=TradingEventType.SYSTEM_HEALTH,
+                event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
                 message="Nested call from context",
                 context_provider={'nested': True}
             )
@@ -104,7 +104,7 @@ class TestContextAwareLogger:
         
         # This call should succeed, but the nested one should be blocked
         success = logger.log_event(
-            event_type=TradingEventType.SYSTEM_HEALTH,
+            event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
             message="Test recursion protection",
             context_provider={'recursive_field': recursive_context_provider}
         )
@@ -127,9 +127,9 @@ class TestContextAwareLogger:
         
         logger = ContextAwareLogger()
         
-        # Create event with lazy context provider
+        # Create event with lazy context provider - use HIGH importance
         success = logger.log_event(
-            event_type=TradingEventType.SYSTEM_HEALTH,
+            event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
             message="Test lazy evaluation",
             context_provider={
                 'immediate': "value",
@@ -149,7 +149,7 @@ class TestContextAwareLogger:
         logger = ContextAwareLogger()
         
         success = logger.log_event(
-            event_type=TradingEventType.SYSTEM_HEALTH,
+            event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
             message="Test error handling",
             context_provider={
                 'good_field': "works",
@@ -171,7 +171,7 @@ class TestContextAwareLogger:
         logger = ContextAwareLogger()
         
         success = logger.log_event(
-            event_type=TradingEventType.ORDER_VALIDATION,
+            event_type=TradingEventType.ORDER_VALIDATION,  # MEDIUM importance
             message="Test complex type sanitization",
             context_provider={
                 'string_field': "simple string",
@@ -191,7 +191,7 @@ class TestContextAwareLogger:
         logger = ContextAwareLogger()
         
         success = logger.log_event(
-            event_type=TradingEventType.EXECUTION_DECISION,
+            event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
             message="Test event structure",
             symbol="TSLA",
             decision_reason="Test decision"
@@ -210,7 +210,7 @@ class TestContextAwareLogger:
             try:
                 for i in range(10):
                     success = logger.log_event(
-                        event_type=TradingEventType.MARKET_CONDITION,
+                        event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
                         message=f"Thread {thread_id} event {i}",
                         symbol=f"SYMBOL{thread_id}",
                         context_provider={'thread_id': thread_id, 'event_id': i}
@@ -307,10 +307,10 @@ class TestContextAwareLogger:
         """Test that statistics can be tracked and reset."""
         logger = ContextAwareLogger()
         
-        # Log some events
+        # Log some events - use HIGH importance to ensure they pass filtering
         for i in range(3):
             logger.log_event(
-                event_type=TradingEventType.SYSTEM_HEALTH,
+                event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
                 message=f"Event {i}"
             )
         
@@ -380,17 +380,17 @@ class TestContextAwareLogger:
         """Test logging with empty or None context provider."""
         logger = ContextAwareLogger()
         
-        # Test with None context
+        # Test with None context - use HIGH importance
         success1 = logger.log_event(
-            event_type=TradingEventType.SYSTEM_HEALTH,
+            event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
             message="Test None context",
             context_provider=None
         )
         assert success1 is True
         
-        # Test with empty context
+        # Test with empty context - use HIGH importance
         success2 = logger.log_event(
-            event_type=TradingEventType.SYSTEM_HEALTH,
+            event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
             message="Test empty context",
             context_provider={}
         )
@@ -401,7 +401,7 @@ class TestContextAwareLogger:
         logger = ContextAwareLogger()
         
         success = logger.log_event(
-            event_type=TradingEventType.MARKET_CONDITION,
+            event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
             message="Test without optional fields"
             # No symbol, no context_provider, no decision_reason
         )
@@ -414,10 +414,10 @@ class TestContextAwareLogger:
         
         start_time = time.time()
         
-        # Log large number of events
+        # Log large number of events - use HIGH importance
         for i in range(100):
             logger.log_event(
-                event_type=TradingEventType.MARKET_CONDITION,
+                event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
                 message=f"High volume event {i}",
                 symbol="SPY",
                 context_provider={'index': i, 'timestamp': time.time()}
@@ -446,7 +446,7 @@ class TestContextAwareLogger:
             logger = ContextAwareLogger()
             
             logger.log_event(
-                event_type=TradingEventType.ORDER_VALIDATION,
+                event_type=TradingEventType.ORDER_VALIDATION,  # MEDIUM importance
                 message="Test console output",
                 symbol="MSFT",
                 decision_reason="Validation test"
@@ -497,7 +497,7 @@ class TestContextAwareLogger:
             }
             
             success = logger.log_event(
-                event_type=TradingEventType.RISK_EVALUATION,
+                event_type=TradingEventType.RISK_EVALUATION,  # MEDIUM importance
                 message="Portfolio risk assessment",
                 symbol="PORTFOLIO",
                 context_provider=complex_context,
@@ -537,7 +537,7 @@ class TestContextAwareLogger:
                 return {'var': -7500, 'expected_shortfall': -12000}
             
             success = logger.log_event(
-                event_type=TradingEventType.POSITION_MANAGEMENT,
+                event_type=TradingEventType.POSITION_MANAGEMENT,  # HIGH importance
                 message="Lazy context evaluation test",
                 symbol="TEST",
                 context_provider={
@@ -575,7 +575,7 @@ class TestContextAwareLogger:
                 raise ValueError("Simulated context provider failure")
             
             success = logger.log_event(
-                event_type=TradingEventType.SYSTEM_HEALTH,
+                event_type=TradingEventType.EXECUTION_DECISION,  # HIGH importance
                 message="Error handling test",
                 context_provider={
                     'good_data': "This works fine",

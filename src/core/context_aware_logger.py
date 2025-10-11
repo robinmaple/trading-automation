@@ -5,6 +5,7 @@ Designed to answer debugging questions about order execution, state discrepancie
 """
 
 import datetime
+import json
 import threading
 import time
 from enum import Enum
@@ -15,6 +16,12 @@ import inspect
 
 # REMOVE this import - it's causing circular dependencies
 # from src.core.simple_logger import get_simple_logger
+
+class LogImportance(Enum):
+    """3-level importance system for log filtering."""
+    HIGH = 1      # Errors, order executions, critical state changes
+    MEDIUM = 2    # Validations, calculations, major decisions  
+    LOW = 3       # System health, progress updates, routine checks
 
 class TradingEventType(Enum):
     """Categories of trading events for structured logging."""
@@ -42,8 +49,7 @@ class TradingEvent:
 
 class SafeContext:
     """
-    Lazy evaluation wrapper to prevent dead loops during context building.
-    Only evaluates context providers when actually needed for logging.
+    Lazy evaluation wrapper with moderate compression for key trading fields.
     """
     
     def __init__(self, **lazy_fields):
@@ -59,16 +65,54 @@ class SafeContext:
         return self._safe_dict
     
     def _evaluate_lazy_fields(self):
-        """Evaluate lazy fields and convert to safe types."""
+        """Evaluate lazy fields and apply moderate compression."""
         for key, provider in self._lazy_fields.items():
             try:
                 if callable(provider):
                     value = provider()
                 else:
                     value = provider
-                self._safe_dict[key] = self._make_safe(value)
+                self._safe_dict[key] = self._compress_value(key, value)
             except Exception as e:
                 self._safe_dict[key] = f"CONTEXT_ERROR: {str(e)}"
+    
+    def _compress_value(self, key: str, value: Any) -> Any:
+        """Apply moderate compression rules based on field type."""
+        if value is None:
+            return None
+            
+        # Compress lists - keep only first few items for large lists
+        if isinstance(value, (list, tuple)) and len(value) > 5:
+            compressed = list(value)[:3]
+            return compressed + [f"...+{len(value) - 3} more"]
+        
+        # Compress very large dictionaries but keep most trading fields
+        if isinstance(value, dict) and len(value) > 10:
+            compressed = {}
+            important_keys = [k for k in value.keys() if self._is_important_key(k)]
+            # Keep all important keys, limit others
+            for k in important_keys:
+                compressed[k] = self._make_safe(value[k])
+            other_keys = [k for k in value.keys() if k not in important_keys][:3]
+            for k in other_keys:
+                compressed[k] = self._make_safe(value[k])
+            if len(value) > len(compressed):
+                compressed['_other'] = f"{len(value) - len(compressed)} more fields"
+            return compressed
+            
+        # Default safe conversion
+        return self._make_safe(value)
+    
+    def _is_important_key(self, key: str) -> bool:
+        """Identify which context keys are important trading fields to keep."""
+        important_patterns = [
+            'error', 'exception', 'status', 'result', 'count', 
+            'price', 'quantity', 'risk', 'profit', 'loss', 'amount',
+            'order_id', 'symbol', 'action', 'filled', 'remaining',
+            'entry', 'stop', 'target', 'capital', 'margin', 'pnl'
+        ]
+        key_str = str(key).lower()
+        return any(pattern in key_str for pattern in important_patterns)
     
     def _make_safe(self, value: Any) -> Any:
         """Convert value to safe, primitive types only."""
@@ -104,12 +148,16 @@ class ContextAwareLogger:
         self.max_events_per_second = max_events_per_second
         self.max_recursion_depth = max_recursion_depth
         
+        # Importance filtering - default to MEDIUM (filters out LOW importance)
+        self.min_importance = LogImportance.MEDIUM
+        
         # Statistics
         self._stats = {
             'total_events': 0,
             'dropped_events': 0,
             'recursion_blocks': 0,
-            'circuit_breaker_blocks': 0
+            'circuit_breaker_blocks': 0,
+            'importance_filtered': 0
         }
         
         # LAZY IMPORT: Import simple_logger only when actually needed
@@ -136,12 +184,18 @@ class ContextAwareLogger:
         thread_id = threading.get_ident()
         current_time = time.time()
         
-        # Layer 1: Circuit Breaker - Event Rate Limiting
+        # Layer 1: Importance Filtering - Skip low importance events
+        importance = self._determine_importance(event_type, message, context_provider, decision_reason)
+        if importance.value > self.min_importance.value:
+            self._stats['importance_filtered'] += 1
+            return False
+        
+        # Layer 2: Circuit Breaker - Event Rate Limiting
         if not self._check_circuit_breaker(event_type, current_time):
             self._stats['circuit_breaker_blocks'] += 1
             return False
         
-        # Layer 2: Recursion Detection
+        # Layer 3: Recursion Detection
         recursion_depth = self._check_recursion(thread_id)
         if recursion_depth > self.max_recursion_depth:
             self._stats['recursion_blocks'] += 1
@@ -149,7 +203,7 @@ class ContextAwareLogger:
             return False
         
         try:
-            # Layer 3: Safe Context Evaluation
+            # Layer 4: Safe Context Evaluation with Compression
             safe_context_wrapper = SafeContext(**(context_provider or {}))
             
             event = TradingEvent(
@@ -165,7 +219,7 @@ class ContextAwareLogger:
             )
             
             event_dict = self._prepare_event_for_logging(event, safe_context_wrapper)
-            self._write_structured_log(event_dict)
+            self._write_compressed_log(event_dict, importance)
             
             self._stats['total_events'] += 1
             return True
@@ -177,11 +231,126 @@ class ContextAwareLogger:
         finally:
             self._cleanup_thread(thread_id)
     
+    def _determine_importance(self, 
+                            event_type: TradingEventType, 
+                            message: str, 
+                            context_provider: Optional[Dict[str, Any]],
+                            decision_reason: Optional[str]) -> LogImportance:
+        """Automatically determine importance based on event type and content."""
+        message_lower = message.lower()
+        
+        # High importance: errors, failures, critical operations
+        if any(word in message_lower for word in ['error', 'failed', 'exception', 'critical', 'rejected']):
+            return LogImportance.HIGH
+        
+        # Event type based importance
+        event_importance = {
+            TradingEventType.SYSTEM_HEALTH: LogImportance.LOW,
+            TradingEventType.ORDER_VALIDATION: LogImportance.MEDIUM,
+            TradingEventType.EXECUTION_DECISION: LogImportance.HIGH,
+            TradingEventType.MARKET_CONDITION: LogImportance.LOW,
+            TradingEventType.POSITION_MANAGEMENT: LogImportance.HIGH,
+            TradingEventType.STATE_TRANSITION: LogImportance.HIGH,
+            TradingEventType.RISK_EVALUATION: LogImportance.MEDIUM,
+            TradingEventType.DATABASE_STATE: LogImportance.LOW,
+        }
+        
+        base_importance = event_importance.get(event_type, LogImportance.MEDIUM)
+        
+        # Upgrade importance for critical context or decision reasons
+        if decision_reason and any(word in decision_reason.lower() for word in 
+                                 ['execut', 'fill', 'reject', 'error', 'risk']):
+            return LogImportance.HIGH
+            
+        # Check context for high importance indicators
+        if context_provider:
+            context_str = str(context_provider).lower()
+            if any(word in context_str for word in 
+                  ['error', 'exception', 'reject', 'fill', 'execute']):
+                return LogImportance.HIGH
+        
+        return base_importance
+    
     def _prepare_event_for_logging(self, event: TradingEvent, context_wrapper: SafeContext) -> Dict[str, Any]:
         """Prepare event for logging by evaluating context only when needed."""
         event_dict = asdict(event)
         event_dict['context'] = context_wrapper.to_safe_dict()
         return event_dict
+    
+    def _write_compressed_log(self, event_dict: Dict[str, Any], importance: LogImportance):
+        """Write compressed structured event to log."""
+        # Extract core information for compact format
+        core_info = {
+            't': event_dict['timestamp'][11:19],  # Just time (HH:MM:SS)
+            'type': event_dict['event_type'][:3].upper(),  # ORD, EXE, SYS, etc.
+            'sym': event_dict['symbol'],
+            'imp': importance.name[0],  # H, M, L
+            'msg': self._compress_message(event_dict['message']),
+        }
+        
+        # Add reason if present (truncate very long reasons)
+        if event_dict['decision_reason']:
+            reason = event_dict['decision_reason']
+            core_info['reason'] = reason[:60] + '...' if len(reason) > 60 else reason
+        
+        # Add only critical context
+        critical_context = self._extract_critical_context(event_dict['context'])
+        if critical_context:
+            core_info['ctx'] = critical_context
+        
+        # Compact JSON output
+        compact_json = json.dumps(core_info, separators=(',', ':'))
+        
+        # Console output (unchanged for visibility)
+        symbol_str = f" [{event_dict['symbol']}]" if event_dict['symbol'] else ""
+        reason_str = f" - {event_dict['decision_reason']}" if event_dict['decision_reason'] else ""
+        console_message = f"🔍 {event_dict['event_type'].upper()}{symbol_str}: {event_dict['message']}{reason_str}"
+        print(console_message)
+        
+        # Compressed file logging
+        try:
+            logger = self._get_simple_logger()
+            logger.info(f"EVENT: {compact_json}")
+        except ImportError:
+            # Fallback if simple_logger has issues
+            print(f"📊 {compact_json}")
+    
+    def _compress_message(self, message: str) -> str:
+        """Compress common message patterns for compact logging."""
+        replacements = {
+            'completed successfully': '✓',
+            'starting': '→',
+            'failed': '✗',
+            'validation': 'val',
+            'initialization': 'init',
+            'calculation': 'calc',
+            'successfully': 'ok',
+            'received': '←',
+            'processing': 'proc',
+            'reconciliation': 'recon',
+        }
+        
+        compressed = message
+        for full, short in replacements.items():
+            compressed = compressed.replace(full, short)
+        
+        return compressed[:80]  # Truncate very long messages
+    
+    def _extract_critical_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract only the most important context fields for compression."""
+        critical_fields = {
+            'error', 'exception', 'status', 'result', 'count',
+            'price', 'quantity', 'risk', 'profit', 'loss', 'amount',
+            'order_id', 'symbol', 'action', 'filled', 'remaining',
+            'entry', 'stop', 'target', 'capital', 'margin', 'pnl'
+        }
+        
+        # Also include any field with 'error' in the name
+        error_fields = [k for k in context.keys() if 'error' in str(k).lower()]
+        
+        important_keys = set(critical_fields) | set(error_fields)
+        return {k: v for k, v in context.items() 
+                if k in important_keys and v is not None}
     
     def _check_circuit_breaker(self, event_type: TradingEventType, current_time: float) -> bool:
         """Circuit breaker to prevent event storms."""
@@ -228,24 +397,6 @@ class ContextAwareLogger:
             else:
                 self._active_threads[thread_id] -= 1
     
-    def _write_structured_log(self, event_dict: Dict[str, Any]):
-        """Write structured event to log with clear formatting."""
-        symbol_str = f" [{event_dict['symbol']}]" if event_dict['symbol'] else ""
-        reason_str = f" - {event_dict['decision_reason']}" if event_dict['decision_reason'] else ""
-        
-        log_message = f"🔍 {event_dict['event_type'].upper()}{symbol_str}: {event_dict['message']}{reason_str}"
-        
-        # Always print to console
-        print(log_message)
-        
-        # LAZY LOGGING: Only use file logger if available
-        try:
-            logger = self._get_simple_logger()
-            logger.info(f"STRUCTURED_EVENT: {event_dict}")
-        except ImportError:
-            # Fallback if simple_logger has issues
-            pass
-    
     def get_stats(self) -> Dict[str, Any]:
         """Get logging statistics for monitoring."""
         return self._stats.copy()
@@ -256,7 +407,8 @@ class ContextAwareLogger:
             'total_events': 0,
             'dropped_events': 0,
             'recursion_blocks': 0,
-            'circuit_breaker_blocks': 0
+            'circuit_breaker_blocks': 0,
+            'importance_filtered': 0
         }
 
 # Global logger instance for easy access
