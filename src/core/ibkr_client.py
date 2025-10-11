@@ -14,10 +14,6 @@ import datetime
 from src.core.ibkr_types import IbkrOrder, IbkrPosition
 from src.core.account_utils import is_paper_account, get_ibkr_port
 
-# Minimal safe logging import
-from src.core.simple_logger import get_simple_logger
-logger = get_simple_logger(__name__)
-
 # <Context-Aware Logger Integration - Begin>
 from src.core.context_aware_logger import get_context_logger, TradingEventType
 # <Context-Aware Logger Integration - End>

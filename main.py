@@ -17,11 +17,8 @@ from src.core.database import init_database
 # <Event Bus Integration - Begin>
 from src.core.event_bus import EventBus
 # <Event Bus Integration - End>
-# <Session Management Integration - Begin>
-from src.core.simple_logger import start_trading_session, end_trading_session, get_current_session_file
-# <Session Management Integration - End>
 # <Context-Aware Logger Integration - Begin>
-from src.core.context_aware_logger import get_context_logger, TradingEventType
+from src.core.context_aware_logger import get_context_logger, start_trading_session, end_trading_session, TradingEventType
 # <Context-Aware Logger Integration - End>
 
 def run_scanner_from_main(ibkr_client, data_feed, config=None):

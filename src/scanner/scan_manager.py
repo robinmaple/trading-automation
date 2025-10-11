@@ -23,11 +23,6 @@ from src.core.context_aware_logger import (
     SafeContext
 )
 
-# Minimal safe logging import for fallback
-from src.core.simple_logger import get_simple_logger
-logger = get_simple_logger(__name__)
-
-
 class ScanManager:
     """
     Main entry point for running scanner operations

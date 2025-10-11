@@ -6,6 +6,9 @@ Designed to answer debugging questions about order execution, state discrepancie
 
 import datetime
 import json
+import logging
+import os
+import sys
 import threading
 import time
 from enum import Enum
@@ -14,8 +17,93 @@ from dataclasses import dataclass, asdict
 import uuid
 import inspect
 
-# REMOVE this import - it's causing circular dependencies
-# from src.core.simple_logger import get_simple_logger
+# <Session Management - Begin>
+class SessionLogger:
+    """Manages session-based logging with single file per trading session."""
+    
+    _current_session_file: Optional[str] = None
+    _session_start_time: Optional[datetime.datetime] = None
+    _session_handlers_configured = False
+    
+    @classmethod
+    def start_new_session(cls) -> str:
+        """Start a new logging session and return the session file path."""
+        # Create logs directory if it doesn't exist
+        log_dir = 'logs'
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        
+        # Generate session filename
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        session_file = os.path.join(log_dir, f"trading_session_{timestamp}.log")
+        
+        cls._current_session_file = session_file
+        cls._session_start_time = datetime.datetime.now()
+        cls._session_handlers_configured = False
+        
+        print(f"🔄 Starting new trading session: {session_file}")
+        return session_file
+    
+    @classmethod
+    def get_current_session_file(cls) -> Optional[str]:
+        """Get the current session log file path."""
+        return cls._current_session_file
+    
+    @classmethod
+    def end_current_session(cls) -> None:
+        """End the current logging session."""
+        if cls._current_session_file:
+            print(f"✅ Ending trading session: {cls._current_session_file}")
+            cls._current_session_file = None
+            cls._session_start_time = None
+            cls._session_handlers_configured = False
+    
+    @classmethod
+    def ensure_session_started(cls) -> str:
+        """Ensure a session is started and return the session file."""
+        if not cls._current_session_file:
+            return cls.start_new_session()
+        return cls._current_session_file
+    
+    @classmethod
+    def configure_session_handlers(cls, logger: logging.Logger) -> None:
+        """Configure logging handlers for the current session."""
+        if cls._session_handlers_configured:
+            return
+            
+        session_file = cls.ensure_session_started()
+        
+        # Remove any existing handlers to avoid duplicates
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+        
+        # Create formatters
+        detailed_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        simple_formatter = logging.Formatter('%(levelname)s - %(name)s - %(message)s')
+        
+        # File handler (detailed, session-based)
+        file_handler = logging.FileHandler(session_file, mode='a', encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(detailed_formatter)
+        
+        # Console handler (simple)
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(simple_formatter)
+        
+        # Add handlers to logger
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        logger.setLevel(logging.DEBUG)
+        
+        # Prevent propagation to avoid duplicate logs
+        logger.propagate = False
+        
+        cls._session_handlers_configured = True
+# <Session Management - End>
 
 class LogImportance(Enum):
     """3-level importance system for log filtering."""
@@ -160,17 +248,12 @@ class ContextAwareLogger:
             'importance_filtered': 0
         }
         
-        # LAZY IMPORT: Import simple_logger only when actually needed
-        self._simple_logger = None
-    
-    def _get_simple_logger(self):
-        """Lazy import for simple_logger to avoid circular dependencies."""
-        if self._simple_logger is None:
-            # Import locally when first needed
-            from src.core.simple_logger import get_simple_logger
-            self._simple_logger = get_simple_logger(__name__)
-            self._simple_logger.info(f"ContextAwareLogger initialized (session: {self.session_id})")
-        return self._simple_logger
+        # <Direct File Logging - Begin>
+        # Initialize direct file logging
+        self._file_logger = logging.getLogger(f"context_aware_{self.session_id}")
+        SessionLogger.configure_session_handlers(self._file_logger)
+        self._file_logger.info(f"ContextAwareLogger initialized (session: {self.session_id})")
+        # <Direct File Logging - End>
     
     def log_event(self, 
                   event_type: TradingEventType,
@@ -307,13 +390,17 @@ class ContextAwareLogger:
         console_message = f"🔍 {event_dict['event_type'].upper()}{symbol_str}: {event_dict['message']}{reason_str}"
         print(console_message)
         
-        # Compressed file logging
+        # <Direct File Logging - Begin>
+        # Use direct file logging instead of SimpleLogger
         try:
-            logger = self._get_simple_logger()
-            logger.info(f"EVENT: {compact_json}")
-        except ImportError:
-            # Fallback if simple_logger has issues
+            # Ensure session handlers are configured
+            SessionLogger.configure_session_handlers(self._file_logger)
+            self._file_logger.info(f"EVENT: {compact_json}")
+        except Exception as e:
+            # Fallback if file logging has issues
             print(f"📊 {compact_json}")
+            print(f"File logging error: {e}")
+        # <Direct File Logging - End>
     
     def _compress_message(self, message: str) -> str:
         """Compress common message patterns for compact logging."""
@@ -420,3 +507,17 @@ def get_context_logger() -> ContextAwareLogger:
     if _global_logger is None:
         _global_logger = ContextAwareLogger()
     return _global_logger
+
+# <Session Management Public API - Begin>
+def start_trading_session() -> str:
+    """Explicitly start a new trading session. Call this at application startup."""
+    return SessionLogger.start_new_session()
+
+def end_trading_session() -> None:
+    """Explicitly end the current trading session. Call this at application shutdown."""
+    SessionLogger.end_current_session()
+
+def get_current_session_file() -> Optional[str]:
+    """Get the path to the current session's log file."""
+    return SessionLogger.get_current_session_file()
+# <Session Management Public API - End>

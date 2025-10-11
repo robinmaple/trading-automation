@@ -17,10 +17,6 @@ from pandas.tseries.offsets import BDay  # Business day offset
 import datetime
 from config.trading_core_config import get_config
 
-# Minimal safe logging import
-from src.core.simple_logger import get_simple_logger
-logger = get_simple_logger(__name__)
-
 # <Context-Aware Logger Integration - Begin>
 from src.core.context_aware_logger import get_context_logger, TradingEventType
 # <Context-Aware Logger Integration - End>
