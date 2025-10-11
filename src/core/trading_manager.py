@@ -123,15 +123,13 @@ class TradingManager:
             data_feed=self.data_feed,
             config=self.trading_config  # <-- PASS CONFIG HERE
         )        
-        # <Fix OrderEligibilityService Parameter Order - Begin>
-        # Initialize eligibility service with CORRECT parameter order
+        # <Fix OrderEligibilityService Initialization - Begin>
+        # Fix eligibility service initialization to remove planned_orders parameter
         self.eligibility_service = OrderEligibilityService(
-            self.planned_orders,           # planned_orders parameter (first)
-            self.probability_engine,       # probability_engine parameter (second)  
-            self.db_session                # db_session parameter (third)
+            self.probability_engine,       # probability_engine parameter (first)  
+            self.db_session                # db_session parameter (second)
         )
-        
-        # <Fix OrderEligibilityService Parameter Order - End>
+        # <Fix OrderEligibilityService Initialization - End>
 
         # Risk Management Service - UPDATED WITH CONFIG
         self.risk_service = RiskManagementService(
@@ -1310,7 +1308,10 @@ class TradingManager:
         )
         # <Context-Aware Logging - Execution Cycle Start - End>
 
-        executable_orders = self.eligibility_service.find_executable_orders()
+        # Fix eligibility service call to pass planned_orders parameter - Begin
+        executable_orders = self.eligibility_service.find_executable_orders(self.planned_orders)
+        # Fix eligibility service call to pass planned_orders parameter - End
+        
         if not executable_orders:
             # <Context-Aware Logging - No Executable Orders - Begin>
             self.context_logger.log_event(

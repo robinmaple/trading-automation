@@ -340,6 +340,7 @@ def main():
             data_feed=data_feed, 
             excel_path="plan.xlsx", 
             ibkr_client=ibkr_client,
+            enable_advanced_features=False,  # ← CRITICAL: Set to False
             event_bus=event_bus  # Pass EventBus to TradingManager
         )
         print("✅ TradingManager connected to EventBus for price notifications")

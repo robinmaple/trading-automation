@@ -7,6 +7,9 @@ from typing import List, Dict, Optional, Tuple
 import datetime
 from src.core.planned_order import PlannedOrder
 from src.services.position_sizing_service import PositionSizingService
+import signal
+import time
+from functools import wraps
 
 # <Advanced Feature Integration - Begin>
 # New imports for advanced features
@@ -846,249 +849,6 @@ class PrioritizationService:
         return result
     # Compute final score using Phase B formula - End
 
-    # Prioritize orders and allocate capital based on scoring - Begin
-    def prioritize_orders(self, executable_orders: List[Dict], total_capital: float, 
-                        current_working_orders: Optional[List] = None) -> List[Dict]:
-        # <Context-Aware Logging Integration - Begin>
-        self.context_logger.log_event(
-            TradingEventType.POSITION_MANAGEMENT,
-            f"Starting prioritization of {len(executable_orders)} orders",
-            context_provider={
-                "total_capital": total_capital,
-                "executable_orders_count": len(executable_orders),
-                "current_working_orders_count": len(current_working_orders) if current_working_orders else 0
-            }
-        )
-        # <Context-Aware Logging Integration - End>
-            
-        if not executable_orders:
-            # <Context-Aware Logging Integration - Begin>
-            self.context_logger.log_event(
-                TradingEventType.POSITION_MANAGEMENT,
-                "No executable orders to prioritize",
-                context_provider={},
-                decision_reason="No orders to process"
-            )
-            # <Context-Aware Logging Integration - End>
-            return []
-            
-        # Check if two-layer prioritization is enabled
-        two_layer_config = self.config.get('two_layer_prioritization', {})
-        two_layer_enabled = two_layer_config.get('enabled', False)
-        
-        if not two_layer_enabled:
-            # <Context-Aware Logging Integration - Begin>
-            self.context_logger.log_event(
-                TradingEventType.POSITION_MANAGEMENT,
-                "Using legacy single-layer prioritization",
-                context_provider={},
-                decision_reason="Two-layer prioritization disabled"
-            )
-            # <Context-Aware Logging Integration - End>
-            # Fall back to legacy single-layer prioritization
-            return self._prioritize_orders_legacy(executable_orders, total_capital, current_working_orders)
-
-        committed_capital = 0.0
-        working_order_count = 0
-        if current_working_orders:
-            committed_capital = sum(order.get('capital_commitment', 0) 
-                                  for order in current_working_orders)
-            working_order_count = len(current_working_orders)
-        
-        available_capital = total_capital * self.config['max_capital_utilization'] - committed_capital
-        available_capital = max(0, available_capital)
-        
-        available_slots = self.config['max_open_orders'] - working_order_count
-        available_slots = max(0, available_slots)
-        
-        # <Context-Aware Logging Integration - Begin>
-        self.context_logger.log_event(
-            TradingEventType.POSITION_MANAGEMENT,
-            "Capital and slot availability calculated",
-            context_provider={
-                "available_capital": available_capital,
-                "available_slots": available_slots,
-                "committed_capital": committed_capital,
-                "working_order_count": working_order_count,
-                "max_capital_utilization": self.config['max_capital_utilization'],
-                "max_open_orders": self.config['max_open_orders']
-            }
-        )
-        # <Context-Aware Logging Integration - End>
-
-        # <Two-Layer Prioritization - Begin>
-        # First pass: Check viability and calculate quality scores
-        viable_orders = []
-        non_viable_orders = []
-        
-        for order_data in executable_orders:
-            order = order_data['order']
-            safe_symbol = getattr(order, 'symbol', 'Unknown')
-            
-            # Check viability
-            is_viable, reason = self.is_order_viable(order_data)
-            
-            if is_viable:
-                # Calculate quality score for viable orders
-                quality_result = self.calculate_quality_score(order, total_capital)
-                
-                quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
-                capital_commitment = order.entry_price * quantity if order.entry_price else 0
-                
-                viable_order = {
-                    **order_data,
-                    'quality_score': quality_result['quality_score'],
-                    'quality_components': quality_result['components'],
-                    'quantity': quantity,
-                    'capital_commitment': capital_commitment,
-                    'viable': True,
-                    'allocation_reason': 'Viable - awaiting allocation',
-                    'allocated': False
-                }
-                viable_orders.append(viable_order)
-                
-                # <Context-Aware Logging Integration - Begin>
-                self.context_logger.log_event(
-                    TradingEventType.ORDER_VALIDATION,
-                    f"Order {safe_symbol} marked as viable",
-                    symbol=safe_symbol,
-                    context_provider={
-                        "quality_score": quality_result['quality_score'],
-                        "capital_commitment": capital_commitment,
-                        "quantity": quantity
-                    },
-                    decision_reason="Order passed viability check"
-                )
-                # <Context-Aware Logging Integration - End>
-            else:
-                non_viable_order = {
-                    **order_data,
-                    'viable': False,
-                    'allocation_reason': reason,
-                    'allocated': False
-                }
-                non_viable_orders.append(non_viable_order)
-                
-                # <Context-Aware Logging Integration - Begin>
-                self.context_logger.log_event(
-                    TradingEventType.ORDER_VALIDATION,
-                    f"Order {safe_symbol} marked as non-viable",
-                    symbol=safe_symbol,
-                    context_provider={
-                        "reason": reason
-                    },
-                    decision_reason="Order failed viability check"
-                )
-                # <Context-Aware Logging Integration - End>
-        
-        # <Context-Aware Logging Integration - Begin>
-        self.context_logger.log_event(
-            TradingEventType.POSITION_MANAGEMENT,
-            "Viability check completed",
-            context_provider={
-                "viable_orders_count": len(viable_orders),
-                "non_viable_orders_count": len(non_viable_orders)
-            }
-        )
-        # <Context-Aware Logging Integration - End>
-
-        # Sort viable orders by quality score (highest first)
-        viable_orders.sort(key=lambda x: x['quality_score'], reverse=True)
-        
-        # Second pass: Allocate capital to top viable orders
-        allocated_orders = []
-        total_allocated_capital = 0
-        allocated_count = 0
-        
-        for order in viable_orders:
-            safe_symbol = getattr(order['order'], 'symbol', 'Unknown')
-            
-            if allocated_count >= available_slots:
-                order['allocation_reason'] = 'Max open orders reached'
-                # <Context-Aware Logging Integration - Begin>
-                self.context_logger.log_event(
-                    TradingEventType.POSITION_MANAGEMENT,
-                    f"Order {safe_symbol} not allocated - max open orders reached",
-                    symbol=safe_symbol,
-                    context_provider={
-                        "allocated_count": allocated_count,
-                        "available_slots": available_slots
-                    },
-                    decision_reason="Order slot limit reached"
-                )
-                # <Context-Aware Logging Integration - End>
-                continue
-                
-            if total_allocated_capital + order['capital_commitment'] > available_capital:
-                order['allocation_reason'] = 'Insufficient capital'
-                # <Context-Aware Logging Integration - Begin>
-                self.context_logger.log_event(
-                    TradingEventType.POSITION_MANAGEMENT,
-                    f"Order {safe_symbol} not allocated - insufficient capital",
-                    symbol=safe_symbol,
-                    context_provider={
-                        "total_allocated_capital": total_allocated_capital,
-                        "order_capital_commitment": order['capital_commitment'],
-                        "available_capital": available_capital
-                    },
-                    decision_reason="Capital limit reached"
-                )
-                # <Context-Aware Logging Integration - End>
-                continue
-                
-            order['allocated'] = True
-            order['allocation_reason'] = 'Allocated'
-            total_allocated_capital += order['capital_commitment']
-            allocated_count += 1
-            allocated_orders.append(order)
-            
-            # <Context-Aware Logging Integration - Begin>
-            self.context_logger.log_event(
-                TradingEventType.POSITION_MANAGEMENT,
-                f"Order {safe_symbol} allocated successfully",
-                symbol=safe_symbol,
-                context_provider={
-                    "quality_score": order['quality_score'],
-                    "capital_commitment": order['capital_commitment'],
-                    "total_allocated_capital": total_allocated_capital,
-                    "allocated_count": allocated_count
-                },
-                decision_reason="Order allocated"
-            )
-            # <Context-Aware Logging Integration - End>
-        
-        # <Context-Aware Logging Integration - Begin>
-        self.context_logger.log_event(
-            TradingEventType.POSITION_MANAGEMENT,
-            "Prioritization allocation completed",
-            context_provider={
-                "allocated_orders_count": len(allocated_orders),
-                "total_allocated_capital": total_allocated_capital,
-                "available_capital_remaining": available_capital - total_allocated_capital,
-                "available_slots_remaining": available_slots - allocated_count
-            },
-            decision_reason="Prioritization process completed"
-        )
-        # <Context-Aware Logging Integration - End>
-
-        # Combine all orders for return (viable allocated, viable not allocated, non-viable)
-        result = viable_orders + non_viable_orders
-        
-        # <Context-Aware Logging Integration - Begin>
-        self.context_logger.log_event(
-            TradingEventType.POSITION_MANAGEMENT,
-            "Prioritization process finished",
-            context_provider={
-                "total_orders_processed": len(result),
-                "allocated_orders": len(allocated_orders),
-                "viable_but_not_allocated": len(viable_orders) - len(allocated_orders),
-                "non_viable_orders": len(non_viable_orders)
-            }
-        )
-        # <Context-Aware Logging Integration - End>
-        return result
-        # <Two-Layer Prioritization - End>
-
     def _prioritize_orders_legacy(self, executable_orders: List[Dict], total_capital: float,
                                 current_working_orders: Optional[List] = None) -> List[Dict]:
         """Legacy single-layer prioritization for backward compatibility."""
@@ -1286,3 +1046,415 @@ class PrioritizationService:
         return summary
     # Generate summary of prioritization results - End
 # Prioritization Service - Main class definition - End
+
+    # Fix timeout decorator implementation - Begin
+    @staticmethod
+    def timeout(seconds=10, error_message="Function call timed out"):
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                def timeout_handler(signum, frame):
+                    raise TimeoutError(error_message)
+                
+                # Set up signal handler (Unix/Linux/Mac only)
+                try:
+                    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(seconds)
+                    
+                    try:
+                        result = func(*args, **kwargs)
+                    finally:
+                        # Restore original signal handler
+                        signal.alarm(0)
+                        signal.signal(signal.SIGALRM, old_handler)
+                    
+                    return result
+                except (AttributeError, ValueError):
+                    # Windows compatibility - signal.SIGALRM not available
+                    # Fall back to no timeout on Windows
+                    return func(*args, **kwargs)
+            return wrapper
+        return decorator
+    # Fix timeout decorator implementation - End
+
+    # Fix prioritize_orders with comprehensive safety checks - Begin
+    def prioritize_orders(self, executable_orders: List[Dict], total_capital: float, 
+                        current_working_orders: Optional[List] = None) -> List[Dict]:
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            f"Starting prioritization of {len(executable_orders)} orders",
+            context_provider={
+                "total_capital": total_capital,
+                "executable_orders_count": len(executable_orders),
+                "current_working_orders_count": len(current_working_orders) if current_working_orders else 0
+            }
+        )
+        # <Context-Aware Logging Integration - End>
+            
+        # CRITICAL FIX: Add comprehensive input validation
+        if not executable_orders or not isinstance(executable_orders, list):
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "No executable orders to prioritize or invalid input",
+                context_provider={
+                    "executable_orders_type": type(executable_orders).__name__,
+                    "executable_orders_length": len(executable_orders) if executable_orders else 0
+                },
+                decision_reason="Invalid input for prioritization"
+            )
+            return []
+        
+        # Filter out any invalid orders before processing
+        valid_executable_orders = []
+        for i, order_data in enumerate(executable_orders):
+            if not isinstance(order_data, dict):
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"Skipping invalid order data at index {i}",
+                    context_provider={
+                        "order_data_type": type(order_data).__name__
+                    },
+                    decision_reason="Invalid order data format"
+                )
+                continue
+                
+            order = order_data.get('order')
+            if order is None:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"Skipping order with None order object at index {i}",
+                    context_provider={},
+                    decision_reason="Missing order object"
+                )
+                continue
+                
+            if not hasattr(order, 'symbol'):
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"Skipping order without symbol at index {i}",
+                    context_provider={
+                        "order_type": type(order).__name__
+                    },
+                    decision_reason="Invalid order object"
+                )
+                continue
+                
+            valid_executable_orders.append(order_data)
+        
+        if len(valid_executable_orders) != len(executable_orders):
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                f"Filtered {len(executable_orders) - len(valid_executable_orders)} invalid orders",
+                context_provider={
+                    "original_count": len(executable_orders),
+                    "valid_count": len(valid_executable_orders)
+                },
+                decision_reason="Order validation completed"
+            )
+        
+        if not valid_executable_orders:
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                "No valid executable orders to prioritize",
+                context_provider={},
+                decision_reason="No valid orders to process"
+            )
+            return []
+            
+        # Check if two-layer prioritization is enabled
+        two_layer_config = self.config.get('two_layer_prioritization', {})
+        two_layer_enabled = two_layer_config.get('enabled', False)
+        
+        if not two_layer_enabled:
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                "Using legacy single-layer prioritization",
+                context_provider={},
+                decision_reason="Two-layer prioritization disabled"
+            )
+            # Fall back to legacy single-layer prioritization
+            return self._prioritize_orders_legacy(valid_executable_orders, total_capital, current_working_orders)
+
+        # CRITICAL FIX: Add timeout protection for the entire prioritization process
+        try:
+            return self._prioritize_orders_with_timeout(valid_executable_orders, total_capital, current_working_orders)
+        except TimeoutError as e:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Prioritization timed out - using fallback",
+                context_provider={
+                    "error_message": str(e),
+                    "timeout_seconds": 30
+                },
+                decision_reason="Prioritization timeout - falling back to legacy mode"
+            )
+            # Fall back to legacy mode on timeout
+            return self._prioritize_orders_legacy(valid_executable_orders, total_capital, current_working_orders)
+        except Exception as e:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Prioritization failed with error - using fallback",
+                context_provider={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                },
+                decision_reason="Prioritization error - falling back to legacy mode"
+            )
+            # Fall back to legacy mode on any error
+            return self._prioritize_orders_legacy(valid_executable_orders, total_capital, current_working_orders)
+    # Fix prioritize_orders with comprehensive safety checks - End
+
+    # Add timeout-protected prioritization method - Begin
+    @timeout(seconds=30, error_message="Two-layer prioritization timed out after 30 seconds")
+    def _prioritize_orders_with_timeout(self, executable_orders: List[Dict], total_capital: float, 
+                                      current_working_orders: Optional[List] = None) -> List[Dict]:
+        """Two-layer prioritization with timeout protection."""
+        # ... (rest of the method remains exactly as in the previous version)
+        # The entire method body from the previous implementation goes here unchanged
+        
+        committed_capital = 0.0
+        working_order_count = 0
+        if current_working_orders:
+            committed_capital = sum(order.get('capital_commitment', 0) 
+                                  for order in current_working_orders)
+            working_order_count = len(current_working_orders)
+        
+        available_capital = total_capital * self.config['max_capital_utilization'] - committed_capital
+        available_capital = max(0, available_capital)
+        
+        available_slots = self.config['max_open_orders'] - working_order_count
+        available_slots = max(0, available_slots)
+        
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Capital and slot availability calculated",
+            context_provider={
+                "available_capital": available_capital,
+                "available_slots": available_slots,
+                "committed_capital": committed_capital,
+                "working_order_count": working_order_count,
+                "max_capital_utilization": self.config['max_capital_utilization'],
+                "max_open_orders": self.config['max_open_orders']
+            }
+        )
+
+        # First pass: Check viability and calculate quality scores
+        viable_orders = []
+        non_viable_orders = []
+        
+        for order_data in executable_orders:
+            order = order_data['order']
+            safe_symbol = getattr(order, 'symbol', 'Unknown')
+            
+            # Check viability with enhanced error handling
+            try:
+                is_viable, reason = self.is_order_viable(order_data)
+            except Exception as e:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"Viability check failed for {safe_symbol}",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    },
+                    decision_reason="Viability check error - marking as non-viable"
+                )
+                is_viable = False
+                reason = f"Viability check error: {str(e)}"
+            
+            if is_viable:
+                # Calculate quality score for viable orders with error handling
+                try:
+                    quality_result = self.calculate_quality_score(order, total_capital)
+                    
+                    # CRITICAL FIX: Safe quantity and capital commitment calculation
+                    quantity = 0
+                    capital_commitment = 0
+                    try:
+                        quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
+                        if hasattr(order, 'entry_price') and order.entry_price is not None:
+                            capital_commitment = order.entry_price * quantity
+                    except Exception as e:
+                        self.context_logger.log_event(
+                            TradingEventType.SYSTEM_HEALTH,
+                            f"Capital commitment calculation failed for {safe_symbol}",
+                            symbol=safe_symbol,
+                            context_provider={
+                                "error_type": type(e).__name__,
+                                "error_message": str(e)
+                            },
+                            decision_reason="Capital calculation error"
+                        )
+                        # Mark as non-viable if capital calculation fails
+                        is_viable = False
+                        reason = f"Capital calculation failed: {str(e)}"
+                    
+                    if is_viable:
+                        viable_order = {
+                            **order_data,
+                            'quality_score': quality_result['quality_score'],
+                            'quality_components': quality_result['components'],
+                            'quantity': quantity,
+                            'capital_commitment': capital_commitment,
+                            'viable': True,
+                            'allocation_reason': 'Viable - awaiting allocation',
+                            'allocated': False
+                        }
+                        viable_orders.append(viable_order)
+                        
+                        self.context_logger.log_event(
+                            TradingEventType.ORDER_VALIDATION,
+                            f"Order {safe_symbol} marked as viable",
+                            symbol=safe_symbol,
+                            context_provider={
+                                "quality_score": quality_result['quality_score'],
+                                "capital_commitment": capital_commitment,
+                                "quantity": quantity
+                            },
+                            decision_reason="Order passed viability check"
+                        )
+                    else:
+                        # Fall through to non-viable handling
+                        non_viable_order = {
+                            **order_data,
+                            'viable': False,
+                            'allocation_reason': reason,
+                            'allocated': False
+                        }
+                        non_viable_orders.append(non_viable_order)
+                        
+                except Exception as e:
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        f"Quality score calculation failed for {safe_symbol}",
+                        symbol=safe_symbol,
+                        context_provider={
+                            "error_type": type(e).__name__,
+                            "error_message": str(e)
+                        },
+                        decision_reason="Quality score calculation error - marking as non-viable"
+                    )
+                    non_viable_order = {
+                        **order_data,
+                        'viable': False,
+                        'allocation_reason': f"Quality score error: {str(e)}",
+                        'allocated': False
+                    }
+                    non_viable_orders.append(non_viable_order)
+            else:
+                non_viable_order = {
+                    **order_data,
+                    'viable': False,
+                    'allocation_reason': reason,
+                    'allocated': False
+                }
+                non_viable_orders.append(non_viable_order)
+                
+                self.context_logger.log_event(
+                    TradingEventType.ORDER_VALIDATION,
+                    f"Order {safe_symbol} marked as non-viable",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "reason": reason
+                    },
+                    decision_reason="Order failed viability check"
+                )
+        
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Viability check completed",
+            context_provider={
+                "viable_orders_count": len(viable_orders),
+                "non_viable_orders_count": len(non_viable_orders)
+            }
+        )
+
+        # Sort viable orders by quality score (highest first)
+        viable_orders.sort(key=lambda x: x.get('quality_score', 0), reverse=True)
+        
+        # Second pass: Allocate capital to top viable orders
+        allocated_orders = []
+        total_allocated_capital = 0
+        allocated_count = 0
+        
+        for order in viable_orders:
+            safe_symbol = getattr(order['order'], 'symbol', 'Unknown')
+            
+            if allocated_count >= available_slots:
+                order['allocation_reason'] = 'Max open orders reached'
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    f"Order {safe_symbol} not allocated - max open orders reached",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "allocated_count": allocated_count,
+                        "available_slots": available_slots
+                    },
+                    decision_reason="Order slot limit reached"
+                )
+                continue
+                
+            capital_commitment = order.get('capital_commitment', 0)
+            if total_allocated_capital + capital_commitment > available_capital:
+                order['allocation_reason'] = 'Insufficient capital'
+                self.context_logger.log_event(
+                    TradingEventType.POSITION_MANAGEMENT,
+                    f"Order {safe_symbol} not allocated - insufficient capital",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "total_allocated_capital": total_allocated_capital,
+                        "order_capital_commitment": capital_commitment,
+                        "available_capital": available_capital
+                    },
+                    decision_reason="Capital limit reached"
+                )
+                continue
+                
+            order['allocated'] = True
+            order['allocation_reason'] = 'Allocated'
+            total_allocated_capital += capital_commitment
+            allocated_count += 1
+            allocated_orders.append(order)
+            
+            self.context_logger.log_event(
+                TradingEventType.POSITION_MANAGEMENT,
+                f"Order {safe_symbol} allocated successfully",
+                symbol=safe_symbol,
+                context_provider={
+                    "quality_score": order.get('quality_score', 0),
+                    "capital_commitment": capital_commitment,
+                    "total_allocated_capital": total_allocated_capital,
+                    "allocated_count": allocated_count
+                },
+                decision_reason="Order allocated"
+            )
+        
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Prioritization allocation completed",
+            context_provider={
+                "allocated_orders_count": len(allocated_orders),
+                "total_allocated_capital": total_allocated_capital,
+                "available_capital_remaining": available_capital - total_allocated_capital,
+                "available_slots_remaining": available_slots - allocated_count
+            },
+            decision_reason="Prioritization process completed"
+        )
+
+        # Combine all orders for return (viable allocated, viable not allocated, non-viable)
+        result = viable_orders + non_viable_orders
+        
+        self.context_logger.log_event(
+            TradingEventType.POSITION_MANAGEMENT,
+            "Prioritization process finished",
+            context_provider={
+                "total_orders_processed": len(result),
+                "allocated_orders": len(allocated_orders),
+                "viable_but_not_allocated": len(viable_orders) - len(allocated_orders),
+                "non_viable_orders": len(non_viable_orders)
+            }
+        )
+        return result
+    # Add timeout-protected prioritization method - End

@@ -461,77 +461,6 @@ class IbkrClient(EClient, EWrapper):
         """Get the connected account name."""
         return self.account_name
 
-    def get_account_value(self) -> float:
-        """Request and return the Net Liquidation value of the account."""
-        if not self.connected:
-            # <Context-Aware Logging - Account Value Fallback - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Using fallback account value - not connected to IBKR",
-                context_provider={
-                    'connected': False,
-                    'fallback_value': 100000.0
-                },
-                decision_reason="IBKR not connected, using simulation account value"
-            )
-            # <Context-Aware Logging - Account Value Fallback - End>
-            if logger:
-                logger.warning("Not connected to IBKR - using fallback account value")
-            return 100000.0
-
-        self.account_value_received.clear()
-        self.reqAccountUpdates(True, self.account_number)
-
-        if not self.account_value_received.wait(5.0):
-            # <Context-Aware Logging - Account Value Timeout - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Timeout waiting for account value data",
-                context_provider={
-                    'account_number': self.account_number,
-                    'timeout_seconds': 5.0
-                },
-                decision_reason="Account value request timeout, using fallback"
-            )
-            # <Context-Aware Logging - Account Value Timeout - End>
-            if logger:
-                logger.warning("Timeout waiting for account value data - using fallback value")
-            self.reqAccountUpdates(False, self.account_number)
-            return 100000.0
-
-        net_liquidation = self.account_values.get("NetLiquidation")
-        if net_liquidation is not None:
-            # <Context-Aware Logging - Account Value Success - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Account value retrieved successfully",
-                context_provider={
-                    'net_liquidation': net_liquidation,
-                    'account_number': self.account_number
-                }
-            )
-            # <Context-Aware Logging - Account Value Success - End>
-            if logger:
-                logger.info(f"Current account value: ${net_liquidation:,.2f}")
-            self.reqAccountUpdates(False, self.account_number)
-            return net_liquidation
-
-        cash_value = self.account_values.get("TotalCashValue", 100000.0)
-        # <Context-Aware Logging - Account Value Fallback to Cash - Begin>
-        self.context_logger.log_event(
-            TradingEventType.SYSTEM_HEALTH,
-            "Using cash value as NetLiquidation not available",
-            context_provider={
-                'cash_value': cash_value,
-                'net_liquidation_available': False
-            }
-        )
-        # <Context-Aware Logging - Account Value Fallback to Cash - End>
-        if logger:
-            logger.warning(f"Using cash value: ${cash_value:,.2f} (NetLiquidation not available)")
-        self.reqAccountUpdates(False, self.account_number)
-        return cash_value
-
     def place_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
                           risk_per_trade, risk_reward_ratio, total_capital) -> Optional[List[int]]:
         """Place a complete bracket order (entry, take-profit, stop-loss). Returns list of order IDs or None."""
@@ -1033,21 +962,6 @@ class IbkrClient(EClient, EWrapper):
         if errorCode in [201, 202]:
             self.orders_received_event.set()
 
-    def updateAccountValue(self, key: str, val: str, currency: str, accountName: str) -> None:
-        """Callback: Received account value updates."""
-        super().updateAccountValue(key, val, currency, accountName)
-
-        if key == "NetLiquidation":
-            self.account_values["NetLiquidation"] = float(val)
-        elif key == "TotalCashValue":
-            self.account_values["TotalCashValue"] = float(val)
-        elif key == "UnrealizedPnL":
-            self.account_values["UnrealizedPnL"] = float(val)
-        elif key == "RealizedPnL":
-            self.account_values["RealizedPnL"] = float(val)
-
-        self.account_value_received.set()
-
     def managedAccounts(self, accountsList: str) -> None:
         """Callback: Received managed account list when connection is established."""
         super().managedAccounts(accountsList)
@@ -1306,3 +1220,376 @@ class IbkrClient(EClient, EWrapper):
     def get_account_number(self) -> Optional[str]:
         """Get the current account number for order placement."""
         return self.account_number
+    
+    def updateAccountValue(self, key: str, val: str, currency: str, accountName: str) -> None:
+        """Callback: Received account value updates with comprehensive debugging."""
+        super().updateAccountValue(key, val, currency, accountName)
+
+        # <Context-Aware Logging - Account Value Update Start - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Account value update received",
+            context_provider={
+                'key': key,
+                'value': val,
+                'currency': currency,
+                'account_name': accountName,
+                'value_type': type(val).__name__,
+                'value_length': len(val) if val else 0
+            }
+        )
+        # <Context-Aware Logging - Account Value Update Start - End>
+
+        # DEBUG: Log ALL account values received to console
+        print(f"🔍 DEBUG Account Value: key='{key}', value='{val}', currency='{currency}', account='{accountName}'")
+        
+        try:
+            # Store all values for debugging with currency context
+            if key not in self.account_values:
+                self.account_values[key] = {}
+            
+            # Store the value with currency context
+            self.account_values[key][currency] = val
+
+            # Also store the raw values for specific currencies
+            if currency in ["CAD", "USD", "BASE"]:
+                currency_key = f"{key}_{currency}"
+                try:
+                    numeric_value = float(val) if val and val.strip() else 0.0
+                    self.account_values[currency_key] = numeric_value
+                    
+                    # <Context-Aware Logging - Currency Value Stored - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        f"Stored currency-specific account value",
+                        context_provider={
+                            'currency_key': currency_key,
+                            'numeric_value': numeric_value,
+                            'original_value': val,
+                            'currency': currency
+                        }
+                    )
+                    # <Context-Aware Logging - Currency Value Stored - End>
+                    
+                except (ValueError, TypeError) as e:
+                    # <Context-Aware Logging - Value Conversion Error - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        f"Failed to convert account value to numeric",
+                        context_provider={
+                            'key': key,
+                            'value': val,
+                            'currency': currency,
+                            'error': str(e)
+                        },
+                        decision_reason=f"Account value conversion failed: {e}"
+                    )
+                    # <Context-Aware Logging - Value Conversion Error - End>
+                    print(f"❌ ERROR converting value: key='{key}', value='{val}', error={e}")
+
+            # Store specific important values for easy access
+            important_keys = ["NetLiquidation", "BuyingPower", "AvailableFunds", "TotalCashValue", "CashBalance"]
+            if key in important_keys and currency == "CAD":
+                try:
+                    self.account_values[key] = float(val) if val and val.strip() else 0.0
+                    
+                    # <Context-Aware Logging - Important Value Stored - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        f"Stored important account value",
+                        context_provider={
+                            'key': key,
+                            'value': self.account_values[key],
+                            'currency': currency,
+                            'category': 'primary_capital_field'
+                        }
+                    )
+                    # <Context-Aware Logging - Important Value Stored - End>
+                    
+                except (ValueError, TypeError) as e:
+                    # <Context-Aware Logging - Important Value Error - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        f"Failed to store important account value",
+                        context_provider={
+                            'key': key,
+                            'value': val,
+                            'currency': currency,
+                            'error': str(e)
+                        },
+                        decision_reason=f"Important account value storage failed: {e}"
+                    )
+                    # <Context-Aware Logging - Important Value Error - End>
+
+            self.account_value_received.set()
+            
+            # <Context-Aware Logging - Account Value Update Complete - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Account value update processing completed",
+                context_provider={
+                    'total_keys_stored': len(self.account_values),
+                    'key_processed': key,
+                    'currency_processed': currency
+                }
+            )
+            # <Context-Aware Logging - Account Value Update Complete - End>
+
+        except Exception as e:
+            # <Context-Aware Logging - Account Value Processing Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Account value update processing failed",
+                context_provider={
+                    'key': key,
+                    'value': val,
+                    'currency': currency,
+                    'error_type': type(e).__name__,
+                    'error_message': str(e)
+                },
+                decision_reason=f"Account value processing exception: {e}"
+            )
+            # <Context-Aware Logging - Account Value Processing Error - End>
+            print(f"❌ CRITICAL ERROR in updateAccountValue: {e}")
+
+    def get_account_value(self) -> float:
+        """Request and return the Net Liquidation value of the account with enhanced financial data retrieval."""
+        print("🎯 DEBUG: ENHANCED get_account_value() METHOD CALLED!")
+
+        if not self.connected:
+            # <Context-Aware Logging - Account Value Fallback - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Using fallback account value - not connected to IBKR",
+                context_provider={
+                    'connected': False,
+                    'fallback_value': 100000.0
+                },
+                decision_reason="IBKR not connected, using simulation account value"
+            )
+            # <Context-Aware Logging - Account Value Fallback - End>
+            if logger:
+                logger.warning("Not connected to IBKR - using fallback account value")
+            return 100000.0
+
+        # <Context-Aware Logging - Enhanced Account Value Request - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Starting enhanced account value retrieval with multiple strategies",
+            context_provider={
+                'account_number': self.account_number,
+                'timeout_seconds': 10.0
+            }
+        )
+        # <Context-Aware Logging - Enhanced Account Value Request - End>
+
+        print("🔄 DEBUG: Starting enhanced capital detection...")
+        
+        # Strategy 1: Try Account Summary API first (most reliable for financial data)
+        capital = self._get_account_value_via_summary()
+        if capital != 100000.0:
+            return capital
+            
+        # Strategy 2: Fall back to traditional Account Updates
+        capital = self._get_account_value_via_updates()  
+        if capital != 100000.0:
+            return capital
+            
+        # Strategy 3: Final fallback
+        print("❌ DEBUG: All capital detection strategies failed, using fallback $100,000")
+        return 100000.0
+
+    def _get_account_value_via_summary(self) -> float:
+        """Use Account Summary API to get financial data (primary strategy)."""
+        try:
+            self.account_values.clear()
+            self.account_value_received.clear()
+            
+            # Key financial fields to request
+            financial_fields = [
+                "NetLiquidation", "BuyingPower", "AvailableFunds", 
+                "TotalCashValue", "CashBalance", "EquityWithLoanValue",
+                "GrossPositionValue", "MaintMarginReq", "FullInitMarginReq"
+            ]
+            
+            print(f"🔍 DEBUG [Strategy 1]: Requesting Account Summary for {len(financial_fields)} financial fields")
+            print(f"🔍 DEBUG [Strategy 1]: Fields: {financial_fields}")
+            
+            # Request account summary with specific financial fields
+            self.reqAccountSummary(9001, "All", ",".join(financial_fields))
+            
+            # Wait for data with timeout
+            if not self.account_value_received.wait(8.0):
+                print("❌ DEBUG [Strategy 1]: Account Summary timeout - no financial data received")
+                self.cancelAccountSummary(9001)
+                return 100000.0
+
+            # Cancel the summary request
+            self.cancelAccountSummary(9001)
+            
+            # Analyze received data
+            print(f"📊 DEBUG [Strategy 1]: Account Summary received {len(self.account_values)} values")
+            
+            # Log all received values for debugging
+            financial_values_found = {}
+            for key, value in self.account_values.items():
+                if isinstance(value, dict):
+                    for currency, val in value.items():
+                        composite_key = f"{key}_{currency}"
+                        financial_values_found[composite_key] = str(val)
+                else:
+                    financial_values_found[key] = str(value)
+                    
+            print("🔍 DEBUG [Strategy 1]: Financial values received:")
+            for k, v in financial_values_found.items():
+                print(f"   {k}: {v}")
+
+            # Try different capital fields in priority order
+            capital = None
+            capital_source = "unknown"
+            
+            # Priority 1: CAD-specific values
+            cad_priority_fields = [
+                "NetLiquidation_CAD", "AvailableFunds_CAD", "BuyingPower_CAD",
+                "TotalCashValue_CAD", "CashBalance_CAD", "EquityWithLoanValue_CAD"
+            ]
+            
+            for field in cad_priority_fields:
+                if field in self.account_values:
+                    capital = self.account_values[field]
+                    capital_source = field
+                    print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
+                    break
+                    
+            # Priority 2: BASE currency values
+            if capital is None:
+                base_priority_fields = [
+                    "NetLiquidation_BASE", "AvailableFunds_BASE", "BuyingPower_BASE",
+                    "TotalCashValue_BASE", "CashBalance_BASE", "EquityWithLoanValue_BASE"
+                ]
+                for field in base_priority_fields:
+                    if field in self.account_values:
+                        capital = self.account_values[field]
+                        capital_source = field
+                        print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
+                        break
+            
+            # Priority 3: Generic values (any currency)
+            if capital is None:
+                generic_priority_fields = [
+                    "NetLiquidation", "AvailableFunds", "BuyingPower",
+                    "TotalCashValue", "CashBalance", "EquityWithLoanValue"
+                ]
+                for field in generic_priority_fields:
+                    if field in self.account_values:
+                        capital = self.account_values[field]
+                        capital_source = field
+                        print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
+                        break
+
+            if capital is not None and capital > 0:
+                # <Context-Aware Logging - Account Summary Success - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Capital determined via Account Summary",
+                    context_provider={
+                        'final_capital': capital,
+                        'capital_source': capital_source,
+                        'strategy': 'account_summary',
+                        'values_found_count': len(financial_values_found)
+                    },
+                    decision_reason=f"Successfully determined capital: ${capital:,.2f} from {capital_source}"
+                )
+                # <Context-Aware Logging - Account Summary Success - End>
+                return capital
+                
+            print("❌ DEBUG [Strategy 1]: No valid financial data found in Account Summary")
+            return 100000.0
+            
+        except Exception as e:
+            print(f"❌ DEBUG [Strategy 1]: Account Summary exception: {e}")
+            # Cancel summary request on error
+            try:
+                self.cancelAccountSummary(9001)
+            except:
+                pass
+            return 100000.0
+
+    def _get_account_value_via_updates(self) -> float:
+        """Fallback strategy using traditional Account Updates."""
+        try:
+            self.account_value_received.clear()
+            previous_values_count = len(self.account_values)
+            self.account_values.clear()
+
+            print("🔄 DEBUG [Strategy 2]: Trying traditional Account Updates...")
+            self.reqAccountUpdates(True, self.account_number)
+
+            if not self.account_value_received.wait(5.0):
+                print("❌ DEBUG [Strategy 2]: Account Updates timeout")
+                self.reqAccountUpdates(False, self.account_number)
+                return 100000.0
+
+            # Analyze received data
+            print(f"📊 DEBUG [Strategy 2]: Account Updates received {len(self.account_values)} values")
+            
+            # Log all received values
+            all_values_summary = {}
+            for key, value in self.account_values.items():
+                if isinstance(value, dict):
+                    for currency, val in value.items():
+                        composite_key = f"{key}_{currency}"
+                        all_values_summary[composite_key] = str(val)
+                else:
+                    all_values_summary[key] = str(value)
+                    
+            print("🔍 DEBUG [Strategy 2]: All values received:")
+            for k, v in all_values_summary.items():
+                print(f"   {k}: {v}")
+
+            # Try to find capital in received data (same priority logic as before)
+            capital = None
+            capital_source = "unknown"
+            
+            # Priority order for capital fields
+            capital_priority = [
+                "NetLiquidation_CAD", "NetLiquidation", "BuyingPower_CAD", "BuyingPower",
+                "AvailableFunds_CAD", "AvailableFunds", "TotalCashValue_CAD", "TotalCashValue",
+                "CashBalance_CAD", "CashBalance", "EquityWithLoanValue_CAD", "EquityWithLoanValue"
+            ]
+            
+            for field in capital_priority:
+                if field in self.account_values:
+                    capital = self.account_values[field]
+                    capital_source = field
+                    print(f"✅ DEBUG [Strategy 2]: Using {field}: ${capital:,.2f}")
+                    break
+
+            if capital is not None and capital > 0:
+                # <Context-Aware Logging - Account Updates Success - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Capital determined via Account Updates",
+                    context_provider={
+                        'final_capital': capital,
+                        'capital_source': capital_source,
+                        'strategy': 'account_updates',
+                        'values_found_count': len(all_values_summary)
+                    },
+                    decision_reason=f"Successfully determined capital: ${capital:,.2f} from {capital_source}"
+                )
+                # <Context-Aware Logging - Account Updates Success - End>
+                self.reqAccountUpdates(False, self.account_number)
+                return capital
+                
+            print("❌ DEBUG [Strategy 2]: No valid capital found in Account Updates")
+            self.reqAccountUpdates(False, self.account_number)
+            return 100000.0
+            
+        except Exception as e:
+            print(f"❌ DEBUG [Strategy 2]: Account Updates exception: {e}")
+            try:
+                self.reqAccountUpdates(False, self.account_number)
+            except:
+                pass
+            return 100000.0

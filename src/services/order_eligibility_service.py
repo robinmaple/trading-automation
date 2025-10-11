@@ -58,15 +58,13 @@ from src.core.context_aware_logger import get_context_logger, TradingEventType
 class OrderEligibilityService:
     """Evaluates and filters planned orders to find those eligible for execution."""
 
-    # Extend __init__ to accept DB session
-    # Phase B Additions - Begin
-    def __init__(self, planned_orders, probability_engine, db_session=None):
-        """Initialize with optional DB session for Phase B logging."""
+    # Remove planned_orders from __init__ - Begin
+    def __init__(self, probability_engine, db_session=None):
+        """Initialize with probability engine and optional DB session for Phase B logging."""
         # Context-aware logging initialization - Begin
         self.context_logger = get_context_logger()
         # Context-aware logging initialization - End
         
-        self.planned_orders = planned_orders
         self.probability_engine = probability_engine
         self.db_session = db_session  # SQLAlchemy session
         
@@ -75,15 +73,14 @@ class OrderEligibilityService:
             event_type=TradingEventType.SYSTEM_HEALTH,
             message="OrderEligibilityService initialized",
             context_provider={
-                'planned_orders_count': len(planned_orders),
                 'probability_engine_available': probability_engine is not None,
                 'has_db_session': db_session is not None,
                 'service_phase': 'Phase_B'
             },
-            decision_reason="Service startup with Phase B features"
+            decision_reason="Service startup with Phase B features - parameterless design"
         )
         # <Context-Aware Logging - Service Initialization - End>
-    # Phase B Additions - End
+    # Remove planned_orders from __init__ - End
 
     def can_trade(self, planned_order) -> bool:
         """Layer 2: Business logic validation - should this order be traded?"""
@@ -202,14 +199,15 @@ class OrderEligibilityService:
         
         return is_expired
 
-    def find_executable_orders(self) -> list:
+    # Modify find_executable_orders to accept planned_orders parameter - Begin
+    def find_executable_orders(self, planned_orders: list) -> list:
         """Find all orders eligible for execution, enriched with probability scores and effective priority."""
         # <Context-Aware Logging - Batch Processing Start - Begin>
         self.context_logger.log_event(
             event_type=TradingEventType.EXECUTION_DECISION,
             message="Starting batch eligibility evaluation for all orders",
             context_provider={
-                'total_orders': len(self.planned_orders),
+                'total_orders': len(planned_orders),
                 'session_id': self.context_logger.session_id,
                 'db_session_available': self.db_session is not None
             },
@@ -221,17 +219,17 @@ class OrderEligibilityService:
         rejected_count = 0
         processed_count = 0
 
-        for order in self.planned_orders:
+        for order in planned_orders:
             processed_count += 1
             
             # <Context-Aware Logging - Individual Order Processing - Begin>
             self.context_logger.log_event(
                 event_type=TradingEventType.EXECUTION_DECISION,
-                message=f"Processing order {processed_count} of {len(self.planned_orders)}",
+                message=f"Processing order {processed_count} of {len(planned_orders)}",
                 symbol=order.symbol,
                 context_provider={
                     'processing_index': processed_count,
-                    'total_orders': len(self.planned_orders),
+                    'total_orders': len(planned_orders),
                     'order_action': order.action.value if hasattr(order, 'action') else 'unknown'
                 }
             )
@@ -351,12 +349,12 @@ class OrderEligibilityService:
         executable.sort(key=lambda x: x['effective_priority'], reverse=True)
         
         # <Context-Aware Logging - Batch Processing Complete - Begin>
-        success_rate = round(len(executable) / len(self.planned_orders) * 100, 2) if self.planned_orders else 0
+        success_rate = round(len(executable) / len(planned_orders) * 100, 2) if planned_orders else 0
         self.context_logger.log_event(
             event_type=TradingEventType.EXECUTION_DECISION,
             message="Batch eligibility evaluation completed",
             context_provider={
-                'total_processed': len(self.planned_orders),
+                'total_processed': len(planned_orders),
                 'executable_count': len(executable),
                 'rejected_count': rejected_count,
                 'success_rate': success_rate,
@@ -369,3 +367,4 @@ class OrderEligibilityService:
         # <Context-Aware Logging - Batch Processing Complete - End>
         
         return executable
+    # Modify find_executable_orders to accept planned_orders parameter - End
