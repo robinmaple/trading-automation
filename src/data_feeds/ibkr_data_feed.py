@@ -11,14 +11,9 @@ from ibapi.contract import Contract
 from src.core.abstract_data_feed import AbstractDataFeed
 from src.core.market_data_manager import MarketDataManager
 from src.core.ibkr_client import IbkrClient
-# <Event Bus Integration - Begin>
 from src.core.event_bus import EventBus
-# <Event Bus Integration - End>
-
-# <Context-Aware Logger Integration - Begin>
 from src.core.context_aware_logger import get_context_logger, TradingEventType
-# <Context-Aware Logger Integration - End>
-
+from src.core.historical_data_manager import HistoricalDataManager
 
 class IBKRDataFeed(AbstractDataFeed):
     """Concrete data feed implementation for Interactive Brokers market data."""
@@ -53,7 +48,17 @@ class IBKRDataFeed(AbstractDataFeed):
             ibkr_client.set_market_data_manager(self.market_data)
             print("🔗 MarketDataManager connected to IbkrClient for data flow")
         # <Market Data Manager Connection - End>
+
+        # <Historical Data Manager Integration - Begin>
+        # Create HistoricalDataManager for scanner historical data
+        self.historical_data_manager = HistoricalDataManager(ibkr_client)
         
+        # CRITICAL: Connect HistoricalDataManager to IbkrClient for historical data callbacks
+        if ibkr_client:
+            ibkr_client.set_historical_data_manager(self.historical_data_manager)
+            print("🔗 HistoricalDataManager connected to IbkrClient for historical data flow")
+        # <Historical Data Manager Integration - End>
+
         # Set initial connection state based on client
         self._connected = ibkr_client.connected if ibkr_client else False
         
@@ -63,6 +68,7 @@ class IBKRDataFeed(AbstractDataFeed):
             "IBKRDataFeed initialization completed",
             context_provider={
                 "market_data_manager_initialized": self.market_data is not None,
+                "historical_data_manager_initialized": self.historical_data_manager is not None,
                 "initial_connection_state": self._connected,
                 "event_bus_integrated": event_bus is not None
             }
@@ -93,6 +99,11 @@ class IBKRDataFeed(AbstractDataFeed):
                 if hasattr(self.ibkr_client, 'set_market_data_manager'):
                     self.ibkr_client.set_market_data_manager(self.market_data)
                     print("✅ IBKRDataFeed: Market data flow established")
+                
+                # Re-affirm HistoricalDataManager connection after successful connection
+                if hasattr(self.ibkr_client, 'set_historical_data_manager'):
+                    self.ibkr_client.set_historical_data_manager(self.historical_data_manager)
+                    print("✅ IBKRDataFeed: Historical data flow established")
                 # <Ensure Manager Connection After Connect - End>
                 
                 # <Context-Aware Logging - Connection Success - Begin>
@@ -103,7 +114,8 @@ class IBKRDataFeed(AbstractDataFeed):
                         "host": host,
                         "port": port,
                         "client_id": client_id,
-                        "market_data_flow_established": True
+                        "market_data_flow_established": True,
+                        "historical_data_flow_established": True
                     },
                     decision_reason="IBKR connection successful"
                 )
@@ -140,8 +152,8 @@ class IBKRDataFeed(AbstractDataFeed):
             # <Context-Aware Logging - Connection Exception - End>
             
             print(f"Connection failed: {e}")
-            return False
-
+            return False    
+        
     def is_connected(self) -> bool:
         """Check if the data feed is connected to IBKR and market data is available."""
         # Always check the actual client connection status
@@ -317,6 +329,7 @@ class IBKRDataFeed(AbstractDataFeed):
             'data_feed_connected': self.is_connected(),
             'ibkr_client_connected': self.ibkr_client.connected if self.ibkr_client else False,
             'market_data_manager_active': self.market_data is not None,
+            'historical_data_manager_active': self.historical_data_manager is not None,
             'subscription_count': len(self.market_data.subscriptions) if self.market_data else 0
         }
         
@@ -401,6 +414,23 @@ class IBKRDataFeed(AbstractDataFeed):
                 symbol=symbol,
                 context_provider=validation,
                 decision_reason="MarketDataManager not initialized"
+            )
+            # <Context-Aware Logging - Data Flow Validation Degraded - End>
+            
+            return validation
+            
+        # Check HistoricalDataManager
+        if not self.historical_data_manager:
+            validation['data_flow_status'] = 'DEGRADED'
+            validation['details']['error'] = 'HistoricalDataManager not initialized'
+            
+            # <Context-Aware Logging - Data Flow Validation Degraded - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Data flow validation degraded - no historical data manager",
+                symbol=symbol,
+                context_provider=validation,
+                decision_reason="HistoricalDataManager not initialized"
             )
             # <Context-Aware Logging - Data Flow Validation Degraded - End>
             

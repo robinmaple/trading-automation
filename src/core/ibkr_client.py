@@ -4,10 +4,11 @@ Handles all low-level communication, including connection management, order plac
 account data retrieval, and real-time updates. Subclasses the official IBKR EClient/EWrapper.
 """
 
+import time
 from ibapi.client import *
 from ibapi.wrapper import *
 from ibapi.order_cancel import OrderCancel
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import threading
 import datetime
 
@@ -18,9 +19,19 @@ from src.core.account_utils import is_paper_account, get_ibkr_port
 from src.core.context_aware_logger import get_context_logger, TradingEventType
 # <Context-Aware Logger Integration - End>
 
+# Valid numeric account value fields - Begin (NEW)
+VALID_NUMERIC_ACCOUNT_FIELDS = {
+    "NetLiquidation", "BuyingPower", "AvailableFunds", "TotalCashValue", 
+    "CashBalance", "EquityWithLoanValue", "GrossPositionValue", 
+    "MaintMarginReq", "FullInitMarginReq", "FullAvailableFunds",
+    "FullExcessLiquidity", "Cushion", "LookAheadNextChange"
+}
+# Valid numeric account value fields - End
+
 class IbkrClient(EClient, EWrapper):
     """Manages the connection and all communication with the IBKR trading API."""
 
+    # __init__ - Begin (UPDATED - Add EOD provider reference)
     def __init__(self, host='127.0.0.1', port=None, client_id=1, mode='auto'):
         """Initialize the client, connection flags, and data stores."""
         # <Context-Aware Logger Initialization - Begin>
@@ -78,6 +89,15 @@ class IbkrClient(EClient, EWrapper):
         self._total_ticks_processed = 0
         # <Market Data Manager Thread Safety - End>
 
+        # <Historical Data Manager Integration - Begin>
+        self.historical_data_manager = None
+        self._historical_manager_lock = threading.RLock()
+        # <Historical Data Manager Integration - End>
+
+        # <Historical EOD Provider Integration - Begin>
+        self.historical_eod_provider = None  # Direct reference for scanner callbacks
+        # <Historical EOD Provider Integration - End>
+
         # Add port determination based on mode
         if port is None:
             self.port = self._get_port_from_mode(mode)
@@ -92,10 +112,143 @@ class IbkrClient(EClient, EWrapper):
             context_provider={
                 "resolved_port": self.port,
                 "mode": mode,
-                "market_data_manager_ready": False
+                "market_data_manager_ready": False,
+                "historical_data_manager_ready": False,
+                "historical_eod_provider_ready": False
             }
         )
         # <Context-Aware Logging - IbkrClient Initialization Complete - End>
+    # __init__ - End
+    
+    # <Historical Data Manager Integration Methods - Begin>
+    def set_historical_data_manager(self, manager) -> None:
+        """
+        Thread-safe method to set the HistoricalDataManager instance.
+        
+        Args:
+            manager: HistoricalDataManager instance to receive historical data callbacks
+        """
+        with self._historical_manager_lock:
+            self.historical_data_manager = manager
+            if logger:
+                logger.info(f"HistoricalDataManager connected to IbkrClient")
+                
+            # <Context-Aware Logging - Historical Data Manager Connected - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "HistoricalDataManager connected to IbkrClient",
+                context_provider={
+                    'manager_type': type(manager).__name__,
+                    'connected': True
+                }
+            )
+            # <Context-Aware Logging - Historical Data Manager Connected - End>
+
+    def historicalData(self, reqId: int, bar) -> None:
+        """
+        Callback: Receive historical data bar and forward to HistoricalDataManager if set.
+        """
+        super().historicalData(reqId, bar)
+
+        # Thread-safe access to historical data manager
+        with self._historical_manager_lock:
+            if self.historical_data_manager:
+                try:
+                    self.historical_data_manager.historical_data(reqId, bar)
+                    
+                    # Log first successful historical data for debugging
+                    if hasattr(self, '_first_historical_received') and not self._first_historical_received:
+                        self._first_historical_received = True
+                        # <Context-Aware Logging - First Historical Data - Begin>
+                        self.context_logger.log_event(
+                            TradingEventType.MARKET_CONDITION,
+                            "First historical data bar processed",
+                            context_provider={
+                                'req_id': reqId,
+                                'bar_date': bar.date,
+                                'close_price': bar.close,
+                                'volume': bar.volume
+                            }
+                        )
+                        # <Context-Aware Logging - First Historical Data - End>
+                        if logger:
+                            logger.info(f"FIRST HISTORICAL DATA: Req {reqId}, Date {bar.date}, Close ${bar.close}")
+                        
+                except Exception as e:
+                    # <Context-Aware Logging - Historical Data Processing Error - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Historical data processing error",
+                        context_provider={
+                            'req_id': reqId,
+                            'error': str(e),
+                            'bar_date': bar.date
+                        },
+                        decision_reason=f"Historical data processing error: {e}"
+                    )
+                    # <Context-Aware Logging - Historical Data Processing Error - End>
+                    if logger:
+                        logger.warning(f"Error in historical data processing: {e}")
+            else:
+                # Only log missing manager occasionally to avoid spam
+                if not hasattr(self, '_historical_manager_warned') or not self._historical_manager_warned:
+                    self._historical_manager_warned = True
+                    # <Context-Aware Logging - Missing Historical Data Manager - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Historical data received but no manager connected",
+                        context_provider={
+                            'req_id': reqId,
+                            'bar_date': bar.date,
+                            'close_price': bar.close
+                        },
+                        decision_reason="No HistoricalDataManager for historical data processing"
+                    )
+                    # <Context-Aware Logging - Missing Historical Data Manager - End>
+                    if logger:
+                        logger.debug(f"Historical data received but no HistoricalDataManager connected")
+
+    def historicalDataEnd(self, reqId: int, start: str, end: str) -> None:
+        """
+        Callback: Historical data request ended - forward to HistoricalDataManager if set.
+        """
+        super().historicalDataEnd(reqId, start, end)
+
+        # Thread-safe access to historical data manager
+        with self._historical_manager_lock:
+            if self.historical_data_manager:
+                try:
+                    self.historical_data_manager.historical_data_end(reqId, start, end)
+                    
+                    # <Context-Aware Logging - Historical Data End Processed - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Historical data end callback processed",
+                        context_provider={
+                            'req_id': reqId,
+                            'start_date': start,
+                            'end_date': end
+                        }
+                    )
+                    # <Context-Aware Logging - Historical Data End Processed - End>
+                    
+                except Exception as e:
+                    # <Context-Aware Logging - Historical Data End Error - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Historical data end processing error",
+                        context_provider={
+                            'req_id': reqId,
+                            'error': str(e),
+                            'start_date': start,
+                            'end_date': end
+                        },
+                        decision_reason=f"Historical data end processing error: {e}"
+                    )
+                    # <Context-Aware Logging - Historical Data End Error - End>
+                    if logger:
+                        logger.warning(f"Error in historical data end processing: {e}")
+    # <Historical Data Manager Integration Methods - End>
 
     # <AON Order Methods - Begin>
     def submit_aon_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
@@ -1216,9 +1369,10 @@ class IbkrClient(EClient, EWrapper):
     def get_account_number(self) -> Optional[str]:
         """Get the current account number for order placement."""
         return self.account_number
-    
+
+    # updateAccountValue - Begin (UPDATED)
     def updateAccountValue(self, key: str, val: str, currency: str, accountName: str) -> None:
-        """Callback: Received account value updates with comprehensive debugging."""
+        """Callback: Received account value updates with comprehensive debugging and numeric field filtering."""
         super().updateAccountValue(key, val, currency, accountName)
 
         # <Context-Aware Logging - Account Value Update Start - Begin>
@@ -1231,7 +1385,8 @@ class IbkrClient(EClient, EWrapper):
                 'currency': currency,
                 'account_name': accountName,
                 'value_type': type(val).__name__,
-                'value_length': len(val) if val else 0
+                'value_length': len(val) if val else 0,
+                'is_numeric_field': key in VALID_NUMERIC_ACCOUNT_FIELDS
             }
         )
         # <Context-Aware Logging - Account Value Update Start - End>
@@ -1244,78 +1399,112 @@ class IbkrClient(EClient, EWrapper):
             if key not in self.account_values:
                 self.account_values[key] = {}
             
-            # Store the value with currency context
+            # Store the value with currency context (for debugging)
             self.account_values[key][currency] = val
 
-            # Also store the raw values for specific currencies
-            if currency in ["CAD", "USD", "BASE"]:
-                currency_key = f"{key}_{currency}"
-                try:
-                    numeric_value = float(val) if val and val.strip() else 0.0
-                    self.account_values[currency_key] = numeric_value
-                    
-                    # <Context-Aware Logging - Currency Value Stored - Begin>
-                    self.context_logger.log_event(
-                        TradingEventType.SYSTEM_HEALTH,
-                        f"Stored currency-specific account value",
-                        context_provider={
-                            'currency_key': currency_key,
-                            'numeric_value': numeric_value,
-                            'original_value': val,
-                            'currency': currency
-                        }
-                    )
-                    # <Context-Aware Logging - Currency Value Stored - End>
-                    
-                except (ValueError, TypeError) as e:
-                    # <Context-Aware Logging - Value Conversion Error - Begin>
-                    self.context_logger.log_event(
-                        TradingEventType.SYSTEM_HEALTH,
-                        f"Failed to convert account value to numeric",
-                        context_provider={
-                            'key': key,
-                            'value': val,
+            # ONLY process known numeric financial fields - ignore metadata
+            if key in VALID_NUMERIC_ACCOUNT_FIELDS:
+                # Store currency-specific numeric values SAFELY
+                if currency in ["CAD", "USD", "BASE"]:
+                    currency_key = f"{key}_{currency}"
+                    try:
+                        numeric_value = float(val) if val and val.strip() else 0.0
+                        
+                        # Create consistent dictionary structure
+                        if currency_key not in self.account_values:
+                            self.account_values[currency_key] = {}
+                            
+                        # Store as dictionary, not overwrite with float
+                        self.account_values[currency_key] = {
+                            'value': numeric_value,
                             'currency': currency,
-                            'error': str(e)
-                        },
-                        decision_reason=f"Account value conversion failed: {e}"
-                    )
-                    # <Context-Aware Logging - Value Conversion Error - End>
-                    print(f"❌ ERROR converting value: key='{key}', value='{val}', error={e}")
+                            'key': key,
+                            'timestamp': time.time()
+                        }
 
-            # Store specific important values for easy access
-            important_keys = ["NetLiquidation", "BuyingPower", "AvailableFunds", "TotalCashValue", "CashBalance"]
-            if key in important_keys and currency == "CAD":
-                try:
-                    self.account_values[key] = float(val) if val and val.strip() else 0.0
-                    
-                    # <Context-Aware Logging - Important Value Stored - Begin>
+                        # <Context-Aware Logging - Currency Value Stored - Begin>
+                        self.context_logger.log_event(
+                            TradingEventType.SYSTEM_HEALTH,
+                            f"Stored currency-specific numeric account value",
+                            context_provider={
+                                'currency_key': currency_key,
+                                'numeric_value': numeric_value,
+                                'original_value': val,
+                                'currency': currency,
+                                'category': 'valid_numeric_field'
+                            }
+                        )
+                        # <Context-Aware Logging - Currency Value Stored - End>
+                        
+                    except (ValueError, TypeError) as e:
+                        # <Context-Aware Logging - Value Conversion Error - Begin>
+                        self.context_logger.log_event(
+                            TradingEventType.SYSTEM_HEALTH,
+                            f"Failed to convert valid numeric account value",
+                            context_provider={
+                                'key': key,
+                                'value': val,
+                                'currency': currency,
+                                'error': str(e)
+                            },
+                            decision_reason=f"Valid numeric field conversion failed: {e}"
+                        )
+                        # <Context-Aware Logging - Value Conversion Error - End>
+                        print(f"❌ ERROR converting valid numeric field: key='{key}', value='{val}', error={e}")
+
+                # Store generic numeric values for important fields
+                important_keys = ["NetLiquidation", "BuyingPower", "AvailableFunds", "TotalCashValue", "CashBalance"]
+                if key in important_keys and currency == "CAD":
+                    try:
+                        self.account_values[key] = float(val) if val and val.strip() else 0.0
+                        
+                        # <Context-Aware Logging - Important Value Stored - Begin>
+                        self.context_logger.log_event(
+                            TradingEventType.SYSTEM_HEALTH,
+                            f"Stored important numeric account value",
+                            context_provider={
+                                'key': key,
+                                'value': self.account_values[key],
+                                'currency': currency,
+                                'category': 'primary_capital_field'
+                            }
+                        )
+                        # <Context-Aware Logging - Important Value Stored - End>
+                        
+                    except (ValueError, TypeError) as e:
+                        # <Context-Aware Logging - Important Value Error - Begin>
+                        self.context_logger.log_event(
+                            TradingEventType.SYSTEM_HEALTH,
+                            f"Failed to store important numeric account value",
+                            context_provider={
+                                'key': key,
+                                'value': val,
+                                'currency': currency,
+                                'error': str(e)
+                            },
+                            decision_reason=f"Important numeric field storage failed: {e}"
+                        )
+                        # <Context-Aware Logging - Important Value Error - End>
+            else:
+                # Log ignored metadata fields (first occurrence only to avoid spam)
+                if not hasattr(self, '_ignored_metadata_warned'):
+                    self._ignored_metadata_warned = set()
+                
+                if key not in self._ignored_metadata_warned:
+                    self._ignored_metadata_warned.add(key)
+                    print(f"🔍 INFO: Ignoring metadata field: '{key}' = '{val}' (currency: {currency})")
+                    # <Context-Aware Logging - Metadata Ignored - Begin>
                     self.context_logger.log_event(
                         TradingEventType.SYSTEM_HEALTH,
-                        f"Stored important account value",
-                        context_provider={
-                            'key': key,
-                            'value': self.account_values[key],
-                            'currency': currency,
-                            'category': 'primary_capital_field'
-                        }
-                    )
-                    # <Context-Aware Logging - Important Value Stored - End>
-                    
-                except (ValueError, TypeError) as e:
-                    # <Context-Aware Logging - Important Value Error - Begin>
-                    self.context_logger.log_event(
-                        TradingEventType.SYSTEM_HEALTH,
-                        f"Failed to store important account value",
+                        f"Ignoring non-numeric metadata field",
                         context_provider={
                             'key': key,
                             'value': val,
                             'currency': currency,
-                            'error': str(e)
-                        },
-                        decision_reason=f"Important account value storage failed: {e}"
+                            'reason': 'not_a_valid_numeric_field'
+                        }
                     )
-                    # <Context-Aware Logging - Important Value Error - End>
+                    # <Context-Aware Logging - Metadata Ignored - End>
 
             self.account_value_received.set()
             
@@ -1326,7 +1515,8 @@ class IbkrClient(EClient, EWrapper):
                 context_provider={
                     'total_keys_stored': len(self.account_values),
                     'key_processed': key,
-                    'currency_processed': currency
+                    'currency_processed': currency,
+                    'is_numeric_field': key in VALID_NUMERIC_ACCOUNT_FIELDS
                 }
             )
             # <Context-Aware Logging - Account Value Update Complete - End>
@@ -1347,137 +1537,170 @@ class IbkrClient(EClient, EWrapper):
             )
             # <Context-Aware Logging - Account Value Processing Error - End>
             print(f"❌ CRITICAL ERROR in updateAccountValue: {e}")
+    # updateAccountValue - End
 
+    # get_account_value - Begin (FAIL-SAFE VERSION)
     def get_account_value(self) -> float:
-        """Request and return the Net Liquidation value of the account with enhanced financial data retrieval."""
-        print("🎯 DEBUG: ENHANCED get_account_value() METHOD CALLED!")
+        """Request and return the Net Liquidation value of the account with enhanced financial data retrieval.
+        Raises ValueError if no valid numeric account values are found - NO MOCK/DEFAULT DATA.
+        """
+        print("🎯 DEBUG: FAIL-SAFE get_account_value() METHOD CALLED!")
 
         if not self.connected:
-            # <Context-Aware Logging - Account Value Fallback - Begin>
+            # <Context-Aware Logging - Account Value Connection Error - Begin>
             self.context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
-                "Using fallback account value - not connected to IBKR",
+                "Cannot retrieve account value - not connected to IBKR",
                 context_provider={
-                    'connected': False,
-                    'fallback_value': 100000.0
+                    'connected': False
                 },
-                decision_reason="IBKR not connected, using simulation account value"
+                decision_reason="IBKR not connected, cannot retrieve account value"
             )
-            # <Context-Aware Logging - Account Value Fallback - End>
-            if logger:
-                logger.warning("Not connected to IBKR - using fallback account value")
-            return 100000.0
+            # <Context-Aware Logging - Account Value Connection Error - End>
+            raise ValueError("Not connected to IBKR - cannot retrieve account value")
 
-        # <Context-Aware Logging - Enhanced Account Value Request - Begin>
+        # <Context-Aware Logging - Fail-Safe Account Value Request - Begin>
         self.context_logger.log_event(
             TradingEventType.SYSTEM_HEALTH,
-            "Starting enhanced account value retrieval with multiple strategies",
+            "Starting fail-safe account value retrieval - NO MOCK DATA",
             context_provider={
                 'account_number': self.account_number,
-                'timeout_seconds': 10.0
+                'timeout_seconds': 10.0,
+                'valid_numeric_fields_count': len(VALID_NUMERIC_ACCOUNT_FIELDS),
+                'safety_feature': 'no_mock_defaults'
             }
         )
-        # <Context-Aware Logging - Enhanced Account Value Request - End>
+        # <Context-Aware Logging - Fail-Safe Account Value Request - End>
 
-        print("🔄 DEBUG: Starting enhanced capital detection...")
+        print("🔄 DEBUG: Starting fail-safe capital detection - WILL NOT USE MOCK DATA...")
         
         # Strategy 1: Try Account Summary API first (most reliable for financial data)
         capital = self._get_account_value_via_summary()
-        if capital != 100000.0:
+        if capital is not None and capital > 0:
+            print(f"✅ DEBUG: Strategy 1 SUCCESS - Real capital: ${capital:,.2f}")
             return capital
-            
+                
         # Strategy 2: Fall back to traditional Account Updates
         capital = self._get_account_value_via_updates()  
-        if capital != 100000.0:
+        if capital is not None and capital > 0:
+            print(f"✅ DEBUG: Strategy 2 SUCCESS - Real capital: ${capital:,.2f}")
             return capital
-            
-        # Strategy 3: Final fallback
-        print("❌ DEBUG: All capital detection strategies failed, using fallback $100,000")
-        return 100000.0
 
+        # 🚨 CRITICAL SAFETY: No valid account values found - STOP TRADING
+        error_msg = "CRITICAL: No valid numeric account values found - TRADING HALTED for safety"
+        print(f"❌ {error_msg}")
+        
+        # Log detailed diagnostic information
+        received_keys = list(self.account_values.keys()) if self.account_values else []
+        numeric_values_found = []
+        
+        # Check what values we actually received
+        for key, value in (self.account_values.items() if self.account_values else []):
+            if isinstance(value, (int, float)) and value > 0:
+                numeric_values_found.append((key, value))
+            elif isinstance(value, dict):
+                for subkey, subval in value.items():
+                    if isinstance(subval, (int, float)) and subval > 0:
+                        numeric_values_found.append((f"{key}.{subkey}", subval))
+
+        # <Context-Aware Logging - Trading Halted Safety - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "TRADING HALTED - No valid account capital available",
+            context_provider={
+                'account_values_total_received': len(self.account_values) if self.account_values else 0,
+                'received_account_keys': received_keys,
+                'numeric_values_found': numeric_values_found,
+                'valid_numeric_fields_checked': list(VALID_NUMERIC_ACCOUNT_FIELDS),
+                'strategy_1_success': False,
+                'strategy_2_success': False,
+                'safety_action': 'trading_halted'
+            },
+            decision_reason="Fail-safe triggered: No real account data for safe position sizing"
+        )
+        # <Context-Aware Logging - Trading Halted Safety - End>
+        
+        raise ValueError(error_msg)
+    # get_account_value - End
+
+    # _get_account_value_via_summary - Begin (UPDATED)
     def _get_account_value_via_summary(self) -> float:
-        """Use Account Summary API to get financial data (primary strategy)."""
+        """Use Account Summary API to get financial data (primary strategy). Returns None if no valid values found."""
         try:
             self.account_values.clear()
             self.account_value_received.clear()
             
-            # Key financial fields to request
-            financial_fields = [
-                "NetLiquidation", "BuyingPower", "AvailableFunds", 
-                "TotalCashValue", "CashBalance", "EquityWithLoanValue",
-                "GrossPositionValue", "MaintMarginReq", "FullInitMarginReq"
-            ]
+            # Request only valid numeric financial fields
+            financial_fields = list(VALID_NUMERIC_ACCOUNT_FIELDS)
             
-            print(f"🔍 DEBUG [Strategy 1]: Requesting Account Summary for {len(financial_fields)} financial fields")
-            print(f"🔍 DEBUG [Strategy 1]: Fields: {financial_fields}")
+            print(f"🔍 DEBUG [Strategy 1]: Requesting Account Summary for {len(financial_fields)} numeric financial fields")
+            print(f"🔍 DEBUG [Strategy 1]: Valid Fields: {financial_fields}")
             
-            # Request account summary with specific financial fields
+            # Request account summary with specific numeric financial fields only
             self.reqAccountSummary(9001, "All", ",".join(financial_fields))
             
             # Wait for data with timeout
             if not self.account_value_received.wait(8.0):
                 print("❌ DEBUG [Strategy 1]: Account Summary timeout - no financial data received")
                 self.cancelAccountSummary(9001)
-                return 100000.0
+                return None
 
             # Cancel the summary request
             self.cancelAccountSummary(9001)
             
-            # Analyze received data
-            print(f"📊 DEBUG [Strategy 1]: Account Summary received {len(self.account_values)} values")
+            # Analyze received data - only consider valid numeric fields
+            valid_values_found = {}
+            for key in VALID_NUMERIC_ACCOUNT_FIELDS:
+                if key in self.account_values:
+                    if isinstance(self.account_values[key], dict):
+                        for currency, val in self.account_values[key].items():
+                            composite_key = f"{key}_{currency}"
+                            valid_values_found[composite_key] = str(val)
+                    else:
+                        valid_values_found[key] = str(self.account_values[key])
             
-            # Log all received values for debugging
-            financial_values_found = {}
-            for key, value in self.account_values.items():
-                if isinstance(value, dict):
-                    for currency, val in value.items():
-                        composite_key = f"{key}_{currency}"
-                        financial_values_found[composite_key] = str(val)
-                else:
-                    financial_values_found[key] = str(value)
-                    
-            print("🔍 DEBUG [Strategy 1]: Financial values received:")
-            for k, v in financial_values_found.items():
+            print(f"📊 DEBUG [Strategy 1]: Found {len(valid_values_found)} valid numeric account values")
+            
+            # Log valid values for debugging
+            print("🔍 DEBUG [Strategy 1]: Valid numeric values received:")
+            for k, v in valid_values_found.items():
                 print(f"   {k}: {v}")
 
             # Try different capital fields in priority order
             capital = None
             capital_source = "unknown"
             
-            # Priority 1: CAD-specific values
+            # Priority 1: CAD-specific values from valid numeric fields
             cad_priority_fields = [
                 "NetLiquidation_CAD", "AvailableFunds_CAD", "BuyingPower_CAD",
                 "TotalCashValue_CAD", "CashBalance_CAD", "EquityWithLoanValue_CAD"
             ]
             
             for field in cad_priority_fields:
-                if field in self.account_values:
+                if field in self.account_values and isinstance(self.account_values[field], (int, float)):
                     capital = self.account_values[field]
                     capital_source = field
                     print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
                     break
                     
-            # Priority 2: BASE currency values
+            # Priority 2: BASE currency values from valid numeric fields
             if capital is None:
                 base_priority_fields = [
                     "NetLiquidation_BASE", "AvailableFunds_BASE", "BuyingPower_BASE",
                     "TotalCashValue_BASE", "CashBalance_BASE", "EquityWithLoanValue_BASE"
                 ]
                 for field in base_priority_fields:
-                    if field in self.account_values:
+                    if field in self.account_values and isinstance(self.account_values[field], (int, float)):
                         capital = self.account_values[field]
                         capital_source = field
                         print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
                         break
             
-            # Priority 3: Generic values (any currency)
+            # Priority 3: Generic values (any currency) from valid numeric fields
             if capital is None:
-                generic_priority_fields = [
-                    "NetLiquidation", "AvailableFunds", "BuyingPower",
-                    "TotalCashValue", "CashBalance", "EquityWithLoanValue"
-                ]
+                generic_priority_fields = list(VALID_NUMERIC_ACCOUNT_FIELDS)
                 for field in generic_priority_fields:
-                    if field in self.account_values:
+                    if field in self.account_values and isinstance(self.account_values[field], (int, float)):
                         capital = self.account_values[field]
                         capital_source = field
                         print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
@@ -1492,16 +1715,16 @@ class IbkrClient(EClient, EWrapper):
                         'final_capital': capital,
                         'capital_source': capital_source,
                         'strategy': 'account_summary',
-                        'values_found_count': len(financial_values_found)
+                        'valid_values_found_count': len(valid_values_found)
                     },
                     decision_reason=f"Successfully determined capital: ${capital:,.2f} from {capital_source}"
                 )
                 # <Context-Aware Logging - Account Summary Success - End>
                 return capital
                 
-            print("❌ DEBUG [Strategy 1]: No valid financial data found in Account Summary")
-            return 100000.0
-            
+            print("❌ DEBUG [Strategy 1]: No valid numeric financial data found in Account Summary")
+            return None
+                
         except Exception as e:
             print(f"❌ DEBUG [Strategy 1]: Account Summary exception: {e}")
             # Cancel summary request on error
@@ -1509,45 +1732,47 @@ class IbkrClient(EClient, EWrapper):
                 self.cancelAccountSummary(9001)
             except:
                 pass
-            return 100000.0
+            return None
+    # _get_account_value_via_summary - End
 
+    # _get_account_value_via_updates - Begin (UPDATED)
     def _get_account_value_via_updates(self) -> float:
-        """Fallback strategy using traditional Account Updates."""
+        """Fallback strategy using traditional Account Updates. Returns None if no valid values found."""
         try:
             self.account_value_received.clear()
-            previous_values_count = len(self.account_values)
             self.account_values.clear()
 
-            print("🔄 DEBUG [Strategy 2]: Trying traditional Account Updates...")
+            print("🔄 DEBUG [Strategy 2]: Trying traditional Account Updates with numeric field filtering...")
             self.reqAccountUpdates(True, self.account_number)
 
             if not self.account_value_received.wait(5.0):
                 print("❌ DEBUG [Strategy 2]: Account Updates timeout")
                 self.reqAccountUpdates(False, self.account_number)
-                return 100000.0
+                return None
 
-            # Analyze received data
-            print(f"📊 DEBUG [Strategy 2]: Account Updates received {len(self.account_values)} values")
+            # Analyze received data - only consider valid numeric fields
+            valid_values_summary = {}
+            for key in VALID_NUMERIC_ACCOUNT_FIELDS:
+                if key in self.account_values:
+                    if isinstance(self.account_values[key], dict):
+                        for currency, val in self.account_values[key].items():
+                            composite_key = f"{key}_{currency}"
+                            valid_values_summary[composite_key] = str(val)
+                    else:
+                        valid_values_summary[key] = str(self.account_values[key])
             
-            # Log all received values
-            all_values_summary = {}
-            for key, value in self.account_values.items():
-                if isinstance(value, dict):
-                    for currency, val in value.items():
-                        composite_key = f"{key}_{currency}"
-                        all_values_summary[composite_key] = str(val)
-                else:
-                    all_values_summary[key] = str(value)
-                    
-            print("🔍 DEBUG [Strategy 2]: All values received:")
-            for k, v in all_values_summary.items():
+            print(f"📊 DEBUG [Strategy 2]: Found {len(valid_values_summary)} valid numeric account values")
+            
+            # Log valid values
+            print("🔍 DEBUG [Strategy 2]: Valid numeric values received:")
+            for k, v in valid_values_summary.items():
                 print(f"   {k}: {v}")
 
-            # Try to find capital in received data (same priority logic as before)
+            # Try to find capital in valid numeric data only
             capital = None
             capital_source = "unknown"
             
-            # Priority order for capital fields
+            # Priority order for capital fields (only valid numeric fields)
             capital_priority = [
                 "NetLiquidation_CAD", "NetLiquidation", "BuyingPower_CAD", "BuyingPower",
                 "AvailableFunds_CAD", "AvailableFunds", "TotalCashValue_CAD", "TotalCashValue",
@@ -1555,7 +1780,7 @@ class IbkrClient(EClient, EWrapper):
             ]
             
             for field in capital_priority:
-                if field in self.account_values:
+                if field in self.account_values and isinstance(self.account_values[field], (int, float)):
                     capital = self.account_values[field]
                     capital_source = field
                     print(f"✅ DEBUG [Strategy 2]: Using {field}: ${capital:,.2f}")
@@ -1570,7 +1795,7 @@ class IbkrClient(EClient, EWrapper):
                         'final_capital': capital,
                         'capital_source': capital_source,
                         'strategy': 'account_updates',
-                        'values_found_count': len(all_values_summary)
+                        'valid_values_found_count': len(valid_values_summary)
                     },
                     decision_reason=f"Successfully determined capital: ${capital:,.2f} from {capital_source}"
                 )
@@ -1578,9 +1803,9 @@ class IbkrClient(EClient, EWrapper):
                 self.reqAccountUpdates(False, self.account_number)
                 return capital
                 
-            print("❌ DEBUG [Strategy 2]: No valid capital found in Account Updates")
+            print("❌ DEBUG [Strategy 2]: No valid numeric capital found in Account Updates")
             self.reqAccountUpdates(False, self.account_number)
-            return 100000.0
+            return None
             
         except Exception as e:
             print(f"❌ DEBUG [Strategy 2]: Account Updates exception: {e}")
@@ -1588,4 +1813,383 @@ class IbkrClient(EClient, EWrapper):
                 self.reqAccountUpdates(False, self.account_number)
             except:
                 pass
-            return 100000.0
+            return None
+    # _get_account_value_via_updates - End
+
+    # set_historical_eod_provider - Begin (NEW)
+    def set_historical_eod_provider(self, eod_provider) -> None:
+        """
+        Thread-safe method to set the HistoricalEODProvider instance for direct scanner callbacks.
+        
+        Args:
+            eod_provider: HistoricalEODProvider instance to receive scanner data callbacks
+        """
+        with self._historical_manager_lock:
+            self.historical_eod_provider = eod_provider
+            
+            # <Context-Aware Logging - Historical EOD Provider Connected - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "HistoricalEODProvider connected to IbkrClient for scanner callbacks",
+                context_provider={
+                    'eod_provider_type': type(eod_provider).__name__,
+                    'connected': True,
+                    'purpose': 'direct_scanner_callback_routing'
+                }
+            )
+            # <Context-Aware Logging - Historical EOD Provider Connected - End>
+            
+            print("🔗 IbkrClient: HistoricalEODProvider connected for direct scanner routing")
+    # set_historical_eod_provider - End
+
+    # scannerData - Begin (UPDATED)
+    def scannerData(self, reqId, rank, contractDetails, distance, benchmark, projection, legsStr):
+        """Callback: Receive scanner data results and route DIRECTLY to HistoricalEODProvider"""
+        super().scannerData(reqId, rank, contractDetails, distance, benchmark, projection, legsStr)
+        
+        # Extract the contract from contractDetails
+        contract = contractDetails.contract
+        symbol = contract.symbol if contract and hasattr(contract, 'symbol') else "UNKNOWN"
+        
+        print(f"🎯 IBKR CLIENT: Scanner data received - {symbol} (Rank: {rank})")
+        
+        # PRIMARY: Route directly to HistoricalEODProvider if available
+        with self._historical_manager_lock:
+            if hasattr(self, 'historical_eod_provider') and self.historical_eod_provider:
+                try:
+                    self.historical_eod_provider.scanner_data_callback(
+                        reqId, rank, contract, distance, benchmark, projection, legsStr
+                    )
+                    print(f"✅ IBKR CLIENT: Routed scanner data directly to HistoricalEODProvider")
+                    return  # Success - direct routing complete
+                except Exception as e:
+                    print(f"❌ IBKR CLIENT: Direct EOD provider routing failed: {e}")
+                    # Fall through to backup routing
+        
+        # SECONDARY: Try to route through HistoricalDataManager's EOD provider reference
+        if hasattr(self, 'historical_data_manager') and self.historical_data_manager:
+            if hasattr(self.historical_data_manager, 'eod_provider') and self.historical_data_manager.eod_provider:
+                try:
+                    self.historical_data_manager.eod_provider.scanner_data_callback(
+                        reqId, rank, contract, distance, benchmark, projection, legsStr
+                    )
+                    print(f"✅ IBKR CLIENT: Routed scanner data via HistoricalDataManager EOD reference")
+                    return  # Success - indirect routing complete
+                except Exception as e:
+                    print(f"❌ IBKR CLIENT: Indirect EOD provider routing failed: {e}")
+        
+        # FALLBACK: Log that scanner data was received but no provider available
+        print(f"⚠️ IBKR CLIENT: Scanner data received for {symbol} but no EOD provider available")
+        
+        # <Context-Aware Logging - Scanner Data No Provider - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Scanner data received but no EOD provider available",
+            symbol=symbol,
+            context_provider={
+                'req_id': reqId,
+                'rank': rank,
+                'symbol': symbol,
+                'routing_attempted': True,
+                'direct_provider_available': hasattr(self, 'historical_eod_provider') and bool(self.historical_eod_provider),
+                'indirect_provider_available': hasattr(self, 'historical_data_manager') and 
+                                            hasattr(self.historical_data_manager, 'eod_provider') and 
+                                            bool(self.historical_data_manager.eod_provider) if hasattr(self, 'historical_data_manager') else False
+            },
+            decision_reason="Scanner data received but no provider available for processing"
+        )
+        # <Context-Aware Logging - Scanner Data No Provider - End>
+    # scannerData - End
+
+    # scannerDataEnd - Begin (UPDATED)
+    def scannerDataEnd(self, reqId):
+        """Callback: Scanner data request ended - route DIRECTLY to HistoricalEODProvider"""
+        super().scannerDataEnd(reqId)
+        
+        print(f"🎯 IBKR CLIENT: Scanner data ended for reqId: {reqId}")
+        
+        # PRIMARY: Route directly to HistoricalEODProvider if available
+        with self._historical_manager_lock:
+            if hasattr(self, 'historical_eod_provider') and self.historical_eod_provider:
+                try:
+                    if hasattr(self.historical_eod_provider, 'scanner_data_end_callback'):
+                        self.historical_eod_provider.scanner_data_end_callback(reqId)
+                        print(f"✅ IBKR CLIENT: Routed scanner end directly to HistoricalEODProvider")
+                        return  # Success - direct routing complete
+                    else:
+                        print(f"❌ IBKR CLIENT: HistoricalEODProvider missing scanner_data_end_callback method")
+                except Exception as e:
+                    print(f"❌ IBKR CLIENT: Direct EOD provider end routing failed: {e}")
+                    # Fall through to backup routing
+        
+        # SECONDARY: Try to route through HistoricalDataManager's EOD provider reference
+        if hasattr(self, 'historical_data_manager') and self.historical_data_manager:
+            if hasattr(self.historical_data_manager, 'eod_provider') and self.historical_data_manager.eod_provider:
+                try:
+                    if hasattr(self.historical_data_manager.eod_provider, 'scanner_data_end_callback'):
+                        self.historical_data_manager.eod_provider.scanner_data_end_callback(reqId)
+                        print(f"✅ IBKR CLIENT: Routed scanner end via HistoricalDataManager EOD reference")
+                        return  # Success - indirect routing complete
+                    else:
+                        print(f"❌ IBKR CLIENT: HistoricalDataManager EOD provider missing scanner_data_end_callback")
+                except Exception as e:
+                    print(f"❌ IBKR CLIENT: Indirect EOD provider end routing failed: {e}")
+        
+        # FALLBACK: Log that scanner ended but no provider available
+        print(f"⚠️ IBKR CLIENT: Scanner ended but no EOD provider available for completion callback")
+        
+        # <Context-Aware Logging - Scanner End No Provider - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Scanner data ended but no EOD provider available for completion",
+            context_provider={
+                'req_id': reqId,
+                'routing_attempted': True,
+                'direct_provider_available': hasattr(self, 'historical_eod_provider') and bool(self.historical_eod_provider),
+                'indirect_provider_available': hasattr(self, 'historical_data_manager') and 
+                                            hasattr(self.historical_data_manager, 'eod_provider') and 
+                                            bool(self.historical_data_manager.eod_provider) if hasattr(self, 'historical_data_manager') else False,
+                'completion_callback_missing': True
+            },
+            decision_reason="Scanner ended but no provider available for completion processing"
+        )
+        # <Context-Aware Logging - Scanner End No Provider - End>
+    # scannerDataEnd - End
+
+
+
+
+
+    # Add to ibkr_client.py - Enhanced Debug Methods
+
+    def debug_account_retrieval(self):
+        """Comprehensive diagnostic for account value retrieval"""
+        print("🔍 DEBUG ACCOUNT RETRIEVAL DIAGNOSTIC")
+        print(f"  Connected: {self.connected}")
+        print(f"  Account Number: {self.account_number}")
+        print(f"  Account Name: {self.account_name}")
+        print(f"  Is Paper: {self.is_paper_account}")
+        
+        # Test direct account updates (like working example)
+        print("🔄 Testing direct account updates...")
+        try:
+            self.account_values.clear()
+            self.account_value_received.clear()
+            
+            # Use empty string like working example
+            self.reqAccountUpdates(True, "")
+            print("✅ reqAccountUpdates(True, '') called successfully")
+            
+            # Wait for data
+            if self.account_value_received.wait(10.0):
+                print("✅ Account updates received successfully")
+                print(f"📊 Account values received: {len(self.account_values)}")
+                for key, value in self.account_values.items():
+                    print(f"   {key}: {value}")
+            else:
+                print("❌ Timeout waiting for account updates")
+                
+            self.reqAccountUpdates(False, "")
+            
+        except Exception as e:
+            print(f"❌ Error in account updates: {e}")
+
+    def test_account_retrieval_fixed(self):
+        """Fixed version of account retrieval test"""
+        print("🧪 ========== ACCOUNT RETRIEVAL TEST STARTED ==========")
+        
+        if not self.connected:
+            print("❌ Cannot test - not connected to IBKR")
+            return
+            
+        # Test 1: Direct Account Updates (like working example)
+        print("\n🔧 TEST 1: Direct Account Updates (reqAccountUpdates)")
+        try:
+            self.account_values.clear()
+            self.account_value_received.clear()
+            
+            print("📞 Calling reqAccountUpdates(True, '')...")
+            self.reqAccountUpdates(True, "")
+            
+            print("⏳ Waiting 10 seconds for account data...")
+            if self.account_value_received.wait(10.0):
+                print(f"✅ Account updates received! Found {len(self.account_values)} values")
+                
+                # SAFE ITERATION: Use list() to avoid dictionary modification during iteration
+                print("📊 ALL ACCOUNT VALUES RECEIVED:")
+                for key, value in list(self.account_values.items()):  # FIX: list() creates copy
+                    if isinstance(value, dict):
+                        for currency, val in value.items():
+                            print(f"   📍 {key}_{currency}: '{val}' (type: {type(val).__name__})")
+                    else:
+                        print(f"   📍 {key}: '{value}' (type: {type(value).__name__})")
+                        
+                # Check for numeric values
+                numeric_found = []
+                for key, value in list(self.account_values.items()):  # FIX: list() creates copy
+                    if isinstance(value, (int, float)) and value > 0:
+                        numeric_found.append((key, value))
+                    elif isinstance(value, dict):
+                        for currency, val in value.items():
+                            if isinstance(val, (int, float)) and val > 0:
+                                numeric_found.append((f"{key}_{currency}", val))
+                
+                if numeric_found:
+                    print(f"💰 NUMERIC VALUES FOUND ({len(numeric_found)}):")
+                    for key, value in numeric_found:
+                        print(f"   💵 {key}: ${value:,.2f}")
+                else:
+                    print("❌ No numeric values found in account data")
+                    
+            else:
+                print("❌ TIMEOUT: No account values received in 10 seconds")
+                
+            self.reqAccountUpdates(False, "")
+            
+        except Exception as e:
+            print(f"❌ TEST 1 FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        print("🧪 ========== ACCOUNT RETRIEVAL TEST COMPLETED ==========")
+
+    def get_account_value_with_debug(self) -> float:
+        """Debug version of get_account_value with comprehensive logging"""
+        print("🎯 DEBUG: get_account_value_with_debug() CALLED")
+        
+        if not self.connected:
+            print("❌ Not connected to IBKR")
+            raise ValueError("Not connected to IBKR")
+        
+        # Test Strategy 1: Direct Account Updates (like working example)
+        print("🔄 Strategy 1: Testing direct account updates...")
+        try:
+            self.account_values.clear()
+            self.account_value_received.clear()
+            
+            # Use empty string account like working example
+            self.reqAccountUpdates(True, "")
+            
+            if self.account_value_received.wait(8.0):
+                print(f"✅ Account updates received: {len(self.account_values)} values")
+                
+                # Log all received values
+                for key, value in self.account_values.items():
+                    if isinstance(value, dict):
+                        for currency, val in value.items():
+                            print(f"   {key}_{currency}: {val} (type: {type(val)})")
+                    else:
+                        print(f"   {key}: {value} (type: {type(value)})")
+                
+                # Try to extract capital
+                capital = self._extract_capital_from_values()
+                if capital:
+                    print(f"✅ Capital found: ${capital:,.2f}")
+                    self.reqAccountUpdates(False, "")
+                    return capital
+                else:
+                    print("❌ No capital found in account updates")
+            else:
+                print("❌ Timeout waiting for account updates")
+                
+            self.reqAccountUpdates(False, "")
+            
+        except Exception as e:
+            print(f"❌ Error in direct account updates: {e}")
+            try:
+                self.reqAccountUpdates(False, "")
+            except:
+                pass
+        
+        # Fall back to original strategies
+        print("🔄 Falling back to original strategies...")
+        return self.get_account_value()
+
+    # Add this method INSIDE the IbkrClient class - Begin (NEW)
+    def test_account_retrieval(self):
+        """Run this method to test account retrieval immediately - TEMPORARY DIAGNOSTIC"""
+        print("🧪 ========== ACCOUNT RETRIEVAL TEST STARTED ==========")
+        
+        if not self.connected:
+            print("❌ Cannot test - not connected to IBKR")
+            return
+            
+        # Test 1: Direct Account Updates (like working example)
+        print("\n🔧 TEST 1: Direct Account Updates (reqAccountUpdates)")
+        try:
+            self.account_values.clear()
+            self.account_value_received.clear()
+            
+            print("📞 Calling reqAccountUpdates(True, '')...")
+            self.reqAccountUpdates(True, "")  # Empty string like working example
+            
+            # Wait longer for data
+            print("⏳ Waiting 10 seconds for account data...")
+            if self.account_value_received.wait(10.0):
+                print(f"✅ Account updates received! Found {len(self.account_values)} values")
+                
+                # Show ALL values received
+                print("📊 ALL ACCOUNT VALUES RECEIVED:")
+                for key, value in self.account_values.items():
+                    if isinstance(value, dict):
+                        for currency, val in value.items():
+                            print(f"   📍 {key}_{currency}: '{val}' (type: {type(val).__name__})")
+                    else:
+                        print(f"   📍 {key}: '{value}' (type: {type(value).__name__})")
+                        
+                # Check for numeric values
+                numeric_found = []
+                for key, value in self.account_values.items():
+                    if isinstance(value, (int, float)) and value > 0:
+                        numeric_found.append((key, value))
+                    elif isinstance(value, dict):
+                        for currency, val in value.items():
+                            if isinstance(val, (int, float)) and val > 0:
+                                numeric_found.append((f"{key}_{currency}", val))
+                
+                if numeric_found:
+                    print(f"💰 NUMERIC VALUES FOUND ({len(numeric_found)}):")
+                    for key, value in numeric_found:
+                        print(f"   💵 {key}: ${value:,.2f}")
+                else:
+                    print("❌ No numeric values found in account data")
+                    
+            else:
+                print("❌ TIMEOUT: No account values received in 10 seconds")
+                print("   This suggests IBKR isn't sending account data")
+                
+            # Cleanup
+            print("🧹 Cleaning up account updates subscription...")
+            self.reqAccountUpdates(False, "")
+            
+        except Exception as e:
+            print(f"❌ TEST 1 FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Test 2: Account Summary API
+        print("\n🔧 TEST 2: Account Summary API")
+        try:
+            capital = self._get_account_value_via_summary()
+            if capital and capital > 0:
+                print(f"✅ Account Summary SUCCESS: ${capital:,.2f}")
+            else:
+                print("❌ Account Summary failed or returned invalid capital")
+                
+        except Exception as e:
+            print(f"❌ TEST 2 FAILED: {e}")
+        
+        # Test 3: Traditional method
+        print("\n🔧 TEST 3: Traditional Account Updates with account number")
+        try:
+            capital = self._get_account_value_via_updates()
+            if capital and capital > 0:
+                print(f"✅ Traditional Updates SUCCESS: ${capital:,.2f}")
+            else:
+                print("❌ Traditional Updates failed")
+                
+        except Exception as e:
+            print(f"❌ TEST 3 FAILED: {e}")
+        
+        print("🧪 ========== ACCOUNT RETRIEVAL TEST COMPLETED ==========")
+    # test_account_retrieval - End

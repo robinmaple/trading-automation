@@ -691,7 +691,7 @@ class PlannedOrderManager:
             for index, row in df.iterrows():
                 try:
                     # NEW: Skip all-zero rows (the only enhancement needed)
-                    if PlannedOrderManager._is_all_zero_row(row):
+                    if PlannedOrderManager._is_invalid_row(row):
                         skipped_rows += 1
                         continue
                     
@@ -836,8 +836,37 @@ class PlannedOrderManager:
             return []
 
     @staticmethod
+    def _has_invalid_symbol(row: pd.Series) -> bool:
+        """Check if the row has an invalid symbol."""
+        symbol = str(row.get('Symbol', '')).strip()
+        invalid_symbols = ['0', '0.0', 'nan', 'NaN', 'null', 'NULL', '']
+        
+        # Skip rows with invalid symbols
+        if not symbol or symbol in invalid_symbols or len(symbol) < 2:
+            return True
+        
+        # Additional safety: skip if symbol looks like a number
+        if symbol.replace('.', '').isdigit():
+            return True
+        
+        return False
+
+    @staticmethod
+    def _has_invalid_required_fields(row: pd.Series) -> bool:
+        """Check if required fields are empty or meaningless."""
+        required_fields = ['Symbol', 'Security Type', 'Exchange', 'Currency', 'Action']
+        
+        for field in required_fields:
+            if field in row:
+                value = str(row[field]).strip()
+                if not value or value in ['0', '0.0', 'nan', 'NaN', 'null', 'NULL', '']:
+                    return True
+        
+        return False
+
+    @staticmethod
     def _is_all_zero_row(row: pd.Series) -> bool:
-        """Check if a row contains all zeros or empty values - minimal enhancement only"""
+        """Check if all numeric values are zero (preserve your original logic)."""
         # Only check key fields that should never be zero
         symbol = str(row.get('Symbol', '')).strip()
         if symbol and symbol not in ['0', '0.0']:
@@ -852,31 +881,22 @@ class PlannedOrderManager:
 
     @staticmethod
     def _is_invalid_row(row: pd.Series) -> bool:
-        """Check if a row is invalid (all zeros, empty, or meaningless values)."""
-        required_fields = ['Symbol', 'Security Type', 'Exchange', 'Currency', 'Action']
+        """Check if a row is invalid (invalid symbols, empty values, or all zeros)."""
         
-        for field in required_fields:
-            if field in row:
-                value = str(row[field]).strip()
-                if value and value not in ['0', '0.0', 'nan', '']:
-                    return False
+        # 1. Check for invalid symbols (highest priority)
+        if PlannedOrderManager._has_invalid_symbol(row):
+            return True
         
-        # Additional check: if all numeric values are zero
-        numeric_fields = ['Entry Price', 'Stop Loss', 'Risk Per Trade', 'Risk Reward Ratio', 'Priority']
-        all_numeric_zero = True
-        for field in numeric_fields:
-            if field in row and pd.notna(row[field]):
-                try:
-                    if float(row[field]) != 0:
-                        all_numeric_zero = False
-                        break
-                except (ValueError, TypeError):
-                    all_numeric_zero = False
-                    break
+        # 2. Check required fields for meaningful values
+        if PlannedOrderManager._has_invalid_required_fields(row):
+            return True
         
-        return all_numeric_zero
+        # 3. Check if all numeric values are zero
+        if PlannedOrderManager._is_all_zero_row(row):
+            return True
+        
+        return False  # Row is valid    @staticmethod
 
-    @staticmethod
     def _parse_numeric_field(row: pd.Series, field_name: str, data_type, 
                             default=None, required=False, min_value=None, max_value=None):
         """Safely parse numeric fields with validation."""

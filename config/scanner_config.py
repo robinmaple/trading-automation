@@ -37,6 +37,12 @@ class ScannerConfig:
     min_confidence_score: int = 60
     max_candidates: int = 25
     
+    # <EOD Data Configuration - Begin>
+    # Data Source Configuration
+    use_eod_data: bool = True  # Use EOD/snapshot data instead of real-time
+    data_type: str = "snapshot"  # snapshot, delayed, real_time
+    # <EOD Data Configuration - End>
+    
     # Advanced Configuration
     custom_criteria: List[Dict] = field(default_factory=list)
     excluded_sectors: List[str] = field(default_factory=list)
@@ -68,6 +74,12 @@ class ScannerConfig:
             # Pullback criteria
             'max_pullback_distance_pct': self.max_pullback_distance_pct,
             'ideal_pullback_range_pct': self.ideal_pullback_range_pct,
+            
+            # <EOD Data Parameters - Begin>
+            # Data source parameters
+            'use_eod_data': self.use_eod_data,
+            'data_type': self.data_type,
+            # <EOD Data Parameters - End>
             
             # Advanced
             'excluded_sectors': self.excluded_sectors,

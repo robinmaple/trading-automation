@@ -185,19 +185,46 @@ class ScanManager:
         )
         # <Context-Aware Logging Integration - End>
         
+        # <Timestamped Excel Output - Begin>
         if save_to_excel and bull_trend_candidates:
-            # Note: You'll need to access the candidate_generator from tiered_scanner
-            # This might require exposing it or adding save method to TieredScanner
-            # <Context-Aware Logging Integration - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Excel save requested but not implemented for strategy-specific candidates",
-                context_provider={
-                    "bull_trend_candidates_count": len(bull_trend_candidates)
-                },
-                decision_reason="Excel saving not implemented"
-            )
-            # <Context-Aware Logging Integration - End>
+            try:
+                timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+                filename = f"scanner_bull_trend_{timestamp}.xlsx"
+                filepath = f"{excel_output_dir}/{filename}"
+                
+                # Create DataFrame and save to Excel
+                df = pd.DataFrame(bull_trend_candidates)
+                df.to_excel(filepath, index=False)
+                
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Bull Trend Pullback candidates saved to timestamped Excel file",
+                    context_provider={
+                        "filepath": filepath,
+                        "candidates_count": len(bull_trend_candidates),
+                        "timestamp_format": "YYMMDD_HHMMSS"
+                    },
+                    decision_reason="Excel file saved successfully"
+                )
+                # <Context-Aware Logging Integration - End>
+                
+                print(f"💾 Bull Trend Pullback results saved to: {filepath}")
+                
+            except Exception as e:
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Failed to save Bull Trend Pullback candidates to Excel",
+                    context_provider={
+                        "error": str(e),
+                        "candidates_count": len(bull_trend_candidates)
+                    },
+                    decision_reason="Excel save operation failed"
+                )
+                # <Context-Aware Logging Integration - End>
+                print(f"❌ Failed to save Excel file: {e}")
+        # <Timestamped Excel Output - End>
         
         return bull_trend_candidates
 
@@ -237,17 +264,45 @@ class ScanManager:
         )
         # <Context-Aware Logging Integration - End>
         
+        # <Timestamped Excel Output - Begin>
         if save_to_excel and candidates:
-            # Note: Similar to above - need to handle Excel saving
-            # <Context-Aware Logging Integration - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Excel save requested but not implemented for all candidates",
-                context_provider={
-                    "total_candidates_count": len(candidates)
-                },
-                decision_reason="Excel saving not implemented"
-            )
-            # <Context-Aware Logging Integration - End>
+            try:
+                timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+                filename = f"scanner_all_candidates_{timestamp}.xlsx"
+                filepath = f"{excel_output_dir}/{filename}"
+                
+                # Create DataFrame and save to Excel
+                df = pd.DataFrame(candidates)
+                df.to_excel(filepath, index=False)
+                
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "All candidates saved to timestamped Excel file",
+                    context_provider={
+                        "filepath": filepath,
+                        "candidates_count": len(candidates),
+                        "timestamp_format": "YYMMDD_HHMMSS"
+                    },
+                    decision_reason="Excel file saved successfully"
+                )
+                # <Context-Aware Logging Integration - End>
+                
+                print(f"💾 All scanner results saved to: {filepath}")
+                
+            except Exception as e:
+                # <Context-Aware Logging Integration - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Failed to save all candidates to Excel",
+                    context_provider={
+                        "error": str(e),
+                        "candidates_count": len(candidates)
+                    },
+                    decision_reason="Excel save operation failed"
+                )
+                # <Context-Aware Logging Integration - End>
+                print(f"❌ Failed to save Excel file: {e}")
+        # <Timestamped Excel Output - End>
         
         return candidates

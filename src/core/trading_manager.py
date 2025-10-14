@@ -6,7 +6,7 @@ Coordinates between data feeds, the IBKR client, service layer, and database.
 """
 import datetime
 from decimal import Decimal
-from typing import List, Dict, Optional, Set
+from typing import Any, List, Dict, Optional, Set
 import threading
 import time
 import pandas as pd
@@ -83,6 +83,10 @@ class TradingManager:
         # Account Context Tracking - Begin
         self.current_account_number: Optional[str] = None
         # Account Context Tracking - End
+
+        # Phase 1 Fix: Add Excel loading state tracking
+        self._excel_loaded = False  # Track if Excel has been loaded in this session
+        self._excel_load_attempts = 0  # Track load attempts for monitoring
 
         self._load_configuration()
         
@@ -561,29 +565,61 @@ class TradingManager:
         return [active_order.to_dict() for active_order in self.active_orders.values()]
 
     def load_planned_orders(self) -> List[PlannedOrder]:
-        """Load and validate planned orders from Excel, persisting valid ones to the database."""
+        """Load and validate planned orders from Excel, persisting valid ones to the database.
+        
+        Implements Phase 1 duplicate protection: Only loads Excel once per session.
+        Subsequent calls return cached orders and log the duplicate attempt.
+        """
+        # Phase 1 Fix: Prevent duplicate Excel loading
+        self._excel_load_attempts += 1
+        
+        if self._excel_loaded:
+            # <Context-Aware Logging - Duplicate Load Prevention - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Excel loading skipped - already loaded in current session",
+                context_provider={
+                    'excel_path': self.excel_path,
+                    'load_attempt_count': self._excel_load_attempts,
+                    'cached_orders_count': len(self.planned_orders),
+                    'session_protection': 'active'
+                },
+                decision_reason="Duplicate Excel load prevented by session tracking"
+            )
+            # <Context-Aware Logging - Duplicate Load Prevention - End>
+            return self.planned_orders  # Return cached orders
+
         # <Context-Aware Logging - Order Loading Start - Begin>
         self.context_logger.log_event(
             TradingEventType.ORDER_VALIDATION,
             "Starting planned order loading from Excel",
             context_provider={
                 'excel_path': self.excel_path,
-                'existing_planned_orders': len(self.planned_orders)
+                'load_attempt_number': self._excel_load_attempts,
+                'existing_planned_orders': len(self.planned_orders),
+                'session_protection': 'first_load'
             }
         )
         # <Context-Aware Logging - Order Loading Start - End>
         
+        # Original loading logic
         self.planned_orders = self.order_lifecycle_manager.load_and_persist_orders(self.excel_path)
+        
+        # Phase 1 Fix: Mark Excel as loaded for this session
+        self._excel_loaded = True
+        
         # <Context-Aware Logging - Order Loading Complete - Begin>
         self.context_logger.log_event(
             TradingEventType.ORDER_VALIDATION,
-            "Planned order loading completed",
+            "Planned order loading completed - session locked",
             context_provider={
                 'orders_loaded_count': len(self.planned_orders),
                 'excel_path': self.excel_path,
-                'operation': 'load_and_persist_orders'
+                'operation': 'load_and_persist_orders',
+                'session_locked': True,
+                'total_load_attempts': self._excel_load_attempts
             },
-            decision_reason=f"Successfully loaded {len(self.planned_orders)} orders from Excel"
+            decision_reason=f"Successfully loaded {len(self.planned_orders)} orders from Excel - session locked"
         )
         # <Context-Aware Logging - Order Loading Complete - End>
         
@@ -593,7 +629,7 @@ class TradingManager:
         # <Update Monitored Symbols After Loading Orders - End>
         
         return self.planned_orders
-
+        
     def stop_monitoring(self) -> None:
         """Stop the monitoring loop and perform cleanup of resources."""
         # <Context-Aware Logging - Monitoring Stop Start - Begin>
@@ -1463,3 +1499,40 @@ class TradingManager:
                 decision_reason=f"Position close failed: {e}"
             )
             # <Context-Aware Logging - Position Close Error - End>
+
+    def get_loading_state(self) -> Dict[str, Any]:
+        """Get current Excel loading state for monitoring and debugging."""
+        return {
+            'excel_loaded': self._excel_loaded,
+            'load_attempts': self._excel_load_attempts,
+            'cached_orders_count': len(self.planned_orders),
+            'excel_path': self.excel_path,
+            'session_protection_active': self._excel_loaded
+        }
+    
+    def reset_excel_loading_state(self) -> None:
+        """Reset Excel loading state for testing or special scenarios.
+        
+        WARNING: This should only be used in controlled scenarios as it
+        could lead to duplicate orders if misused.
+        """
+        old_state = self._excel_loaded
+        old_attempts = self._excel_load_attempts
+        
+        self._excel_loaded = False
+        self._excel_load_attempts = 0
+        
+        # <Context-Aware Logging - Reset State - Begin>
+        self.context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Excel loading state reset",
+            context_provider={
+                'previous_loaded_state': old_state,
+                'previous_attempt_count': old_attempts,
+                'new_loaded_state': self._excel_loaded,
+                'new_attempt_count': self._excel_load_attempts,
+                'reset_reason': 'manual_reset'
+            },
+            decision_reason="Excel loading state manually reset - use with caution"
+        )
+        # <Context-Aware Logging - Reset State - End>

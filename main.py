@@ -20,64 +20,6 @@ from src.core.event_bus import EventBus
 # <Context-Aware Logger Integration - Begin>
 from src.core.context_aware_logger import get_context_logger, start_trading_session, end_trading_session, TradingEventType
 # <Context-Aware Logger Integration - End>
-
-def run_scanner_from_main(ibkr_client, data_feed, config=None):
-    try:
-        from src.scanner.scan_manager import ScanManager
-        from config.scanner_config import ScannerConfig
-        from src.scanner.integration.ibkr_data_adapter import IBKRDataAdapter
-        
-        print("🚀 Starting Tiered Scanner with REAL Market Data...")
-        print("=" * 50)
-        
-        # TEST: Try Tier 1 only mode first
-        print("🧪 TESTING: Tier 1 Only Mode (no strategies)")
-        scanner_config_tier1 = ScannerConfig(
-            enabled_strategies=[],  # Empty = Tier 1 only
-            min_confidence_score=60,
-            max_candidates=25
-        )
-        
-        data_adapter = IBKRDataAdapter(data_feed)
-        scan_manager_tier1 = ScanManager(data_adapter, scanner_config_tier1)
-        
-        tier1_results = scan_manager_tier1.generate_all_candidates()
-        print(f"📋 TIER 1 RESULTS: {len(tier1_results)} candidates")
-        
-        if tier1_results:
-            filepath = scan_manager_tier1.tiered_scanner.save_results_to_excel(tier1_results)
-            print(f"💾 Tier 1 results saved to: {filepath}")
-            
-            # Show Tier 1 candidates
-            print("\n📊 Tier 1 Candidates:")
-            for i, candidate in enumerate(tier1_results[:10]):
-                print(f"   {i+1}. {candidate['symbol']} - Price: ${candidate['current_price']:.2f}")
-        
-        # Now try with strategy
-        print("\n🧪 TESTING: With Bull Trend Pullback Strategy")
-        scanner_config = ScannerConfig(
-            enabled_strategies=['bull_trend_pullback'],
-            min_confidence_score=60,
-            max_candidates=25
-        )
-        
-        scan_manager = ScanManager(data_adapter, scanner_config)
-        candidates = scan_manager.generate_all_candidates()
-        
-        if candidates:
-            filepath = scan_manager.tiered_scanner.save_results_to_excel(candidates)
-            print(f"💾 Strategy results saved to: {filepath}")
-            print(f"✅ Found {len(candidates)} strategy candidates")
-        else:
-            print("⚠️  No strategy candidates found - strategy is being selective")
-            
-        return candidates if candidates else tier1_results
-            
-    except Exception as e:
-        print(f"❌ Scanner failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
         
 def main():
     # <Session Management - Begin>
@@ -121,10 +63,6 @@ def main():
             action="store_true",
             help="Run market data diagnostic before starting trading",
         )
-        parser.add_argument('--scanner', action='store_true', 
-                   help='Run bull trend pullback scanner')
-        parser.add_argument('--scanner-only', action='store_true',
-                        help='Run scanner and exit (no trading)')
 
         args = parser.parse_args()
 
@@ -135,8 +73,6 @@ def main():
             context_provider={
                 "mode": lambda: args.mode,
                 "debug_market_data": lambda: args.debug_market_data,
-                "scanner": lambda: args.scanner,
-                "scanner_only": lambda: args.scanner_only
             }
         )
         # <Argument Parsing Logging - End>
@@ -278,59 +214,6 @@ def main():
         )
         # <Data Feed Logging - End>
 
-        # SCANNER INTEGRATION - Run before normal trading
-        scanner_candidates = None
-        if args.scanner or args.scanner_only:
-            print("\n" + "="*60)
-            print("🔍 SCANNER MODE ACTIVATED")
-            print("="*60)
-            
-            # <Scanner Start Logging - Begin>
-            context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Scanner mode activated",
-                context_provider={
-                    "scanner_only": lambda: args.scanner_only,
-                    "scanner_with_trading": lambda: args.scanner and not args.scanner_only
-                }
-            )
-            # <Scanner Start Logging - End>
-            
-            scanner_candidates = run_scanner_from_main(ibkr_client, data_feed)
-            
-            # <Scanner Results Logging - Begin>
-            context_logger.log_event(
-                TradingEventType.EXECUTION_DECISION,
-                "Scanner execution completed",
-                context_provider={
-                    "candidates_found": lambda: len(scanner_candidates) if scanner_candidates else 0,
-                    "scanner_only_mode": lambda: args.scanner_only
-                },
-                decision_reason="Exit after scanner" if args.scanner_only else "Continue to trading"
-            )
-            # <Scanner Results Logging - End>
-            
-            if args.scanner_only:
-                print("\n🎯 Scanner-only mode complete. Exiting.")
-                print("💡 Use --scanner (without --scanner-only) to run scanner + trading")
-                # <Session Management - Begin>
-                end_trading_session()
-                print("✅ Trading session ended after scanner-only execution")
-                # <Session Management - End>
-                return  # Exit after scanner if scanner-only mode
-            
-            # If --scanner (without --scanner-only), continue to normal trading
-            print("\n📈 Continuing to normal trading with scanner results...")
-            print("="*60)
-
-        # Exit here if we only wanted to run the scanner
-        if args.scanner_only:
-            # <Session Management - Begin>
-            end_trading_session()
-            print("✅ Trading session ended after scanner-only execution")
-            # <Session Management - End>
-            return
-
         # <Event-Driven Trading Manager - Begin>
         # Create TradingManager with EventBus dependency
         trading_mgr = TradingManager(
@@ -392,22 +275,6 @@ def main():
             )
             # <Order Registration Error Logging - End>
 
-        # If we have scanner candidates, you could integrate them here
-        if scanner_candidates:
-            print(f"💡 Scanner provided {len(scanner_candidates)} candidates for trading consideration")
-            # You could add logic here to use scanner candidates in your trading strategy
-            # For example: trading_mgr.integrate_scanner_candidates(scanner_candidates)
-            # <Scanner Integration Logging - Begin>
-            context_logger.log_event(
-                TradingEventType.EXECUTION_DECISION,
-                "Scanner candidates available for trading",
-                context_provider={
-                    "scanner_candidates_count": lambda: len(scanner_candidates)
-                },
-                decision_reason="Candidates can be integrated into trading strategy"
-            )
-            # <Scanner Integration Logging - End>
-
         # Start monitoring with debug output
         print("\n🚀 Starting trading monitoring...")
 
@@ -424,7 +291,6 @@ def main():
                 "data_feed_connected": lambda: data_feed.is_connected(),
                 "ibkr_client_connected": lambda: ibkr_client.connected,
                 "planned_orders_count": lambda: len(trading_mgr.planned_orders),
-                "scanner_candidates_available": lambda: len(scanner_candidates) if scanner_candidates else 0
             }
         )
         # <System State Logging - End>

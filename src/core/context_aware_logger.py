@@ -122,6 +122,43 @@ class TradingEventType(Enum):
     SYSTEM_HEALTH = "system_health"
     DATABASE_STATE = "database_state"
 
+# ADD THIS NEW SECTION
+# ====================
+# Field compression mapping
+FIELD_COMPRESSION_MAP = {
+    'timestamp': 'ts',
+    'event_type': 'et', 
+    'symbol': 's',
+    'message': 'm',
+    'decision_reason': 'r',
+    'context': 'c',
+    'event_id': 'id',
+    'session_id': 'sid',
+    'call_stack_depth': 'dep'
+}
+
+# Event type numeric coding (0-255)
+EVENT_TYPE_CODES = {
+    TradingEventType.ORDER_VALIDATION: 1,
+    TradingEventType.EXECUTION_DECISION: 2, 
+    TradingEventType.MARKET_CONDITION: 3,
+    TradingEventType.POSITION_MANAGEMENT: 4,
+    TradingEventType.STATE_TRANSITION: 5,
+    TradingEventType.RISK_EVALUATION: 6,
+    TradingEventType.SYSTEM_HEALTH: 7,
+    TradingEventType.DATABASE_STATE: 8,
+}
+
+# Context field compression mapping
+CONTEXT_FIELD_MAP = {
+    'price': 'p', 'quantity': 'q', 'order_id': 'oid', 'symbol': 's',
+    'action': 'a', 'filled': 'f', 'remaining': 'rem', 'status': 'st',
+    'error': 'e', 'result': 'res', 'count': 'cnt', 'risk': 'r',
+    'profit': 'pnl', 'loss': 'l', 'amount': 'amt', 'entry': 'ent',
+    'stop': 'stp', 'target': 'tgt', 'capital': 'cap', 'margin': 'mgn'
+}
+# ====================
+
 @dataclass
 class TradingEvent:
     """Structured event data with safety guarantees."""
@@ -248,12 +285,10 @@ class ContextAwareLogger:
             'importance_filtered': 0
         }
         
-        # <Direct File Logging - Begin>
         # Initialize direct file logging
         self._file_logger = logging.getLogger(f"context_aware_{self.session_id}")
         SessionLogger.configure_session_handlers(self._file_logger)
         self._file_logger.info(f"ContextAwareLogger initialized (session: {self.session_id})")
-        # <Direct File Logging - End>
     
     def log_event(self, 
                   event_type: TradingEventType,
@@ -361,53 +396,70 @@ class ContextAwareLogger:
         return event_dict
     
     def _write_compressed_log(self, event_dict: Dict[str, Any], importance: LogImportance):
-        """Write compressed structured event to log."""
-        # Extract core information for compact format
+        """Write highly compressed structured event to log."""
+        # Convert ISO timestamp to numeric (major space savings)
+        try:
+            timestamp = datetime.datetime.fromisoformat(event_dict['timestamp']).timestamp()
+            timestamp = round(timestamp, 3)  # Millisecond precision
+        except:
+            timestamp = time.time()
+        
+        # Get event type code
+        event_type_code = 0
+        try:
+            event_type = TradingEventType(event_dict['event_type'])
+            event_type_code = EVENT_TYPE_CODES.get(event_type, 0)
+        except:
+            pass
+        
+        # Build compressed core info
         core_info = {
-            't': event_dict['timestamp'][11:19],  # Just time (HH:MM:SS)
-            'type': event_dict['event_type'][:3].upper(),  # ORD, EXE, SYS, etc.
-            'sym': event_dict['symbol'],
-            'imp': importance.name[0],  # H, M, L
-            'msg': self._compress_message(event_dict['message']),
+            FIELD_COMPRESSION_MAP['timestamp']: timestamp,
+            FIELD_COMPRESSION_MAP['event_type']: event_type_code,
+            'i': importance.value,
+            FIELD_COMPRESSION_MAP['message']: self._compress_message(event_dict['message']),
         }
         
-        # Add reason if present (truncate very long reasons)
+        # Add symbol if present
+        if event_dict['symbol']:
+            core_info[FIELD_COMPRESSION_MAP['symbol']] = event_dict['symbol']
+        
+        # Add compressed reason if present
         if event_dict['decision_reason']:
             reason = event_dict['decision_reason']
-            core_info['reason'] = reason[:60] + '...' if len(reason) > 60 else reason
+            compressed_reason = self._compress_reason(reason)
+            core_info[FIELD_COMPRESSION_MAP['decision_reason']] = compressed_reason
         
-        # Add only critical context
+        # Ultra-compact context with field pruning and compression
         critical_context = self._extract_critical_context(event_dict['context'])
         if critical_context:
-            core_info['ctx'] = critical_context
+            compressed_ctx = self._compress_context_fields(critical_context)
+            core_info[FIELD_COMPRESSION_MAP['context']] = compressed_ctx
         
-        # Compact JSON output
+        # Minimal JSON with shortest separators
         compact_json = json.dumps(core_info, separators=(',', ':'))
         
-        # Console output (unchanged for visibility)
+        # Console output remains human readable (unchanged)
         symbol_str = f" [{event_dict['symbol']}]" if event_dict['symbol'] else ""
         reason_str = f" - {event_dict['decision_reason']}" if event_dict['decision_reason'] else ""
         console_message = f"🔍 {event_dict['event_type'].upper()}{symbol_str}: {event_dict['message']}{reason_str}"
         print(console_message)
         
-        # <Direct File Logging - Begin>
-        # Use direct file logging instead of SimpleLogger
+        # File logging with compressed format
         try:
-            # Ensure session handlers are configured
             SessionLogger.configure_session_handlers(self._file_logger)
-            self._file_logger.info(f"EVENT: {compact_json}")
+            self._file_logger.info(f"E:{compact_json}")
         except Exception as e:
-            # Fallback if file logging has issues
             print(f"📊 {compact_json}")
             print(f"File logging error: {e}")
-        # <Direct File Logging - End>
     
     def _compress_message(self, message: str) -> str:
-        """Compress common message patterns for compact logging."""
-        replacements = {
+        """More aggressive message compression for common trading patterns."""
+        # Common phrase replacements
+        phrase_replacements = {
             'completed successfully': '✓',
             'starting': '→',
-            'failed': '✗',
+            'failed': '✗', 
             'validation': 'val',
             'initialization': 'init',
             'calculation': 'calc',
@@ -415,13 +467,81 @@ class ContextAwareLogger:
             'received': '←',
             'processing': 'proc',
             'reconciliation': 'recon',
+            'evaluation': 'eval',
+            'automatic': 'auto',
+            'manual': 'man',
+            'configuration': 'config',
+            'execution': 'exec',
+            'transaction': 'tx',
+            'position': 'pos',
+            'portfolio': 'port',
+            'market': 'mkt',
+            'order': 'ord',
+            'signal': 'sig',
+            'strategy': 'strat',
+            'algorithm': 'algo',
         }
         
-        compressed = message
-        for full, short in replacements.items():
+        # Word boundary replacements for better compression
+        compressed = message.lower()
+        for full, short in phrase_replacements.items():
             compressed = compressed.replace(full, short)
         
-        return compressed[:80]  # Truncate very long messages
+        # Remove common filler words
+        filler_words = ['the', 'a', 'an', 'for', 'with', 'from', 'this', 'that']
+        words = compressed.split()
+        filtered_words = [w for w in words if w not in filler_words]
+        compressed = ' '.join(filtered_words)
+        
+        return compressed[:50]
+    
+    def _compress_reason(self, reason: str) -> str:
+        """Specialized compression for decision reasons."""
+        reason_compressions = {
+            'risk limit exceeded': 'risk_lim',
+            'market conditions not favorable': 'mkt_cond',
+            'insufficient capital': 'no_cap', 
+            'position limit reached': 'pos_lim',
+            'validation passed': 'val_ok',
+            'validation failed': 'val_fail',
+            'price outside acceptable range': 'price_range',
+            'quantity too small': 'qty_small',
+            'quantity too large': 'qty_large',
+            'time in force expired': 'tif_exp',
+            'exchange closed': 'exch_closed',
+            'connection lost': 'conn_lost',
+            'data stale': 'data_old',
+        }
+        
+        compressed = reason.lower()
+        for full, short in reason_compressions.items():
+            if full in compressed:
+                return short
+        
+        # Fallback: first 3 letters of each word
+        words = compressed.split()
+        if len(words) > 2:
+            return ''.join([w[:3] for w in words[:3]])
+        
+        return compressed[:30]
+    
+    def _compress_context_fields(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Compress context field names and values."""
+        compressed = {}
+        for key, value in context.items():
+            short_key = CONTEXT_FIELD_MAP.get(key, key[:3])
+            
+            # Compress numeric values (round floats, keep ints)
+            if isinstance(value, float):
+                compressed[short_key] = round(value, 4)
+            elif isinstance(value, (int, str, bool)) or value is None:
+                compressed[short_key] = value
+            else:
+                # Convert other types to string with length limit
+                str_val = str(value)
+                compressed[short_key] = str_val[:40] + '...' if len(str_val) > 40 else str_val
+        
+        return compressed
     
     def _extract_critical_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Extract only the most important context fields for compression."""
@@ -496,9 +616,8 @@ class ContextAwareLogger:
             'recursion_blocks': 0,
             'circuit_breaker_blocks': 0,
             'importance_filtered': 0
-        }
+        }# Global logger instance for easy access
 
-# Global logger instance for easy access
 _global_logger: Optional[ContextAwareLogger] = None
 
 def get_context_logger() -> ContextAwareLogger:
@@ -513,8 +632,30 @@ def start_trading_session() -> str:
     """Explicitly start a new trading session. Call this at application startup."""
     return SessionLogger.start_new_session()
 
+# MODIFY the end_trading_session function to include compression stats
+
 def end_trading_session() -> None:
-    """Explicitly end the current trading session. Call this at application shutdown."""
+    """Explicitly end the current trading session with compression stats."""
+    global _global_logger
+    session_file = SessionLogger.get_current_session_file()
+    
+    if _global_logger and session_file and os.path.exists(session_file):
+        stats = _global_logger.get_stats()
+        file_size = os.path.getsize(session_file)
+        
+        # Estimate original size (assuming 180 bytes per event uncompressed)
+        estimated_original = stats['total_events'] * 180
+        compression_ratio = estimated_original / file_size if file_size > 0 else 1
+        
+        # Log session summary
+        logger = get_context_logger()
+        logger._file_logger.info(
+            f"SESSION_SUMMARY: events={stats['total_events']}, "
+            f"size_kb={file_size/1024:.1f}, "
+            f"compression={compression_ratio:.1f}x, "
+            f"filtered={stats['importance_filtered']}+{stats['circuit_breaker_blocks']}"
+        )
+    
     SessionLogger.end_current_session()
 
 def get_current_session_file() -> Optional[str]:

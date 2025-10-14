@@ -88,8 +88,9 @@ class RiskManagementService:
         )
         # Load risk configuration from config only - End
 
+    # _get_total_equity - Begin (UPDATED)
     def _get_total_equity(self) -> Decimal:
-        """Get total account equity, using configurable default for simulation."""
+        """Get total account equity. Halts trading if no valid numeric account values are found."""
         if self.ibkr_client and self.ibkr_client.connected:
             try:
                 equity = Decimal(str(self.ibkr_client.get_account_value()))
@@ -103,7 +104,25 @@ class RiskManagementService:
                     decision_reason="LIVE_EQUITY_RETRIEVED"
                 )
                 return equity
+            except ValueError as e:
+                # CRITICAL: No valid numeric account values found - halt trading immediately
+                self._trading_halted = True
+                self._halt_reason = f"No valid account values: {str(e)}"
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Trading halted - no valid numeric account values found",
+                    context_provider={
+                        "error_type": type(e).__name__,
+                        "error_details": str(e),
+                        "halt_reason": self._halt_reason,
+                        "safety_action": "halt_trading_no_account_values"
+                    },
+                    decision_reason="TRADING_HALTED_NO_VALID_ACCOUNT_VALUES"
+                )
+                # Re-raise to ensure calling code knows trading is halted
+                raise TradingHaltedError(self._halt_reason)
             except Exception as e:
+                # Other IBKR errors - use simulation as fallback but log warning
                 context_logger.log_event(
                     TradingEventType.SYSTEM_HEALTH,
                     "IBKR equity retrieval failed - using simulation",
@@ -114,23 +133,26 @@ class RiskManagementService:
                     },
                     decision_reason="IBKR_EQUITY_RETRIEVAL_FAILED"
                 )
-                # Fall back to state service if IBKR fails
+                # Fall back to simulation for non-critical errors
                 pass
-                    
-        # Use configurable default equity
+                        
+        # Use configurable default equity (for simulation or non-critical IBKR errors)
         context_logger.log_event(
             TradingEventType.RISK_EVALUATION,
             "Using simulation equity",
             context_provider={
                 "equity_amount": float(self.simulation_equity),
-                "data_source": "simulation_config"
+                "data_source": "simulation_config",
+                "trading_halted": self._trading_halted
             },
             decision_reason="SIMULATION_EQUITY_USED"
         )
         return self.simulation_equity
+    # _get_total_equity - End
 
+    # get_account_equity - Begin (UPDATED)
     def get_account_equity(self) -> Decimal:
-        """Get current account equity from IBKR or use simulation value."""
+        """Get current account equity from IBKR or use simulation value. Halts trading if no valid numeric account values."""
         context_logger.log_event(
             TradingEventType.RISK_EVALUATION,
             "Getting account equity",
@@ -139,7 +161,7 @@ class RiskManagementService:
                 "ibkr_client_connected": self.ibkr_client.is_connected() if self.ibkr_client else False
             }
         )
-            
+                
         if self.ibkr_client and self.ibkr_client.is_connected():
             try:
                 equity = Decimal(str(self.ibkr_client.get_account_value()))
@@ -153,7 +175,25 @@ class RiskManagementService:
                     decision_reason="ACCOUNT_EQUITY_RETRIEVED"
                 )
                 return equity
+            except ValueError as e:
+                # CRITICAL: No valid numeric account values found - halt trading immediately
+                self._trading_halted = True
+                self._halt_reason = f"No valid account values: {str(e)}"
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Trading halted - no valid numeric account values for equity check",
+                    context_provider={
+                        "error_type": type(e).__name__,
+                        "error_details": str(e),
+                        "halt_reason": self._halt_reason,
+                        "safety_action": "halt_trading_no_account_values"
+                    },
+                    decision_reason="TRADING_HALTED_NO_VALID_ACCOUNT_VALUES_EQUITY"
+                )
+                # Re-raise to ensure calling code knows trading is halted
+                raise TradingHaltedError(self._halt_reason)
             except (ValueError, AttributeError) as e:
+                # Other IBKR errors - use simulation as fallback
                 context_logger.log_event(
                     TradingEventType.SYSTEM_HEALTH,
                     "IBKR account equity retrieval failed",
@@ -164,18 +204,20 @@ class RiskManagementService:
                     },
                     decision_reason="IBKR_ACCOUNT_EQUITY_FAILED"
                 )
-                
-        # Fallback to simulation equity from config
+                    
+        # Fallback to simulation equity from config (for non-critical errors only)
         context_logger.log_event(
             TradingEventType.RISK_EVALUATION,
             "Using simulation equity as fallback",
             context_provider={
                 "equity_amount": float(self.simulation_equity),
-                "data_source": "simulation_config"
+                "data_source": "simulation_config",
+                "trading_halted": self._trading_halted
             },
             decision_reason="SIMULATION_EQUITY_FALLBACK"
         )
         return self.simulation_equity
+    # get_account_equity - End
 
     def calculate_position_pnl(self, entry_price, exit_price, quantity, action):
         """Calculate position P&L with robust validation."""
@@ -686,7 +728,8 @@ class RiskManagementService:
         self._last_trading_halt_check = None
         self._check_trading_halts()
 
-
+# TradingHaltedError - Begin (UPDATED)
 class TradingHaltedError(Exception):
-    """Exception raised when trading is halted due to risk rules."""
+    """Exception raised when trading is halted due to risk rules or account value retrieval failures."""
     pass
+# TradingHaltedError - End
