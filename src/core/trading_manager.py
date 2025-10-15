@@ -1759,11 +1759,43 @@ class TradingManager:
             self._excel_loaded = True
             load_source = 'excel'
         else:
-            # Load from database only
+            # Load from database only - FIXED: Use available methods
             try:
-                self.planned_orders = self.order_loading_orchestrator.load_from_database()
+                # Check what database loading methods are available
+                if hasattr(self.order_loading_orchestrator, 'load_all_orders'):
+                    # Call without Excel path to load from database only
+                    self.planned_orders = self.order_loading_orchestrator.load_all_orders(None)
+                elif hasattr(self.order_loading_orchestrator, 'load_from_database'):
+                    # Use the specific database method if it exists
+                    self.planned_orders = self.order_loading_orchestrator.load_from_database()
+                else:
+                    # Fallback: load pending orders directly from database
+                    from src.core.models import PlannedOrderDB
+                    from sqlalchemy import select
+                    db_orders = self.db_session.scalars(
+                        select(PlannedOrderDB).filter_by(status='PENDING')
+                    ).all()
+                    # Convert DB models to PlannedOrder objects
+                    self.planned_orders = [
+                        self.persistence_service.convert_to_domain_model(db_order) 
+                        for db_order in db_orders
+                    ]
+                
                 self._db_loaded = True
                 load_source = 'database'
+                
+                # <Context-Aware Logging - Database Loading Success - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.ORDER_VALIDATION,
+                    "Database orders loaded successfully",
+                    context_provider={
+                        'orders_loaded_count': len(self.planned_orders),
+                        'method_used': 'load_all_orders' if hasattr(self.order_loading_orchestrator, 'load_all_orders') else 'direct_db_query'
+                    },
+                    decision_reason="Database loading completed"
+                )
+                # <Context-Aware Logging - Database Loading Success - End>
+                
             except Exception as e:
                 self.context_logger.log_event(
                     TradingEventType.SYSTEM_HEALTH,

@@ -1395,11 +1395,11 @@ class IbkrClient(EClient, EWrapper):
         print(f"🔍 DEBUG Account Value: key='{key}', value='{val}', currency='{currency}', account='{accountName}'")
         
         try:
-            # Store all values for debugging with currency context
+            # Store all raw values for debugging with currency context
             if key not in self.account_values:
                 self.account_values[key] = {}
             
-            # Store the value with currency context (for debugging)
+            # Store the raw string value with currency context (for debugging)
             self.account_values[key][currency] = val
 
             # ONLY process known numeric financial fields - ignore metadata
@@ -1408,13 +1408,10 @@ class IbkrClient(EClient, EWrapper):
                 if currency in ["CAD", "USD", "BASE"]:
                     currency_key = f"{key}_{currency}"
                     try:
+                        # Convert string to float - THIS IS THE CRITICAL FIX
                         numeric_value = float(val) if val and val.strip() else 0.0
                         
-                        # Create consistent dictionary structure
-                        if currency_key not in self.account_values:
-                            self.account_values[currency_key] = {}
-                            
-                        # Store as dictionary, not overwrite with float
+                        # Store as dictionary with numeric value
                         self.account_values[currency_key] = {
                             'value': numeric_value,
                             'currency': currency,
@@ -1436,6 +1433,8 @@ class IbkrClient(EClient, EWrapper):
                         )
                         # <Context-Aware Logging - Currency Value Stored - End>
                         
+                        print(f"✅ NUMERIC CONVERSION: {currency_key} = {numeric_value}")
+                        
                     except (ValueError, TypeError) as e:
                         # <Context-Aware Logging - Value Conversion Error - Begin>
                         self.context_logger.log_event(
@@ -1452,24 +1451,36 @@ class IbkrClient(EClient, EWrapper):
                         # <Context-Aware Logging - Value Conversion Error - End>
                         print(f"❌ ERROR converting valid numeric field: key='{key}', value='{val}', error={e}")
 
-                # Store generic numeric values for important fields
+                # Store important CAD values safely for easy retrieval
                 important_keys = ["NetLiquidation", "BuyingPower", "AvailableFunds", "TotalCashValue", "CashBalance"]
                 if key in important_keys and currency == "CAD":
                     try:
-                        self.account_values[key] = float(val) if val and val.strip() else 0.0
+                        # Create dedicated key for important CAD values
+                        important_cad_key = f"{key}_CAD_PRIMARY"
+                        numeric_value = float(val) if val and val.strip() else 0.0
+                        
+                        self.account_values[important_cad_key] = {
+                            'value': numeric_value,
+                            'currency': currency,
+                            'key': key,
+                            'timestamp': time.time(),
+                            'priority': 'high'
+                        }
                         
                         # <Context-Aware Logging - Important Value Stored - Begin>
                         self.context_logger.log_event(
                             TradingEventType.SYSTEM_HEALTH,
                             f"Stored important numeric account value",
                             context_provider={
-                                'key': key,
-                                'value': self.account_values[key],
+                                'key': important_cad_key,
+                                'value': numeric_value,
                                 'currency': currency,
                                 'category': 'primary_capital_field'
                             }
                         )
                         # <Context-Aware Logging - Important Value Stored - End>
+                        
+                        print(f"✅ IMPORTANT CAD VALUE: {important_cad_key} = {numeric_value}")
                         
                     except (ValueError, TypeError) as e:
                         # <Context-Aware Logging - Important Value Error - Begin>
@@ -1539,12 +1550,12 @@ class IbkrClient(EClient, EWrapper):
             print(f"❌ CRITICAL ERROR in updateAccountValue: {e}")
     # updateAccountValue - End
 
-    # get_account_value - Begin (FAIL-SAFE VERSION)
+    # get_account_value - Begin (UPDATED)
     def get_account_value(self) -> float:
-        """Request and return the Net Liquidation value of the account with enhanced financial data retrieval.
+        """Request and return the Net Liquidation value using the proven single strategy.
         Raises ValueError if no valid numeric account values are found - NO MOCK/DEFAULT DATA.
         """
-        print("🎯 DEBUG: FAIL-SAFE get_account_value() METHOD CALLED!")
+        print("🎯 DEBUG: SINGLE-STRATEGY get_account_value() METHOD CALLED!")
 
         if not self.connected:
             # <Context-Aware Logging - Account Value Connection Error - Begin>
@@ -1559,73 +1570,132 @@ class IbkrClient(EClient, EWrapper):
             # <Context-Aware Logging - Account Value Connection Error - End>
             raise ValueError("Not connected to IBKR - cannot retrieve account value")
 
-        # <Context-Aware Logging - Fail-Safe Account Value Request - Begin>
+        # <Context-Aware Logging - Single Strategy Account Value Request - Begin>
         self.context_logger.log_event(
             TradingEventType.SYSTEM_HEALTH,
-            "Starting fail-safe account value retrieval - NO MOCK DATA",
+            "Starting single-strategy account value retrieval - NO MOCK DATA",
             context_provider={
                 'account_number': self.account_number,
-                'timeout_seconds': 10.0,
-                'valid_numeric_fields_count': len(VALID_NUMERIC_ACCOUNT_FIELDS),
+                'timeout_seconds': 15.0,
+                'strategy': 'direct_account_updates_empty_string',
                 'safety_feature': 'no_mock_defaults'
             }
         )
-        # <Context-Aware Logging - Fail-Safe Account Value Request - End>
+        # <Context-Aware Logging - Single Strategy Account Value Request - End>
 
-        print("🔄 DEBUG: Starting fail-safe capital detection - WILL NOT USE MOCK DATA...")
+        print("🔄 DEBUG: Using proven single strategy - reqAccountUpdates(True, '')...")
         
-        # Strategy 1: Try Account Summary API first (most reliable for financial data)
-        capital = self._get_account_value_via_summary()
+        # SINGLE PROVEN STRATEGY: Direct Account Updates with empty string
+        capital = self._get_account_value_direct_updates()
         if capital is not None and capital > 0:
-            print(f"✅ DEBUG: Strategy 1 SUCCESS - Real capital: ${capital:,.2f}")
-            return capital
-                
-        # Strategy 2: Fall back to traditional Account Updates
-        capital = self._get_account_value_via_updates()  
-        if capital is not None and capital > 0:
-            print(f"✅ DEBUG: Strategy 2 SUCCESS - Real capital: ${capital:,.2f}")
+            print(f"✅ DEBUG: SINGLE STRATEGY SUCCESS - Real capital: ${capital:,.2f}")
             return capital
 
         # 🚨 CRITICAL SAFETY: No valid account values found - STOP TRADING
-        error_msg = "CRITICAL: No valid numeric account values found - TRADING HALTED for safety"
+        error_msg = "CRITICAL: No valid numeric account values found using proven strategy - TRADING HALTED for safety"
         print(f"❌ {error_msg}")
         
         # Log detailed diagnostic information
         received_keys = list(self.account_values.keys()) if self.account_values else []
         numeric_values_found = []
         
-        # Check what values we actually received
-        for key, value in (self.account_values.items() if self.account_values else []):
+        # Check what values we actually received - WITH FIXED ITERATION
+        account_values_copy = dict(self.account_values.items()) if self.account_values else {}
+        for key, value in account_values_copy.items():
             if isinstance(value, (int, float)) and value > 0:
                 numeric_values_found.append((key, value))
             elif isinstance(value, dict):
-                for subkey, subval in value.items():
-                    if isinstance(subval, (int, float)) and subval > 0:
-                        numeric_values_found.append((f"{key}.{subkey}", subval))
+                # Handle nested dictionary structure properly
+                if 'value' in value and isinstance(value['value'], (int, float)) and value['value'] > 0:
+                    numeric_values_found.append((key, value['value']))
+                else:
+                    # Also check currency sub-values
+                    for subkey, subval in value.items():
+                        if isinstance(subval, (int, float)) and subval > 0:
+                            numeric_values_found.append((f"{key}.{subkey}", subval))
 
         # <Context-Aware Logging - Trading Halted Safety - Begin>
         self.context_logger.log_event(
             TradingEventType.SYSTEM_HEALTH,
-            "TRADING HALTED - No valid account capital available",
+            "TRADING HALTED - No valid account capital available using proven strategy",
             context_provider={
                 'account_values_total_received': len(self.account_values) if self.account_values else 0,
                 'received_account_keys': received_keys,
                 'numeric_values_found': numeric_values_found,
                 'valid_numeric_fields_checked': list(VALID_NUMERIC_ACCOUNT_FIELDS),
-                'strategy_1_success': False,
-                'strategy_2_success': False,
+                'strategy_used': 'direct_account_updates_empty_string',
+                'strategy_success': False,
                 'safety_action': 'trading_halted'
             },
-            decision_reason="Fail-safe triggered: No real account data for safe position sizing"
+            decision_reason="Single strategy failed: No real account data for safe position sizing"
         )
         # <Context-Aware Logging - Trading Halted Safety - End>
         
         raise ValueError(error_msg)
     # get_account_value - End
 
+    # _get_account_value_direct_updates - Begin (ROBUST VERSION)
+    def _get_account_value_direct_updates(self) -> Optional[float]:
+        """
+        ROBUST SINGLE STRATEGY: Wait specifically for numeric account values to arrive.
+        """
+        try:
+            self.account_values.clear()
+            self.account_value_received.clear()
+            
+            print("📞 [ROBUST STRATEGY] Calling reqAccountUpdates(True, '')...")
+            self.reqAccountUpdates(True, "")
+            
+            # Wait for ANY data first
+            print("⏳ [ROBUST STRATEGY] Waiting for initial account data...")
+            if not self.account_value_received.wait(10.0):
+                print("❌ [ROBUST STRATEGY] Timeout waiting for initial account data")
+                self.reqAccountUpdates(False, "")
+                return None
+
+            # Now wait specifically for numeric values
+            print("⏳ [ROBUST STRATEGY] Waiting for numeric account values...")
+            start_time = time.time()
+            while time.time() - start_time < 10.0:  # Wait up to 10 more seconds
+                # Check if we have any numeric values
+                has_numeric = any(
+                    any(field in key for field in VALID_NUMERIC_ACCOUNT_FIELDS)
+                    for key in self.account_values.keys()
+                )
+                
+                if has_numeric:
+                    print("✅ [ROBUST STRATEGY] Numeric values detected!")
+                    break
+                    
+                time.sleep(0.5)  # Check every 500ms
+            
+            # Cleanup
+            self.reqAccountUpdates(False, "")
+            
+            # Final extraction attempt
+            capital = self._extract_capital_from_values()
+            
+            if capital is not None and capital > 0:
+                print(f"✅ [ROBUST STRATEGY] SUCCESS: Capital = ${capital:,.2f}")
+                return capital
+            else:
+                print(f"❌ [ROBUST STRATEGY] FAILED: No capital found after {time.time() - start_time:.1f}s")
+                print(f"❌ [ROBUST STRATEGY] Available keys: {list(self.account_values.keys())}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ [ROBUST STRATEGY] Exception: {e}")
+            try:
+                self.reqAccountUpdates(False, "")
+            except:
+                pass
+            return None
+    # _get_account_value_direct_updates - End    # _get_account_value_direct_updates - End
+
+    '''
     # _get_account_value_via_summary - Begin (UPDATED)
-    def _get_account_value_via_summary(self) -> float:
-        """Use Account Summary API to get financial data (primary strategy). Returns None if no valid values found."""
+    def _get_account_value_via_summary_fixed(self) -> float:
+        """Use Account Summary API to get financial data (primary strategy) - FIXED VERSION"""
         try:
             self.account_values.clear()
             self.account_value_received.clear()
@@ -1648,16 +1718,19 @@ class IbkrClient(EClient, EWrapper):
             # Cancel the summary request
             self.cancelAccountSummary(9001)
             
+            # FIX: Create copy for safe iteration
+            account_values_copy = dict(self.account_values.items())
+            
             # Analyze received data - only consider valid numeric fields
             valid_values_found = {}
             for key in VALID_NUMERIC_ACCOUNT_FIELDS:
-                if key in self.account_values:
-                    if isinstance(self.account_values[key], dict):
-                        for currency, val in self.account_values[key].items():
+                if key in account_values_copy:
+                    if isinstance(account_values_copy[key], dict):
+                        for currency, val in account_values_copy[key].items():
                             composite_key = f"{key}_{currency}"
                             valid_values_found[composite_key] = str(val)
                     else:
-                        valid_values_found[key] = str(self.account_values[key])
+                        valid_values_found[key] = str(account_values_copy[key])
             
             print(f"📊 DEBUG [Strategy 1]: Found {len(valid_values_found)} valid numeric account values")
             
@@ -1666,7 +1739,7 @@ class IbkrClient(EClient, EWrapper):
             for k, v in valid_values_found.items():
                 print(f"   {k}: {v}")
 
-            # Try different capital fields in priority order
+            # Try different capital fields in priority order - WITH FIXED ACCESS
             capital = None
             capital_source = "unknown"
             
@@ -1677,8 +1750,8 @@ class IbkrClient(EClient, EWrapper):
             ]
             
             for field in cad_priority_fields:
-                if field in self.account_values and isinstance(self.account_values[field], (int, float)):
-                    capital = self.account_values[field]
+                capital = self._extract_numeric_value_safe(field)
+                if capital is not None:
                     capital_source = field
                     print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
                     break
@@ -1690,8 +1763,8 @@ class IbkrClient(EClient, EWrapper):
                     "TotalCashValue_BASE", "CashBalance_BASE", "EquityWithLoanValue_BASE"
                 ]
                 for field in base_priority_fields:
-                    if field in self.account_values and isinstance(self.account_values[field], (int, float)):
-                        capital = self.account_values[field]
+                    capital = self._extract_numeric_value_safe(field)
+                    if capital is not None:
                         capital_source = field
                         print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
                         break
@@ -1700,8 +1773,8 @@ class IbkrClient(EClient, EWrapper):
             if capital is None:
                 generic_priority_fields = list(VALID_NUMERIC_ACCOUNT_FIELDS)
                 for field in generic_priority_fields:
-                    if field in self.account_values and isinstance(self.account_values[field], (int, float)):
-                        capital = self.account_values[field]
+                    capital = self._extract_numeric_value_safe(field)
+                    if capital is not None:
                         capital_source = field
                         print(f"✅ DEBUG [Strategy 1]: Using {field}: ${capital:,.2f}")
                         break
@@ -1815,6 +1888,34 @@ class IbkrClient(EClient, EWrapper):
                 pass
             return None
     # _get_account_value_via_updates - End
+    '''
+
+    def _extract_numeric_value_safe(self, key: str) -> Optional[float]:
+        """Safe method to extract numeric value from account_values (handles nested structures)"""
+        if key not in self.account_values:
+            return None
+            
+        value = self.account_values[key]
+        
+        # Handle nested dictionary structure (your current format)
+        if isinstance(value, dict) and 'value' in value:
+            numeric_val = value['value']
+            if isinstance(numeric_val, (int, float)) and numeric_val > 0:
+                return numeric_val
+        
+        # Handle direct numeric value
+        elif isinstance(value, (int, float)) and value > 0:
+            return value
+            
+        # Handle string values that can be converted
+        elif isinstance(value, str):
+            try:
+                numeric_val = float(value)
+                return numeric_val if numeric_val > 0 else None
+            except (ValueError, TypeError):
+                return None
+                
+        return None
 
     # set_historical_eod_provider - Begin (NEW)
     def set_historical_eod_provider(self, eod_provider) -> None:
@@ -1956,10 +2057,76 @@ class IbkrClient(EClient, EWrapper):
         # <Context-Aware Logging - Scanner End No Provider - End>
     # scannerDataEnd - End
 
+    # _extract_capital_from_values - Begin (UPDATED)
+    def _extract_capital_from_values(self) -> Optional[float]:
+        """Extract capital from account_values with enhanced nested structure handling"""
+        print("🔍 DEBUG: Starting capital extraction from account values...")
+        
+        # Show what's actually in account_values for debugging
+        print(f"📊 DEBUG: Total keys in account_values: {len(self.account_values)}")
+        for key, value in list(self.account_values.items())[:10]:  # Show first 10
+            print(f"   🔑 {key}: {type(value)} = {value}")
+        
+        capital_priority = [
+            "NetLiquidation_CAD_PRIMARY", "NetLiquidation_CAD", 
+            "AvailableFunds_CAD_PRIMARY", "AvailableFunds_CAD",
+            "BuyingPower_CAD_PRIMARY", "BuyingPower_CAD",
+            "TotalCashValue_CAD_PRIMARY", "TotalCashValue_CAD",
+            "NetLiquidation", "AvailableFunds", "BuyingPower", "TotalCashValue"
+        ]
+        
+        for field in capital_priority:
+            if field in self.account_values:
+                value = self.account_values[field]
+                print(f"🔍 DEBUG: Checking field '{field}': {value}")
+                
+                # Handle nested dictionary structure
+                if isinstance(value, dict) and 'value' in value:
+                    capital = value['value']
+                    if isinstance(capital, (int, float)) and capital > 0:
+                        print(f"✅ DEBUG: Found capital in '{field}': ${capital:,.2f}")
+                        return capital
+                # Handle direct numeric value
+                elif isinstance(value, (int, float)) and value > 0:
+                    print(f"✅ DEBUG: Found direct capital in '{field}': ${value:,.2f}")
+                    return value
+                # Handle string values that can be converted
+                elif isinstance(value, str):
+                    try:
+                        capital = float(value)
+                        if capital > 0:
+                            print(f"✅ DEBUG: Converted string capital in '{field}': ${capital:,.2f}")
+                            return capital
+                    except (ValueError, TypeError):
+                        continue
+                        
+        print("❌ DEBUG: No capital found in any priority fields")
+        return None
+    # _extract_capital_from_values - End
 
-
-
-
+    def get_simple_account_value(self, key: str) -> Optional[float]:
+        """
+        Safe method to extract numeric account values from complex nested structure
+        Returns: Numeric value or None if not found/invalid
+        """
+        if key not in self.account_values:
+            return None
+            
+        value = self.account_values[key]
+        
+        # Handle nested dictionary structure
+        if isinstance(value, dict) and 'value' in value:
+            numeric_val = value['value']
+            if isinstance(numeric_val, (int, float)) and numeric_val > 0:
+                return numeric_val
+        
+        # Handle direct numeric value  
+        elif isinstance(value, (int, float)) and value > 0:
+            return value
+            
+        return None
+    
+    # Debug/tests for account value retrival
     # Add to ibkr_client.py - Enhanced Debug Methods
 
     def debug_account_retrieval(self):
