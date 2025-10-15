@@ -63,6 +63,11 @@ def main():
             action="store_true",
             help="Run market data diagnostic before starting trading",
         )
+        parser.add_argument(
+            "--import-excel",
+            action="store_true",
+            help="Load planned orders from Excel template (default: load from database only)",
+        )
 
         args = parser.parse_args()
 
@@ -97,34 +102,53 @@ def main():
         print("📋 Valid Position Strategies:", [ps.value for ps in PositionStrategy])
 
         # Load planned orders
-        try:
-            planned_orders = PlannedOrderManager.from_excel("plan.xlsx")
-            print(f"✅ Loaded {len(planned_orders)} planned orders")
-            # <Order Loading Logging - Begin>
+        # Order Loading Logic - Begin (UPDATED)
+        # Load planned orders conditionally based on --import-excel flag
+        planned_orders = []
+        
+        if args.import_excel:
+            try:
+                planned_orders = PlannedOrderManager.from_excel("plan.xlsx")
+                print(f"✅ Loaded {len(planned_orders)} planned orders from Excel")
+                # <Order Loading Logging - Begin>
+                context_logger.log_event(
+                    TradingEventType.ORDER_VALIDATION,
+                    "Planned orders loaded from Excel via CLI flag",
+                    context_provider={
+                        "order_count": lambda: len(planned_orders),
+                        "file_path": "plan.xlsx",
+                        "operation": "from_excel",
+                        "source": "excel_import"
+                    }
+                )
+                # <Order Loading Logging - End>
+            except Exception as e:
+                print(f"❌ Failed to load planned orders from Excel: {e}")
+                # <Order Loading Error Logging - Begin>
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Failed to load planned orders from Excel via CLI flag",
+                    context_provider={
+                        "error": lambda: str(e),
+                        "file_path": "plan.xlsx",
+                        "source": "excel_import"
+                    },
+                    decision_reason="File may be missing or corrupted"
+                )
+                # <Order Loading Error Logging - End>
+        else:
+            print("ℹ️  Skipping Excel import (default: loading from database)")
+            # <Database Loading Logging - Begin>
             context_logger.log_event(
                 TradingEventType.ORDER_VALIDATION,
-                "Planned orders loaded from Excel",
+                "Skipping Excel import - will load from database",
                 context_provider={
-                    "order_count": lambda: len(planned_orders),
-                    "file_path": "plan.xlsx",
-                    "operation": "from_excel"
+                    "source": "database",
+                    "operation": "skip_excel_import"
                 }
             )
-            # <Order Loading Logging - End>
-        except Exception as e:
-            print(f"❌ Failed to load planned orders: {e}")
-            # <Order Loading Error Logging - Begin>
-            context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Failed to load planned orders from Excel",
-                context_provider={
-                    "error": lambda: str(e),
-                    "file_path": "plan.xlsx"
-                },
-                decision_reason="File may be missing or corrupted"
-            )
-            # <Order Loading Error Logging - End>
-            # Don't return yet - scanner might still work without planned orders
+            # <Database Loading Logging - End>
+        # Order Loading Logic - End
 
         # <Event Bus Creation - Begin>
         # Create the central event bus for system communication
@@ -218,14 +242,14 @@ def main():
         # Create TradingManager with EventBus dependency
         trading_mgr = TradingManager(
             data_feed=data_feed, 
-            excel_path="plan.xlsx", 
+            excel_path="plan.xlsx" if args.import_excel else None,  # Pass Excel path only when importing
             ibkr_client=ibkr_client,
             enable_advanced_features=False,  # ← CRITICAL: Set to False
             event_bus=event_bus  # Pass EventBus to TradingManager
         )
         print("✅ TradingManager connected to EventBus for price notifications")
         # <Event-Driven Trading Manager - End>
-        
+
         # <Trading Manager Logging - Begin>
         context_logger.log_event(
             TradingEventType.SYSTEM_HEALTH,
