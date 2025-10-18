@@ -21,10 +21,11 @@ from src.core.context_aware_logger import get_context_logger, TradingEventType
 context_logger = get_context_logger()
 
 
+# MonitoringService Class - Begin (UPDATED - Add execution symbols coordination)
 class MonitoringService:
     """Service for continuous market monitoring and order execution checks."""
-    
     def __init__(self, data_feed: AbstractDataFeed, interval_seconds: int = 5):
+
         """Initialize the monitoring service with data feed and monitoring interval."""
         self.data_feed = data_feed
         self.interval_seconds = interval_seconds
@@ -42,6 +43,10 @@ class MonitoringService:
         self.last_market_status = None
         # <Market Hours Service Integration - End>
         
+        # <Execution Symbols Coordination - Begin>
+        self._execution_symbols: Set[str] = set()  # Track symbols that require execution flow
+        # <Execution Symbols Coordination - End>
+        
         context_logger.log_event(
             TradingEventType.SYSTEM_HEALTH,
             "MonitoringService initialized",
@@ -51,14 +56,21 @@ class MonitoringService:
                 "initial_interval_seconds": interval_seconds,
                 "max_errors_allowed": self.max_errors,
                 # <Market Hours Service Logging - Begin>
-                "market_hours_service_initialized": True
+                "market_hours_service_initialized": True,
                 # <Market Hours Service Logging - End>
+                # <Execution Symbols Coordination Logging - Begin>
+                "execution_symbols_tracking": True
+                # <Execution Symbols Coordination Logging - End>
             },
             decision_reason="MONITORING_SERVICE_INITIALIZED"
-        )
-        
+        )        
+
+    # start_monitoring - Begin (UPDATED - Enhanced execution symbols coordination)
     def start_monitoring(self, check_callback: Callable, label_callback: Callable) -> bool:
-        """Start the monitoring loop with provided order check and labeling callbacks."""
+        """Start the monitoring loop with provided order check and labeling callbacks.
+        
+        Enhanced to ensure execution symbols are properly synchronized before monitoring starts.
+        """
         if not self.data_feed.is_connected():
             context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
@@ -74,6 +86,21 @@ class MonitoringService:
         self._check_callback = check_callback
         self._label_callback = label_callback
         self.monitoring = True
+        
+        # <Execution Symbols Pre-Synchronization - Begin>
+        # Ensure execution symbols are synchronized before monitoring starts
+        if self._execution_symbols:
+            self._propagate_execution_symbols_to_data_feed()
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Execution symbols pre-synchronized before monitoring start",
+                context_provider={
+                    'execution_symbols_count': len(self._execution_symbols),
+                    'pre_synchronization_completed': True
+                },
+                decision_reason="EXECUTION_SYMBOLS_PRE_SYNCHRONIZED"
+            )
+        # <Execution Symbols Pre-Synchronization - End>
         
         self.monitor_thread = threading.Thread(
             target=self._monitoring_loop,
@@ -92,13 +119,18 @@ class MonitoringService:
                 "thread_name": self.monitor_thread.name,
                 "thread_daemon": self.monitor_thread.daemon,
                 # <Market Hours Aware Start - Begin>
-                "market_aware_monitoring": True
+                "market_aware_monitoring": True,
                 # <Market Hours Aware Start - End>
+                # <Execution Symbols Coordination - Begin>
+                "execution_symbols_synchronized": len(self._execution_symbols) > 0,
+                "execution_symbols_count": len(self._execution_symbols)
+                # <Execution Symbols Coordination - End>
             },
             decision_reason="MONITORING_SERVICE_STARTED"
         )
         return True
-        
+    # start_monitoring - End
+
     def stop_monitoring(self) -> None:
         """Stop the monitoring loop and clean up resources."""
         self.monitoring = False
@@ -302,8 +334,12 @@ class MonitoringService:
                     decision_reason="PERIODIC_LABELING_FAILED"
                 )
                 
+    # subscribe_to_symbols - Begin (UPDATED - Enhanced execution symbols coordination)
     def subscribe_to_symbols(self, orders: List[PlannedOrder]) -> Dict[str, bool]:
-        """Subscribe to market data for all symbols in planned orders."""
+        """Subscribe to market data for all symbols in planned orders.
+        
+        Enhanced to automatically add symbols to execution tracking and coordinate with data feed.
+        """
         if not orders:
             context_logger.log_event(
                 TradingEventType.MARKET_CONDITION,
@@ -319,16 +355,31 @@ class MonitoringService:
         subscription_results = {}
         successful_subscriptions = 0
         
+        # <Execution Symbols Extraction - Begin>
+        # Extract symbols from orders for execution tracking
+        order_symbols = {order.symbol for order in orders}
+        previous_execution_count = len(self._execution_symbols)
+        self._execution_symbols.update(order_symbols)
+        
         context_logger.log_event(
             TradingEventType.MARKET_CONDITION,
-            "Starting symbol subscriptions",
+            "Starting symbol subscriptions with execution tracking",
             context_provider={
                 "total_orders": len(orders),
                 "existing_subscriptions": len(self.subscribed_symbols),
-                "symbols_to_subscribe": [order.symbol for order in orders]
+                "symbols_to_subscribe": [order.symbol for order in orders],
+                "execution_symbols_added": len(order_symbols),
+                "total_execution_symbols": len(self._execution_symbols),
+                "execution_symbols_growth": len(self._execution_symbols) - previous_execution_count
             },
-            decision_reason="SYMBOL_SUBSCRIPTION_BATCH_STARTED"
+            decision_reason="SYMBOL_SUBSCRIPTION_BATCH_STARTED_WITH_EXECUTION_TRACKING"
         )
+        # <Execution Symbols Extraction - End>
+        
+        # <Immediate Execution Symbols Propagation - Begin>
+        # Propagate execution symbols immediately after extraction
+        self._propagate_execution_symbols_to_data_feed()
+        # <Immediate Execution Symbols Propagation - End>
         
         for order in orders:
             symbol = order.symbol
@@ -358,7 +409,8 @@ class MonitoringService:
                                 "exchange": contract.exchange,
                                 "currency": contract.currency
                             },
-                            "total_successful_subscriptions": successful_subscriptions
+                            "total_successful_subscriptions": successful_subscriptions,
+                            "execution_symbol": symbol in self._execution_symbols
                         },
                         decision_reason="SYMBOL_SUBSCRIPTION_SUCCESS"
                     )
@@ -371,7 +423,8 @@ class MonitoringService:
                         context_provider={
                             "order_symbol": symbol,
                             "failure_reason": "data_feed_subscribe_returned_false",
-                            "data_feed_connected": self.data_feed.is_connected()
+                            "data_feed_connected": self.data_feed.is_connected(),
+                            "execution_symbol": symbol in self._execution_symbols
                         },
                         decision_reason="SYMBOL_SUBSCRIPTION_FAILED"
                     )
@@ -386,7 +439,8 @@ class MonitoringService:
                         "order_symbol": symbol,
                         "error_type": type(e).__name__,
                         "error_details": str(e),
-                        "data_feed_connected": self.data_feed.is_connected()
+                        "data_feed_connected": self.data_feed.is_connected(),
+                        "execution_symbol": symbol in self._execution_symbols
                     },
                     decision_reason="SYMBOL_SUBSCRIPTION_ERROR"
                 )
@@ -400,6 +454,7 @@ class MonitoringService:
                 "failed_subscriptions": len(orders) - successful_subscriptions,
                 "success_rate_percent": (successful_subscriptions / len(orders)) * 100 if orders else 0,
                 "new_total_subscriptions": len(self.subscribed_symbols),
+                "execution_symbols_count": len(self._execution_symbols),
                 "subscription_results_summary": {
                     symbol: "success" if success else "failed"
                     for symbol, success in subscription_results.items()
@@ -409,7 +464,8 @@ class MonitoringService:
         )
         
         return subscription_results
-        
+    # subscribe_to_symbols - End
+
     def unsubscribe_from_symbol(self, symbol: str) -> bool:
         """Unsubscribe from market data for a specific symbol."""
         if symbol not in self.subscribed_symbols:
@@ -502,8 +558,12 @@ class MonitoringService:
             decision_reason="BULK_UNSUBSCRIBE_COMPLETED"
         )
         
+    # get_subscription_stats - Begin (UPDATED - Add execution symbols info)
     def get_subscription_stats(self) -> Dict[str, any]:
-        """Get statistics about current subscriptions and market data updates."""
+        """Get statistics about current subscriptions and market data updates.
+        
+        Enhanced to include execution symbols tracking information.
+        """
         total_updates = sum(self.market_data_updates.values())
         avg_updates = total_updates / len(self.market_data_updates) if self.market_data_updates else 0
         most_active_symbol = self._get_most_active_symbol()
@@ -515,7 +575,13 @@ class MonitoringService:
             'average_updates_per_symbol': avg_updates,
             'most_active_symbol': most_active_symbol,
             'monitoring_active': self.monitoring,
-            'error_count': self.error_count
+            'error_count': self.error_count,
+            # <Execution Symbols Stats - Begin>
+            'execution_symbols_count': len(self._execution_symbols),
+            'execution_symbols': list(self._execution_symbols),
+            'execution_symbols_subscribed': len(self._execution_symbols & self.subscribed_symbols),
+            'execution_coverage_percent': (len(self._execution_symbols & self.subscribed_symbols) / len(self._execution_symbols)) * 100 if self._execution_symbols else 100
+            # <Execution Symbols Stats - End>
         }
         
         context_logger.log_event(
@@ -526,7 +592,8 @@ class MonitoringService:
         )
         
         return stats
-        
+    # get_subscription_stats - End
+
     def _get_most_active_symbol(self) -> Optional[str]:
         """Get the symbol with the most market data updates."""
         if not self.market_data_updates:
@@ -686,3 +753,92 @@ class MonitoringService:
             )
             
         return is_healthy
+    
+    # set_execution_symbols - Begin (NEW - Execution symbols coordination)
+    def set_execution_symbols(self, execution_symbols: Set[str]) -> None:
+        """
+        Set symbols that require execution flow and coordinate with data feed.
+        
+        Args:
+            execution_symbols: Set of symbols that should bypass price filtering
+                              and always trigger execution checks
+        """
+        previous_count = len(self._execution_symbols)
+        self._execution_symbols = execution_symbols.copy() if execution_symbols else set()
+        
+        # <Context-Aware Logging - Execution Symbols Updated - Begin>
+        context_logger.log_event(
+            TradingEventType.SYSTEM_HEALTH,
+            "Execution symbols tracking updated in MonitoringService",
+            context_provider={
+                'previous_execution_symbols_count': previous_count,
+                'new_execution_symbols_count': len(self._execution_symbols),
+                'execution_symbols': list(self._execution_symbols)[:10],  # Log first 10
+                'monitored_symbols_count': len(self.subscribed_symbols),
+                'data_feed_available': self.data_feed is not None
+            },
+            decision_reason=f"Execution symbols tracking: {len(self._execution_symbols)} symbols"
+        )
+        # <Context-Aware Logging - Execution Symbols Updated - End>
+        
+        # Coordinate with data feed components
+        self._propagate_execution_symbols_to_data_feed()
+    # set_execution_symbols - End
+
+    # _propagate_execution_symbols_to_data_feed - Begin (NEW - Data feed coordination)
+    def _propagate_execution_symbols_to_data_feed(self) -> None:
+        """Propagate execution symbols to data feed components for filtering bypass."""
+        if not self.data_feed:
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Cannot propagate execution symbols - no data feed",
+                context_provider={
+                    'execution_symbols_count': len(self._execution_symbols),
+                    'data_feed_available': False
+                },
+                decision_reason="EXECUTION_SYMBOLS_PROPAGATION_FAILED_NO_DATA_FEED"
+            )
+            return
+            
+        try:
+            # Propagate to IBKRDataFeed if available
+            if hasattr(self.data_feed, 'set_execution_symbols'):
+                self.data_feed.set_execution_symbols(self._execution_symbols)
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Execution symbols propagated to IBKRDataFeed",
+                    context_provider={
+                        'execution_symbols_count': len(self._execution_symbols),
+                        'data_feed_method_available': True,
+                        'propagation_success': True
+                    },
+                    decision_reason="EXECUTION_SYMBOLS_PROPAGATED_TO_DATA_FEED"
+                )
+            
+            # Propagate to MarketDataManager if available
+            if hasattr(self.data_feed, 'market_data') and hasattr(self.data_feed.market_data, 'set_execution_symbols'):
+                self.data_feed.market_data.set_execution_symbols(self._execution_symbols)
+                context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Execution symbols propagated to MarketDataManager",
+                    context_provider={
+                        'execution_symbols_count': len(self._execution_symbols),
+                        'market_data_manager_method_available': True,
+                        'propagation_success': True
+                    },
+                    decision_reason="EXECUTION_SYMBOLS_PROPAGATED_TO_MARKET_DATA_MANAGER"
+                )
+                
+        except Exception as e:
+            context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Execution symbols propagation failed",
+                context_provider={
+                    'execution_symbols_count': len(self._execution_symbols),
+                    'error_type': type(e).__name__,
+                    'error_message': str(e),
+                    'propagation_success': False
+                },
+                decision_reason=f"Execution symbols propagation error: {e}"
+            )
+    # _propagate_execution_symbols_to_data_feed - End

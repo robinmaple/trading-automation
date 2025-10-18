@@ -122,9 +122,7 @@ class TradingEventType(Enum):
     SYSTEM_HEALTH = "system_health"
     DATABASE_STATE = "database_state"
 
-# ADD THIS NEW SECTION
-# ====================
-# Field compression mapping
+# Field compression mapping - Begin (UPDATED)
 FIELD_COMPRESSION_MAP = {
     'timestamp': 'ts',
     'event_type': 'et', 
@@ -134,10 +132,11 @@ FIELD_COMPRESSION_MAP = {
     'context': 'c',
     'event_id': 'id',
     'session_id': 'sid',
-    'call_stack_depth': 'dep'
+    'call_stack_depth': 'dep',
+    'importance': 'i'
 }
 
-# Event type numeric coding (0-255)
+# Event type numeric coding (0-255) - Begin (UPDATED)
 EVENT_TYPE_CODES = {
     TradingEventType.ORDER_VALIDATION: 1,
     TradingEventType.EXECUTION_DECISION: 2, 
@@ -149,15 +148,26 @@ EVENT_TYPE_CODES = {
     TradingEventType.DATABASE_STATE: 8,
 }
 
-# Context field compression mapping
+# Context field compression mapping - Begin (UPDATED)
 CONTEXT_FIELD_MAP = {
     'price': 'p', 'quantity': 'q', 'order_id': 'oid', 'symbol': 's',
     'action': 'a', 'filled': 'f', 'remaining': 'rem', 'status': 'st',
     'error': 'e', 'result': 'res', 'count': 'cnt', 'risk': 'r',
     'profit': 'pnl', 'loss': 'l', 'amount': 'amt', 'entry': 'ent',
-    'stop': 'stp', 'target': 'tgt', 'capital': 'cap', 'margin': 'mgn'
+    'stop': 'stp', 'target': 'tgt', 'capital': 'cap', 'margin': 'mgn',
+    'probability': 'prob', 'volatility': 'vol', 'threshold': 'thr',
+    'difference': 'diff', 'percent': 'pct', 'available': 'avail',
+    'connected': 'conn', 'health': 'hlth', 'success': 'succ',
+    'failure': 'fail', 'calculation': 'calc', 'validation': 'val'
 }
-# ====================
+
+# Insight patterns for better content selection - Begin (NEW)
+INSIGHT_PATTERNS = {
+    'critical_actions': ['execut', 'fill', 'reject', 'error', 'fail', 'risk_limit'],
+    'important_changes': ['status_change', 'transition', 'position', 'capital'],
+    'routine_checks': ['health', 'validation', 'calculation', 'checking', 'starting']
+}
+# Insight patterns - End
 
 @dataclass
 class TradingEvent:
@@ -172,9 +182,10 @@ class TradingEvent:
     decision_reason: Optional[str]
     call_stack_depth: int
 
+# SafeContext class - Begin (UPDATED)
 class SafeContext:
     """
-    Lazy evaluation wrapper with moderate compression for key trading fields.
+    Lazy evaluation wrapper with insight-focused compression.
     """
     
     def __init__(self, **lazy_fields):
@@ -190,7 +201,7 @@ class SafeContext:
         return self._safe_dict
     
     def _evaluate_lazy_fields(self):
-        """Evaluate lazy fields and apply moderate compression."""
+        """Evaluate lazy fields and apply insight-focused compression."""
         for key, provider in self._lazy_fields.items():
             try:
                 if callable(provider):
@@ -199,45 +210,86 @@ class SafeContext:
                     value = provider
                 self._safe_dict[key] = self._compress_value(key, value)
             except Exception as e:
-                self._safe_dict[key] = f"CONTEXT_ERROR: {str(e)}"
+                self._safe_dict[key] = f"CTX_ERR:{str(e)[:20]}"
     
     def _compress_value(self, key: str, value: Any) -> Any:
-        """Apply moderate compression rules based on field type."""
+        """Apply insight-focused compression rules."""
         if value is None:
             return None
             
-        # Compress lists - keep only first few items for large lists
-        if isinstance(value, (list, tuple)) and len(value) > 5:
-            compressed = list(value)[:3]
-            return compressed + [f"...+{len(value) - 3} more"]
+        # For lists/tuples - keep only insights, not full data
+        if isinstance(value, (list, tuple)):
+            return self._compress_list(key, value)
         
-        # Compress very large dictionaries but keep most trading fields
-        if isinstance(value, dict) and len(value) > 10:
-            compressed = {}
-            important_keys = [k for k in value.keys() if self._is_important_key(k)]
-            # Keep all important keys, limit others
-            for k in important_keys:
-                compressed[k] = self._make_safe(value[k])
-            other_keys = [k for k in value.keys() if k not in important_keys][:3]
-            for k in other_keys:
-                compressed[k] = self._make_safe(value[k])
-            if len(value) > len(compressed):
-                compressed['_other'] = f"{len(value) - len(compressed)} more fields"
-            return compressed
+        # For dictionaries - focus on insights, prune routine data
+        if isinstance(value, dict):
+            return self._compress_dict(key, value)
             
-        # Default safe conversion
+        # Default safe conversion with insight focus
         return self._make_safe(value)
     
-    def _is_important_key(self, key: str) -> bool:
-        """Identify which context keys are important trading fields to keep."""
-        important_patterns = [
-            'error', 'exception', 'status', 'result', 'count', 
-            'price', 'quantity', 'risk', 'profit', 'loss', 'amount',
-            'order_id', 'symbol', 'action', 'filled', 'remaining',
-            'entry', 'stop', 'target', 'capital', 'margin', 'pnl'
-        ]
-        key_str = str(key).lower()
-        return any(pattern in key_str for pattern in important_patterns)
+    def _compress_list(self, key: str, value: list) -> list:
+        """Compress lists to show only meaningful insights."""
+        if len(value) <= 3:
+            return [self._make_safe(item) for item in value]
+        
+        # For large lists, show only summary if it's routine data
+        if any(pattern in key.lower() for pattern in ['history', 'log', 'trace']):
+            return [f"items:{len(value)}"]
+        
+        # For important lists, show first 2 + count
+        return [self._make_safe(value[0]), self._make_safe(value[1]), f"+{len(value)-2}"]
+    
+    def _compress_dict(self, key: str, value: dict) -> dict:
+        """Compress dictionaries to focus on insights."""
+        if len(value) <= 5:
+            return {k: self._make_safe(v) for k, v in value.items()}
+        
+        # Extract only insight-rich fields
+        compressed = {}
+        insight_fields = self._get_insight_fields(value)
+        
+        for field in insight_fields:
+            if field in value:
+                compressed[field] = self._make_safe(value[field])
+        
+        # Add count if we filtered significantly
+        if len(compressed) < len(value):
+            compressed['_filtered'] = f"{len(compressed)}/{len(value)}"
+            
+        return compressed
+    
+    def _get_insight_fields(self, context: Dict[str, Any]) -> list:
+        """Identify fields that provide meaningful insights."""
+        insight_fields = []
+        
+        for field in context.keys():
+            field_lower = str(field).lower()
+            
+            # Always include error/exception fields
+            if any(err in field_lower for err in ['error', 'exception', 'fail']):
+                insight_fields.append(field)
+                continue
+                
+            # Include critical trading fields
+            if any(trade in field_lower for trade in 
+                  ['price', 'quantity', 'risk', 'profit', 'loss', 'capital', 'margin']):
+                insight_fields.append(field)
+                continue
+                
+            # Include decision-making fields
+            if any(decision in field_lower for decision in
+                  ['result', 'status', 'action', 'decision', 'threshold']):
+                insight_fields.append(field)
+                continue
+                
+            # Include state change indicators
+            if any(state in field_lower for state in
+                  ['change', 'transition', 'update', 'new', 'old']):
+                insight_fields.append(field)
+        
+        # Limit to top 8 most important fields
+        return insight_fields[:8]
     
     def _make_safe(self, value: Any) -> Any:
         """Convert value to safe, primitive types only."""
@@ -255,13 +307,14 @@ class SafeContext:
             return value.name
         else:
             str_repr = str(value)
-            return str_repr[:100] + "..." if len(str_repr) > 100 else str_repr
+            # Shorter representation for non-critical values
+            return str_repr[:50] + "..." if len(str_repr) > 50 else str_repr
+# SafeContext class - End
 
 class ContextAwareLogger:
     """
     Safe context-aware logger with multiple layers of dead-loop protection.
     """
-    
     def __init__(self, max_events_per_second: int = 50, max_recursion_depth: int = 3):
         """Initialize with safety limits."""
         self.session_id = str(uuid.uuid4())[:8]
@@ -349,55 +402,67 @@ class ContextAwareLogger:
         finally:
             self._cleanup_thread(thread_id)
     
+    # ContextAwareLogger._determine_importance - Begin (UPDATED)
     def _determine_importance(self, 
                             event_type: TradingEventType, 
                             message: str, 
                             context_provider: Optional[Dict[str, Any]],
                             decision_reason: Optional[str]) -> LogImportance:
-        """Automatically determine importance based on event type and content."""
+        """Intelligently determine importance with insight-based filtering."""
         message_lower = message.lower()
         
-        # High importance: errors, failures, critical operations
-        if any(word in message_lower for word in ['error', 'failed', 'exception', 'critical', 'rejected']):
+        # HIGH importance: Critical actions and errors
+        if any(pattern in message_lower for pattern in 
+               INSIGHT_PATTERNS['critical_actions']):
             return LogImportance.HIGH
         
-        # Event type based importance
+        # MEDIUM importance: Important state changes
+        if any(pattern in message_lower for pattern in 
+               INSIGHT_PATTERNS['important_changes']):
+            return LogImportance.MEDIUM
+            
+        # LOW importance: Routine checks and health updates
+        if any(pattern in message_lower for pattern in 
+               INSIGHT_PATTERNS['routine_checks']):
+            return LogImportance.LOW
+        
+        # Event type based importance with smarter defaults
         event_importance = {
-            TradingEventType.SYSTEM_HEALTH: LogImportance.LOW,
+            TradingEventType.SYSTEM_HEALTH: LogImportance.LOW,      # Reduced frequency
             TradingEventType.ORDER_VALIDATION: LogImportance.MEDIUM,
             TradingEventType.EXECUTION_DECISION: LogImportance.HIGH,
-            TradingEventType.MARKET_CONDITION: LogImportance.LOW,
+            TradingEventType.MARKET_CONDITION: LogImportance.LOW,   # Reduced frequency
             TradingEventType.POSITION_MANAGEMENT: LogImportance.HIGH,
             TradingEventType.STATE_TRANSITION: LogImportance.HIGH,
             TradingEventType.RISK_EVALUATION: LogImportance.MEDIUM,
-            TradingEventType.DATABASE_STATE: LogImportance.LOW,
+            TradingEventType.DATABASE_STATE: LogImportance.LOW,     # Reduced frequency
         }
         
         base_importance = event_importance.get(event_type, LogImportance.MEDIUM)
         
-        # Upgrade importance for critical context or decision reasons
-        if decision_reason and any(word in decision_reason.lower() for word in 
-                                 ['execut', 'fill', 'reject', 'error', 'risk']):
-            return LogImportance.HIGH
-            
-        # Check context for high importance indicators
-        if context_provider:
-            context_str = str(context_provider).lower()
-            if any(word in context_str for word in 
-                  ['error', 'exception', 'reject', 'fill', 'execute']):
+        # Upgrade importance based on decision reason insights
+        if decision_reason:
+            reason_lower = decision_reason.lower()
+            if any(pattern in reason_lower for pattern in 
+                   INSIGHT_PATTERNS['critical_actions']):
                 return LogImportance.HIGH
+            elif any(pattern in reason_lower for pattern in 
+                     INSIGHT_PATTERNS['important_changes']):
+                return LogImportance.MEDIUM
         
         return base_importance
-    
+    # ContextAwareLogger._determine_importance - End
+
     def _prepare_event_for_logging(self, event: TradingEvent, context_wrapper: SafeContext) -> Dict[str, Any]:
         """Prepare event for logging by evaluating context only when needed."""
         event_dict = asdict(event)
         event_dict['context'] = context_wrapper.to_safe_dict()
         return event_dict
     
+    # ContextAwareLogger._write_compressed_log - Begin (UPDATED)
     def _write_compressed_log(self, event_dict: Dict[str, Any], importance: LogImportance):
-        """Write highly compressed structured event to log."""
-        # Convert ISO timestamp to numeric (major space savings)
+        """Write insight-focused compressed log with better content selection."""
+        # Convert timestamp to numeric for major space savings
         try:
             timestamp = datetime.datetime.fromisoformat(event_dict['timestamp']).timestamp()
             timestamp = round(timestamp, 3)  # Millisecond precision
@@ -412,38 +477,35 @@ class ContextAwareLogger:
         except:
             pass
         
-        # Build compressed core info
+        # Build ultra-compact core info with insight focus
         core_info = {
             FIELD_COMPRESSION_MAP['timestamp']: timestamp,
             FIELD_COMPRESSION_MAP['event_type']: event_type_code,
-            'i': importance.value,
+            FIELD_COMPRESSION_MAP['importance']: importance.value,
             FIELD_COMPRESSION_MAP['message']: self._compress_message(event_dict['message']),
         }
         
-        # Add symbol if present
-        if event_dict['symbol']:
+        # Add symbol only if it provides context (not for system-wide events)
+        if event_dict['symbol'] and event_dict['symbol'] not in ['', 'SYSTEM']:
             core_info[FIELD_COMPRESSION_MAP['symbol']] = event_dict['symbol']
         
-        # Add compressed reason if present
-        if event_dict['decision_reason']:
+        # Add compressed reason only if it provides meaningful insight
+        if event_dict['decision_reason'] and self._is_insightful_reason(event_dict['decision_reason']):
             reason = event_dict['decision_reason']
             compressed_reason = self._compress_reason(reason)
             core_info[FIELD_COMPRESSION_MAP['decision_reason']] = compressed_reason
         
-        # Ultra-compact context with field pruning and compression
-        critical_context = self._extract_critical_context(event_dict['context'])
-        if critical_context:
-            compressed_ctx = self._compress_context_fields(critical_context)
+        # Extract and compress only insightful context
+        insightful_context = self._extract_insightful_context(event_dict['context'], importance)
+        if insightful_context:
+            compressed_ctx = self._compress_context_fields(insightful_context)
             core_info[FIELD_COMPRESSION_MAP['context']] = compressed_ctx
         
         # Minimal JSON with shortest separators
         compact_json = json.dumps(core_info, separators=(',', ':'))
         
-        # Console output remains human readable (unchanged)
-        symbol_str = f" [{event_dict['symbol']}]" if event_dict['symbol'] else ""
-        reason_str = f" - {event_dict['decision_reason']}" if event_dict['decision_reason'] else ""
-        console_message = f"🔍 {event_dict['event_type'].upper()}{symbol_str}: {event_dict['message']}{reason_str}"
-        print(console_message)
+        # Enhanced console output with better insights
+        self._write_insightful_console_output(event_dict, importance, core_info)
         
         # File logging with compressed format
         try:
@@ -453,9 +515,67 @@ class ContextAwareLogger:
             print(f"📊 {compact_json}")
             print(f"File logging error: {e}")
     
+    def _is_insightful_reason(self, reason: str) -> bool:
+        """Check if reason provides meaningful insight vs routine explanation."""
+        routine_patterns = ['completed', 'starting', 'processing', 'checking', 'validating']
+        reason_lower = reason.lower()
+        return not any(pattern in reason_lower for pattern in routine_patterns)
+    
+    def _write_insightful_console_output(self, event_dict: Dict[str, Any], 
+                                       importance: LogImportance, core_info: Dict[str, Any]):
+        """Write enhanced console output that provides better insights than logs."""
+        symbol_str = f" [{event_dict['symbol']}]" if event_dict['symbol'] else ""
+        
+        # Use different emojis based on importance and content
+        if importance == LogImportance.HIGH:
+            emoji = "🚨" if any(word in event_dict['message'].lower() for word in ['error', 'fail']) else "⚡"
+        elif importance == LogImportance.MEDIUM:
+            emoji = "🔍" 
+        else:
+            emoji = "📝"
+        
+        # Enhanced message with key insights from context
+        enhanced_message = event_dict['message']
+        context_insights = self._extract_console_insights(event_dict['context'])
+        if context_insights:
+            enhanced_message = f"{event_dict['message']} | {context_insights}"
+        
+        reason_str = f" - {event_dict['decision_reason']}" if event_dict['decision_reason'] else ""
+        console_message = f"{emoji} {event_dict['event_type'].upper()}{symbol_str}: {enhanced_message}{reason_str}"
+        print(console_message)
+    
+    def _extract_console_insights(self, context: Dict[str, Any]) -> str:
+        """Extract key insights for console display."""
+        insights = []
+        
+        # Look for critical numeric values
+        numeric_fields = ['price', 'quantity', 'probability', 'risk', 'capital']
+        for field in numeric_fields:
+            if field in context and context[field] is not None:
+                value = context[field]
+                if isinstance(value, (int, float)):
+                    insights.append(f"{field}:{value}")
+        
+        # Look for critical status changes
+        status_fields = ['status', 'result', 'action']
+        for field in status_fields:
+            if field in context and context[field] is not None:
+                value = str(context[field])
+                if len(value) < 20:  # Only short status values
+                    insights.append(f"{field}:{value}")
+        
+        return " | ".join(insights[:3])  # Max 3 insights
+    # ContextAwareLogger._write_compressed_log - End
+
+    # ContextAwareLogger._compress_message - Begin (UPDATED)
     def _compress_message(self, message: str) -> str:
-        """More aggressive message compression for common trading patterns."""
-        # Common phrase replacements
+        """Smart message compression that preserves insights."""
+        # Don't over-compress messages that contain insights
+        if any(insight in message.lower() for insight in 
+               ['error', 'fail', 'reject', 'execute', 'fill', 'risk']):
+            return message[:60]  # Keep more of insightful messages
+        
+        # Enhanced phrase replacements for common trading patterns
         phrase_replacements = {
             'completed successfully': '✓',
             'starting': '→',
@@ -480,21 +600,33 @@ class ContextAwareLogger:
             'signal': 'sig',
             'strategy': 'strat',
             'algorithm': 'algo',
+            'checking': 'chk',
+            'verifying': 'vfy',
+            'monitoring': 'mon',
         }
         
-        # Word boundary replacements for better compression
+        # Apply replacements
         compressed = message.lower()
         for full, short in phrase_replacements.items():
             compressed = compressed.replace(full, short)
         
-        # Remove common filler words
-        filler_words = ['the', 'a', 'an', 'for', 'with', 'from', 'this', 'that']
+        # Remove common filler words but preserve numeric and key terms
+        filler_words = ['the', 'a', 'an', 'for', 'with', 'from', 'this', 'that', 'and', 'or']
         words = compressed.split()
-        filtered_words = [w for w in words if w not in filler_words]
+        filtered_words = []
+        
+        for word in words:
+            # Keep words with numbers or special characters
+            if any(char.isdigit() for char in word) or any(char in word for char in ['$', '%', '.']):
+                filtered_words.append(word)
+            elif word not in filler_words:
+                filtered_words.append(word)
+                
         compressed = ' '.join(filtered_words)
         
-        return compressed[:50]
-    
+        return compressed[:40]  # Consistent length limit
+    # ContextAwareLogger._compress_message - End
+
     def _compress_reason(self, reason: str) -> str:
         """Specialized compression for decision reasons."""
         reason_compressions = {
@@ -617,6 +749,46 @@ class ContextAwareLogger:
             'circuit_breaker_blocks': 0,
             'importance_filtered': 0
         }# Global logger instance for easy access
+
+    # ContextAwareLogger._extract_critical_context - Begin (UPDATED)
+    def _extract_insightful_context(self, context: Dict[str, Any], importance: LogImportance) -> Dict[str, Any]:
+        """Extract only context that provides meaningful insights."""
+        if importance == LogImportance.LOW:
+            # For low importance, keep only critical errors/status
+            return {k: v for k, v in context.items() 
+                    if any(err in str(k).lower() for err in ['error', 'exception', 'status'])}
+        
+        # For medium/high importance, use insight-based selection
+        insightful_fields = set()
+        
+        # Always include error/exception fields
+        error_fields = [k for k in context.keys() if any(err in str(k).lower() 
+                       for err in ['error', 'exception', 'fail'])]
+        insightful_fields.update(error_fields)
+        
+        # Include trading-critical fields
+        trading_fields = [k for k in context.keys() if any(trade in str(k).lower()
+                         for trade in ['price', 'quantity', 'risk', 'capital', 'margin', 'profit', 'loss'])]
+        insightful_fields.update(trading_fields)
+        
+        # Include decision-making fields
+        decision_fields = [k for k in context.keys() if any(dec in str(k).lower()
+                          for dec in ['result', 'status', 'action', 'decision', 'threshold', 'probability'])]
+        insightful_fields.update(decision_fields)
+        
+        # Include state change indicators
+        state_fields = [k for k in context.keys() if any(state in str(k).lower()
+                       for state in ['change', 'transition', 'update', 'new', 'difference'])]
+        insightful_fields.update(state_fields)
+        
+        # Limit fields based on importance
+        if importance == LogImportance.MEDIUM:
+            insightful_fields = list(insightful_fields)[:6]  # Max 6 fields for medium
+        else:  # HIGH importance
+            insightful_fields = list(insightful_fields)[:10]  # Max 10 fields for high
+        
+        return {k: v for k, v in context.items() if k in insightful_fields and v is not None}
+    # ContextAwareLogger._extract_critical_context - End
 
 _global_logger: Optional[ContextAwareLogger] = None
 

@@ -11,6 +11,7 @@ from ibapi.order_cancel import OrderCancel
 from typing import List, Optional, Any, Dict
 import threading
 import datetime
+import queue
 
 from src.core.ibkr_types import IbkrOrder, IbkrPosition
 from src.core.account_utils import is_paper_account, get_ibkr_port
@@ -89,6 +90,13 @@ class IbkrClient(EClient, EWrapper):
         self._total_ticks_processed = 0
         # <Market Data Manager Thread Safety - End>
 
+        # <Early Tick Queue for Market Data Callbacks - Begin>
+        self._early_tick_queue = queue.Queue(maxsize=1000)  # Buffer for ticks before manager ready
+        self._max_early_ticks_logged = 10  # Limit log spam for early ticks
+        self._early_ticks_logged = 0
+        self._manager_connection_time = None
+        # <Early Tick Queue for Market Data Callbacks - End>
+
         # <Historical Data Manager Integration - Begin>
         self.historical_data_manager = None
         self._historical_manager_lock = threading.RLock()
@@ -114,7 +122,8 @@ class IbkrClient(EClient, EWrapper):
                 "mode": mode,
                 "market_data_manager_ready": False,
                 "historical_data_manager_ready": False,
-                "historical_eod_provider_ready": False
+                "historical_eod_provider_ready": False,
+                "early_tick_queue_initialized": True
             }
         )
         # <Context-Aware Logging - IbkrClient Initialization Complete - End>
@@ -432,30 +441,73 @@ class IbkrClient(EClient, EWrapper):
         return [parent, take_profit, stop_loss_order]
     # <AON Order Methods - End>
 
-    # <Market Data Manager Connection Methods - Begin>
+    # set_market_data_manager - UPDATED (Enhanced with queue processing)
     def set_market_data_manager(self, manager) -> None:
         """
         Thread-safe method to set the MarketDataManager instance.
+        Processes any queued ticks that arrived before manager was available.
         
         Args:
             manager: MarketDataManager instance to receive price ticks
         """
         with self._manager_lock:
             self.market_data_manager = manager
-            if logger:
-                logger.info(f"MarketDataManager connected to IbkrClient")
-                
-            # <Context-Aware Logging - Market Data Manager Connected - Begin>
+            self._manager_connection_time = datetime.datetime.now()
+            
+            # Process any ticks that arrived before manager was ready
+            processed_ticks = 0
+            dropped_ticks = 0
+            
+            try:
+                while not self._early_tick_queue.empty():
+                    try:
+                        tick_data = self._early_tick_queue.get_nowait()
+                        reqId, tickType, price, attrib = tick_data
+                        
+                        if self.market_data_manager:
+                            self.market_data_manager.on_tick_price(reqId, tickType, price, attrib)
+                            processed_ticks += 1
+                        else:
+                            dropped_ticks += 1
+                            
+                        self._early_tick_queue.task_done()
+                    except queue.Empty:
+                        break
+            except Exception as e:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Error processing early tick queue",
+                    context_provider={
+                        'error': str(e),
+                        'processed_ticks': processed_ticks,
+                        'dropped_ticks': dropped_ticks
+                    }
+                )
+            
+            # Log connection and queue processing results
+            connection_context = {
+                'manager_type': type(manager).__name__,
+                'connected': True,
+                'early_ticks_processed': processed_ticks,
+                'early_ticks_dropped': dropped_ticks,
+                'remaining_queue_size': self._early_tick_queue.qsize(),
+                'manager_connection_time': self._manager_connection_time.isoformat()
+            }
+            
             self.context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
-                "MarketDataManager connected to IbkrClient",
-                context_provider={
-                    'manager_type': type(manager).__name__,
-                    'connected': True
-                }
+                "MarketDataManager connected to IbkrClient with early tick processing",
+                context_provider=connection_context
             )
-            # <Context-Aware Logging - Market Data Manager Connected - End>
+            
+            if logger:
+                logger.info(f"MarketDataManager connected to IbkrClient - Processed {processed_ticks} early ticks")
+                
+            # Reset early tick logging counter
+            self._early_ticks_logged = 0
+    # set_market_data_manager - End
 
+    # get_market_data_health - UPDATED (Add queue metrics)
     def get_market_data_health(self) -> dict:
         """
         Get health metrics for market data flow monitoring.
@@ -470,7 +522,10 @@ class IbkrClient(EClient, EWrapper):
                 'tick_errors': self._tick_errors,
                 'last_tick_time': self._last_tick_time,
                 'connection_status': 'Connected' if self.connected else 'Disconnected',
-                'manager_type': type(self.market_data_manager).__name__ if self.market_data_manager else 'None'
+                'manager_type': type(self.market_data_manager).__name__ if self.market_data_manager else 'None',
+                'early_tick_queue_size': self._early_tick_queue.qsize(),
+                'early_ticks_logged': self._early_ticks_logged,
+                'manager_connection_time': self._manager_connection_time
             }
             
             # Calculate error rate if we have processed ticks
@@ -482,6 +537,7 @@ class IbkrClient(EClient, EWrapper):
                 health['error_rate_percent'] = 0.0
                 
             return health
+    # get_market_data_health - End
     # <Market Data Manager Connection Methods - End>
 
     def connect(self, host: Optional[str] = None, port: Optional[int] = None, 
@@ -1276,11 +1332,11 @@ class IbkrClient(EClient, EWrapper):
         if logger:
             logger.debug("Positions request completed")
 
-    # <Enhanced tickPrice with Thread Safety and Error Handling - Begin>
+    # tickPrice - UPDATED (Enhanced with early tick queuing)
     def tickPrice(self, reqId: int, tickType: int, price: float, attrib) -> None:
         """
         Callback: Receive market data price tick and forward to MarketDataManager if set.
-        Enhanced with thread safety and comprehensive error handling.
+        Enhanced with early tick queuing to prevent data loss during manager connection.
         """
         super().tickPrice(reqId, tickType, price, attrib)
 
@@ -1297,7 +1353,6 @@ class IbkrClient(EClient, EWrapper):
                     # Log first successful tick for debugging
                     if self._total_ticks_processed == 1:
                         tick_type_name = {1: 'BID', 2: 'ASK', 4: 'LAST'}.get(tickType, f'UNKNOWN({tickType})')
-                        # <Context-Aware Logging - First Tick Processed - Begin>
                         self.context_logger.log_event(
                             TradingEventType.MARKET_CONDITION,
                             "First market data tick processed",
@@ -1305,10 +1360,10 @@ class IbkrClient(EClient, EWrapper):
                                 'tick_type': tick_type_name,
                                 'price': price,
                                 'req_id': reqId,
-                                'total_ticks_processed': 1
+                                'total_ticks_processed': 1,
+                                'manager_available': True
                             }
                         )
-                        # <Context-Aware Logging - First Tick Processed - End>
                         if logger:
                             logger.info(f"FIRST TICK PROCESSED: Type {tick_type_name}, Price ${price}")
                         
@@ -1318,7 +1373,6 @@ class IbkrClient(EClient, EWrapper):
                     
                     # Only log periodic errors to avoid spam
                     if error_count <= 3 or error_count % 10 == 0:
-                        # <Context-Aware Logging - Tick Processing Error - Begin>
                         self.context_logger.log_event(
                             TradingEventType.SYSTEM_HEALTH,
                             "Market data tick processing error",
@@ -1327,32 +1381,56 @@ class IbkrClient(EClient, EWrapper):
                                 'total_ticks_processed': self._total_ticks_processed,
                                 'error': str(e),
                                 'req_id': reqId,
-                                'tick_type': tickType
+                                'tick_type': tickType,
+                                'manager_available': True
                             },
                             decision_reason=f"Tick processing error #{error_count}: {e}"
                         )
-                        # <Context-Aware Logging - Tick Processing Error - End>
                         if logger:
                             logger.warning(f"Error in market data processing (Error #{error_count}): {e}")
             else:
-                # Only log missing manager occasionally to avoid spam
-                if self._total_ticks_processed <= 5 or self._total_ticks_processed % 50 == 0:
-                    # <Context-Aware Logging - Missing Market Data Manager - Begin>
-                    self.context_logger.log_event(
-                        TradingEventType.SYSTEM_HEALTH,
-                        "Market data tick received but no manager connected",
-                        context_provider={
-                            'total_ticks_processed': self._total_ticks_processed,
-                            'req_id': reqId,
-                            'tick_type': tickType,
-                            'price': price
-                        },
-                        decision_reason=f"No MarketDataManager for tick processing (total: {self._total_ticks_processed})"
-                    )
-                    # <Context-Aware Logging - Missing Market Data Manager - End>
-                    if logger:
-                        logger.debug(f"Tick received but no MarketDataManager connected (Total ticks: {self._total_ticks_processed})")
-    # <Enhanced tickPrice with Thread Safety and Error Handling - End>
+                # Manager not available - queue the tick for later processing
+                try:
+                    # Only log first few queued ticks to avoid spam
+                    if self._early_ticks_logged < self._max_early_ticks_logged:
+                        self._early_ticks_logged += 1
+                        tick_type_name = {1: 'BID', 2: 'ASK', 4: 'LAST'}.get(tickType, f'UNKNOWN({tickType})')
+                        
+                        self.context_logger.log_event(
+                            TradingEventType.SYSTEM_HEALTH,
+                            "Market data tick queued - no manager available",
+                            context_provider={
+                                'req_id': reqId,
+                                'tick_type': tick_type_name,
+                                'price': price,
+                                'queued_ticks_count': self._early_tick_queue.qsize() + 1,
+                                'early_ticks_logged': self._early_ticks_logged,
+                                'total_ticks_processed': self._total_ticks_processed
+                            },
+                            decision_reason=f"Tick queued (No MarketDataManager) - Total queued: {self._early_tick_queue.qsize() + 1}"
+                        )
+                    
+                    # Queue the tick for later processing
+                    self._early_tick_queue.put((reqId, tickType, price, attrib))
+                    
+                except queue.Full:
+                    # Queue is full - log the drop but don't spam
+                    if self._early_ticks_logged < self._max_early_ticks_logged:
+                        self._early_ticks_logged += 1
+                        self.context_logger.log_event(
+                            TradingEventType.SYSTEM_HEALTH,
+                            "Early tick queue full - tick dropped",
+                            context_provider={
+                                'req_id': reqId,
+                                'tick_type': tickType,
+                                'price': price,
+                                'queue_size': self._early_tick_queue.qsize(),
+                                'max_queue_size': self._early_tick_queue.maxsize,
+                                'total_ticks_dropped': self._total_ticks_processed - self._early_tick_queue.qsize()
+                            },
+                            decision_reason="Early tick queue full - data loss occurred"
+                        )
+    # tickPrice - End    
 
     def _get_port_from_mode(self, mode: str) -> int:
         """Determine port based on mode parameter."""

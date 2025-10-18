@@ -514,39 +514,22 @@ class EndOfDayService:
             )
             return {"expired": 0, "errors": [f"Error expiring orders: {str(e)}"]}
 
-    def _get_orders_to_expire(self) -> List[PlannedOrderDB]:
-        """Get PlannedOrders that should be expired (DAY and expired HYBRID)."""
-        # This would query for orders based on strategy and expiration logic
-        # For now, return empty list - implementation depends on specific business rules
-        return []
+    # _is_day_order_expired - NEW
+    def _is_day_order_expired(self, order: PlannedOrderDB) -> bool:
+        """Check if DAY order should expire based on creation time and market hours."""
+        # DAY orders expire at market close on their effective date
+        # Use the persisted expiration_date which should be set to market close
+        if order.expiration_date:
+            return datetime.datetime.now() >= order.expiration_date.replace(tzinfo=None)
+        return False
 
-    def _is_day_position(self, position: ExecutedOrderDB) -> bool:
-        """Check if position uses DAY strategy."""
-        try:
-            return (position.planned_order and 
-                   position.planned_order.position_strategy == PositionStrategy.DAY.value)
-        except Exception:
-            return False
-
-    def _is_hybrid_position(self, position: ExecutedOrderDB) -> bool:
-        """Check if position uses HYBRID strategy."""
-        try:
-            return (position.planned_order and 
-                   position.planned_order.position_strategy == PositionStrategy.HYBRID.value)
-        except Exception:
-            return False
-
-    def _is_position_expired(self, position: ExecutedOrderDB) -> bool:
-        """Check if HYBRID position has expired."""
-        try:
-            if not position.planned_order or not position.planned_order.expiration_date:
-                return False
-                
-            now = datetime.datetime.now()
-            is_expired = now >= position.planned_order.expiration_date.replace(tzinfo=None)
-            return is_expired
-        except Exception:
-            return False
+    # _is_hybrid_order_expired - NEW
+    def _is_hybrid_order_expired(self, order: PlannedOrderDB) -> bool:
+        """Check if HYBRID order should expire (10 days from effective date)."""
+        # HYBRID orders expire based on their calculated expiration_date
+        if order.expiration_date:
+            return datetime.datetime.now() >= order.expiration_date.replace(tzinfo=None)
+        return False
 
     def _close_single_position(self, position: ExecutedOrderDB, reason: str) -> bool:
         """Close a single position with market order logic."""
@@ -660,6 +643,7 @@ class EndOfDayService:
             return "UNKNOWN"
 
     def reset_close_attempts(self):
+
         """Reset close attempt counters (call at start of each trading day)."""
         previous_count = len(self._close_attempts)
         self._close_attempts.clear()
@@ -672,3 +656,68 @@ class EndOfDayService:
             },
             decision_reason="Daily close attempt counter reset"
         )
+
+    # _is_day_position - UPDATED (uses strategy ID 1)
+    def _is_day_position(self, position: ExecutedOrderDB) -> bool:
+        """Check if position uses DAY strategy (ID: 1)."""
+        try:
+            return (position.planned_order and 
+                position.planned_order.position_strategy_id == 1)
+        except Exception:
+            return False
+
+    # _is_hybrid_position - UPDATED (uses strategy ID 3)  
+    def _is_hybrid_position(self, position: ExecutedOrderDB) -> bool:
+        """Check if position uses HYBRID strategy (ID: 3)."""
+        try:
+            return (position.planned_order and 
+                position.planned_order.position_strategy_id == 3)
+        except Exception:
+            return False
+
+    # _is_position_expired - UPDATED
+    def _is_position_expired(self, position: ExecutedOrderDB) -> bool:
+        """Check if HYBRID position has expired using persisted expiration_date."""
+        try:
+            if not position.planned_order or not position.planned_order.expiration_date:
+                return False
+                
+            now = datetime.datetime.now()
+            is_expired = now >= position.planned_order.expiration_date.replace(tzinfo=None)
+            return is_expired
+        except Exception:
+            return False
+
+    # _get_orders_to_expire - UPDATED
+    def _get_orders_to_expire(self) -> List[PlannedOrderDB]:
+        """Get PlannedOrders that should be expired based on persisted expiration dates."""
+        try:
+            # Get current time for expiration comparison
+            now = datetime.datetime.now()
+            
+            # Query for orders that are expired based on expiration_date
+            # Include both DAY and HYBRID strategies that have passed their expiration
+            expired_orders = self.state_service.get_expired_planned_orders(now)
+            
+            self.context_logger.log_event(
+                event_type=TradingEventType.STATE_TRANSITION,
+                message="Retrieved expired PlannedOrders from database",
+                context_provider={
+                    'expired_orders_count': lambda: len(expired_orders),
+                    'current_time': lambda: now.isoformat(),
+                    'order_symbols': lambda: [order.symbol for order in expired_orders],
+                    'order_strategies': lambda: [order.position_strategy_id for order in expired_orders]
+                },
+                decision_reason=f"Found {len(expired_orders)} expired orders based on expiration_date"
+            )
+            
+            return expired_orders
+            
+        except Exception as e:
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Error fetching expired orders from database",
+                context_provider={'error': lambda: str(e)},
+                decision_reason="Database query for expired orders failed"
+            )
+            return []

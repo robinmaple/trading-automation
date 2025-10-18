@@ -49,7 +49,6 @@ from src.services.end_of_day_service import EndOfDayService, EODConfig
 class TradingManager:
     """Orchestrates the complete trading lifecycle and manages system state."""
 
-# Constructor - Begin (UPDATED - COMPLETE VERSION)
     def __init__(self, data_feed: AbstractDataFeed, excel_path: Optional[str] = "plan.xlsx",
                 ibkr_client: Optional[IbkrClient] = None,
                 order_persistence_service: Optional[OrderPersistenceService] = None,
@@ -80,6 +79,10 @@ class TradingManager:
         self.active_orders: Dict[int, ActiveOrder] = {}
         self.monitoring = False
         self.monitor_thread: Optional[threading.Thread] = None
+        
+        # <Execution Symbols Tracking - Begin>
+        self._execution_symbols: Set[str] = set()  # Track symbols with executable orders
+        # <Execution Symbols Tracking - End>
 
         # Account Context Tracking - Begin
         self.current_account_number: Optional[str] = None
@@ -204,7 +207,6 @@ class TradingManager:
             }
         )
         # <Context-Aware Logging - TradingManager Initialization Complete - End>
-# Constructor - End
 
     # End of Day Service Initialization - Begin
     def _initialize_end_of_day_service(self) -> None:
@@ -259,30 +261,59 @@ class TradingManager:
 
     # <Price Event Handler - Begin>
     def _handle_price_update(self, event: PriceUpdateEvent) -> None:
-        """Handle price update events and trigger order execution checks."""
+        """Handle price update events and trigger order execution checks.
+        
+        Bypasses any filtering for symbols that have executable orders to ensure
+        execution flow is not blocked by price filtering logic.
+        """
         try:
-            # Only process if we have planned orders and the symbol is being monitored
+            # Only process if we have planned orders
             if not self.planned_orders:
                 return
                 
-            # Check if this symbol is in our planned orders
-            symbol_monitored = any(order.symbol == event.symbol for order in self.planned_orders)
-            if symbol_monitored:
-               
-                # <Context-Aware Logging - Price Update Processing - Begin>
+            # Check if this symbol is in our execution symbols (has executable orders)
+            symbol_has_executable_orders = event.symbol in self._execution_symbols
+            
+            # Always process price updates for symbols with executable orders
+            # Bypass any filtering that might block execution flow
+            if symbol_has_executable_orders:
+                # <Context-Aware Logging - Execution Price Update - Begin>
                 self.context_logger.log_event(
                     TradingEventType.MARKET_CONDITION,
-                    f"Price update received for monitored symbol",
+                    f"Execution price update received - bypassing filtering",
                     symbol=event.symbol,
                     context_provider={
                         'price': event.price,
                         'timestamp': event.timestamp,
-                        'monitored_symbols_count': len(self.planned_orders)
+                        'execution_symbols_count': len(self._execution_symbols),
+                        'symbol_has_executable_orders': True
                     }
                 )
-                # <Context-Aware Logging - Price Update Processing - End>
+                # <Context-Aware Logging - Execution Price Update - End>
                 
+                # Trigger immediate execution check for this symbol
                 self._check_and_execute_orders()
+                
+            else:
+                # For other symbols, check if they're in planned orders
+                symbol_in_planned_orders = any(order.symbol == event.symbol for order in self.planned_orders)
+                if symbol_in_planned_orders:
+                    # <Context-Aware Logging - Monitored Price Update - Begin>
+                    self.context_logger.log_event(
+                        TradingEventType.MARKET_CONDITION,
+                        f"Price update received for monitored symbol",
+                        symbol=event.symbol,
+                        context_provider={
+                            'price': event.price,
+                            'timestamp': event.timestamp,
+                            'monitored_symbols_count': len(self.planned_orders),
+                            'symbol_has_executable_orders': False
+                        }
+                    )
+                    # <Context-Aware Logging - Monitored Price Update - End>
+                    
+                    # Regular processing for monitored symbols
+                    self._check_and_execute_orders()
                 
         except Exception as e:
             # <Context-Aware Logging - Price Update Error - Begin>
@@ -292,51 +323,65 @@ class TradingManager:
                 symbol=event.symbol,
                 context_provider={
                     'error': str(e),
-                    'price': event.price if hasattr(event, 'price') else 'unknown'
+                    'price': event.price if hasattr(event, 'price') else 'unknown',
+                    'symbol_has_executable_orders': event.symbol in self._execution_symbols if hasattr(self, '_execution_symbols') else 'unknown'
                 },
                 decision_reason=f"Price update processing failed: {e}"
             )
             # <Context-Aware Logging - Price Update Error - End>
     # <Price Event Handler - End>
-
-    # <Monitored Symbols Management - Begin>
+    
+    # _update_monitored_symbols - Begin (UPDATED - Enhanced symbol tracking)
     def _update_monitored_symbols(self) -> None:
         """
         Update MarketDataManager with symbols that need price events.
         Includes symbols from planned orders and current positions.
+        Enhanced to ensure execution symbols are properly tracked.
         """
         if not hasattr(self.data_feed, 'market_data_manager') or not self.data_feed.market_data_manager:
             return
             
         monitored_symbols: Set[str] = set()
+        execution_symbols: Set[str] = set()
         
         # Add symbols from planned orders
         for order in self.planned_orders:
             monitored_symbols.add(order.symbol)
+            # Track symbols that should trigger execution
+            execution_symbols.add(order.symbol)
             
         # Add symbols from current positions
         try:
             positions = self.state_service.get_all_positions()
             for position in positions:
                 monitored_symbols.add(position.symbol)
+                execution_symbols.add(position.symbol)
         except Exception as e:
             pass
             
-        # Update MarketDataManager
+        # Update execution symbols tracking
+        self._execution_symbols = execution_symbols
+            
+        # Update MarketDataManager with monitored symbols
         if monitored_symbols:
             self.data_feed.market_data_manager.set_monitored_symbols(monitored_symbols)
             
             # <Context-Aware Logging - Symbol Monitoring Update - Begin>
             self.context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
-                "Symbol monitoring updated",
+                "Symbol monitoring updated with execution tracking",
                 context_provider={
                     'monitored_symbols_count': len(monitored_symbols),
-                    'symbols': list(monitored_symbols)[:10]  # Log first 10 symbols
+                    'execution_symbols_count': len(execution_symbols),
+                    'symbols': list(monitored_symbols)[:10],  # Log first 10 symbols
+                    'execution_symbols': list(execution_symbols)[:10]  # Log first 10 execution symbols
                 }
             )
             # <Context-Aware Logging - Symbol Monitoring Update - End>
-    # <Monitored Symbols Management - End>
+            
+        # Ensure market data subscription for all monitored symbols
+        self._subscribe_to_planned_order_symbols()
+    # _update_monitored_symbols - End
 
     # Account Context Methods - Begin
     def _get_current_account_number(self) -> Optional[str]:
@@ -1082,14 +1127,18 @@ class TradingManager:
         return success
 
     # ADD NEW METHOD TO TradingManager
+
+    # _subscribe_to_planned_order_symbols - Begin (UPDATED - Enhanced subscription)
     def _subscribe_to_planned_order_symbols(self) -> None:
-        """Subscribe to market data for all planned order symbols."""
+        """Subscribe to market data for all planned order symbols with execution context."""
         if not self.planned_orders:
             return
             
         from ibapi.contract import Contract
         
         subscribed_count = 0
+        execution_subscribed_count = 0
+        
         for order in self.planned_orders:
             try:
                 contract = Contract()
@@ -1102,9 +1151,38 @@ class TradingManager:
                 
                 if success:
                     subscribed_count += 1
+                    # If this is an execution symbol, track it
+                    if order.symbol in self._execution_symbols:
+                        execution_subscribed_count += 1
                     
             except Exception as e:
-                pass
+                # Log subscription errors but continue with other symbols
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"Market data subscription failed for {order.symbol}",
+                    symbol=order.symbol,
+                    context_provider={
+                        'error': str(e),
+                        'symbol': order.symbol
+                    },
+                    decision_reason=f"Market data subscription error: {e}"
+                )
+        
+        # <Context-Aware Logging - Symbol Subscription Summary - Begin>
+        if subscribed_count > 0:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Market data subscriptions completed",
+                context_provider={
+                    'total_subscribed': subscribed_count,
+                    'execution_symbols_subscribed': execution_subscribed_count,
+                    'total_planned_orders': len(self.planned_orders),
+                    'execution_symbols_total': len(self._execution_symbols)
+                },
+                decision_reason=f"Market data subscription: {subscribed_count}/{len(self.planned_orders)} symbols"
+            )
+        # <Context-Aware Logging - Symbol Subscription Summary - End>
+    # _subscribe_to_planned_order_symbols - End
         
     def debug_order_status(self):
         """Debug method to check order status"""
@@ -1232,8 +1310,13 @@ class TradingManager:
 
         self._execute_prioritized_orders(executable_orders)
 
+    # _execute_prioritized_orders - Begin (UPDATED)
     def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
-        """Execute orders using two-layer prioritization with viability gating."""
+        """Execute orders using two-layer prioritization WITHOUT viability gating.
+        
+        Probability scores are used for prioritization only, not for blocking execution.
+        All orders that pass business rules are eligible for execution.
+        """
         total_capital = self._get_total_capital()
         working_orders = self._get_working_orders()
 
@@ -1257,13 +1340,23 @@ class TradingManager:
         executed_count = 0
         skipped_reasons = {}
         
+        # Update execution symbols with symbols from executable orders
+        current_execution_symbols = set()
+        for order_data in executable_orders:
+            if isinstance(order_data, dict) and 'order' in order_data:
+                current_execution_symbols.add(order_data['order'].symbol)
+        
+        self._execution_symbols = current_execution_symbols
+        
         for order_data in prioritized_orders:
             order = order_data['order']
             fill_prob = order_data['fill_probability']
             symbol = order.symbol
 
-            if not order_data.get('allocated', False) or not order_data.get('viable', False):
-                skipped_reasons[symbol] = f"Not allocated/viable (allocated={order_data.get('allocated')}, viable={order_data.get('viable')})"
+            # ✅ FIXED: Remove viability check - probability used only for prioritization
+            # Only check allocation for system capacity management
+            if not order_data.get('allocated', False):
+                skipped_reasons[symbol] = f"Not allocated due to capacity limits"
                 continue
 
             if self.state_service.has_open_position(symbol):
@@ -1293,7 +1386,8 @@ class TradingManager:
                     'action': order.action.value,
                     'fill_probability': fill_prob,
                     'effective_priority': effective_priority,
-                    'account_number': account_number
+                    'account_number': account_number,
+                    'symbol_in_execution_set': symbol in self._execution_symbols
                 },
                 decision_reason=f"Order meets execution criteria"
             )
@@ -1305,6 +1399,9 @@ class TradingManager:
             
             if success:
                 executed_count += 1
+                # Ensure symbol remains in execution set after successful execution
+                self._execution_symbols.add(symbol)
+                
                 # <Context-Aware Logging - Order Execution Success - Begin>
                 self.context_logger.log_event(
                     TradingEventType.EXECUTION_DECISION,
@@ -1312,7 +1409,8 @@ class TradingManager:
                     symbol=symbol,
                     context_provider={
                         'entry_price': order.entry_price,
-                        'order_type': order.order_type.value
+                        'order_type': order.order_type.value,
+                        'execution_symbols_count': len(self._execution_symbols)
                     },
                     decision_reason="Execution orchestrator returned success"
                 )
@@ -1338,11 +1436,20 @@ class TradingManager:
                 'executed_count': executed_count,
                 'skipped_count': len(skipped_reasons),
                 'skipped_reasons': skipped_reasons,
-                'total_considered': len(prioritized_orders)
+                'total_considered': len(prioritized_orders),
+                'execution_symbols_count': len(self._execution_symbols)
             },
-            decision_reason=f"Execution summary: {executed_count} executed"
+            decision_reason=f"Execution summary: {executed_count} executed, {len(self._execution_symbols)} symbols tracked for execution"
         )
         # <Context-Aware Logging - Execution Summary - End>
+
+        # DEBUG: Verify execution symbols propagation
+        print(f"🔧 DEBUG: Execution symbols: {self._execution_symbols}")
+        if hasattr(self.data_feed, 'market_data'):
+            print(f"🔧 DEBUG: Monitored symbols: {self.data_feed.market_data.monitored_symbols}")
+            print(f"🔧 DEBUG: MarketData execution symbols: {self.data_feed.market_data._execution_symbols}")
+
+    # _execute_prioritized_orders - End
 
     def _close_single_position(self, position) -> None:
         """Orchestrate the closing of a single position through the execution service."""
@@ -1437,7 +1544,7 @@ class TradingManager:
             )
             # <Context-Aware Logging - Position Close Error - End>
 
-# get_loading_state method - Begin (UPDATED)
+    # get_loading_state method - Begin (UPDATED)
     def get_loading_state(self) -> Dict[str, Any]:
         """Get current order loading state for monitoring and debugging."""
         return {
@@ -1449,9 +1556,9 @@ class TradingManager:
             'loading_source': 'excel' if self._excel_loaded else 'database' if self._db_loaded else 'none',
             'session_protection_active': self._excel_loaded or self._db_loaded
         }
-# get_loading_state method - End
+    # get_loading_state method - End
 
-# reset_excel_loading_state method - Begin (UPDATED)
+    # reset_excel_loading_state method - Begin (UPDATED)
     def reset_excel_loading_state(self) -> None:
         """Reset order loading state for testing or special scenarios.
         
@@ -1482,9 +1589,9 @@ class TradingManager:
             decision_reason="Order loading state manually reset - use with caution"
         )
         # <Context-Aware Logging - Reset State - End>
-# reset_excel_loading_state method - End
+    # reset_excel_loading_state method - End
 
-# Enhanced Validation Methods - Begin (NEW)
+    # Enhanced Validation Methods - Begin (NEW)
     def _get_max_order_age_hours(self, position_strategy: PositionStrategy) -> float:
         """Get maximum allowed age in hours for orders based on position strategy."""
         age_limits = {
@@ -1709,9 +1816,9 @@ class TradingManager:
         
         return issues
 
-# Enhanced Validation Methods - End
+    # Enhanced Validation Methods - End
 
-# load_planned_orders method - Begin (UPDATED with enhanced validation)
+    # load_planned_orders method - Begin (UPDATED with enhanced validation)
     def load_planned_orders(self) -> List[PlannedOrder]:
         """Load and validate planned orders from Excel (if provided) or database.
         
@@ -1867,6 +1974,5 @@ class TradingManager:
             all_issues.extend(self._validate_market_conditions(self.planned_orders))
         
         return all_issues
-
-# load_planned_orders method - End
+    # load_planned_orders method - End
 

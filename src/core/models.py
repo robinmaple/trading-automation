@@ -69,6 +69,10 @@ class PlannedOrderDB(Base):
     overall_trend = Column(String, nullable=True)       # Bull / Bear / Neutral
     brief_analysis = Column(String, nullable=True)      # Optional free text
 
+    # Expiration Date - Begin
+    expiration_date = Column(DateTime, nullable=True)   # When this order should expire
+    # Expiration Date - End
+
     created_at = Column(DateTime, default=datetime.datetime.now)
     planned_at = Column(DateTime, default=datetime.datetime.now)
     updated_at = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)

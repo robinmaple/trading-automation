@@ -15,145 +15,240 @@ from src.core.event_bus import EventBus
 from src.core.context_aware_logger import get_context_logger, TradingEventType
 from src.core.historical_data_manager import HistoricalDataManager
 
+
 class IBKRDataFeed(AbstractDataFeed):
     """Concrete data feed implementation for Interactive Brokers market data."""
 
     def __init__(self, ibkr_client: IbkrClient, event_bus: EventBus = None):
         """Initialize the data feed with an existing IbkrClient instance."""
-        # <Context-Aware Logger Initialization - Begin>
         self.context_logger = get_context_logger()
-        # <Context-Aware Logger Initialization - End>
         
-        # <Context-Aware Logging - Data Feed Initialization Start - Begin>
+        # Minimal initialization logging
         self.context_logger.log_event(
             TradingEventType.SYSTEM_HEALTH,
-            "IBKRDataFeed initialization starting",
+            "Data feed initialized",
             context_provider={
-                "ibkr_client_provided": ibkr_client is not None,
-                "event_bus_provided": event_bus is not None,
-                "ibkr_client_connected": ibkr_client.connected if ibkr_client else False
+                "ibkr_client_ready": ibkr_client is not None,
+                "event_bus_provided": event_bus is not None
             }
         )
-        # <Context-Aware Logging - Data Feed Initialization Start - End>
         
         self.ibkr_client = ibkr_client
-        # <Event-Driven Market Data Manager - Begin>
-        # Create MarketDataManager with EventBus for price publishing
         self.market_data = MarketDataManager(ibkr_client, event_bus)
-        # <Event-Driven Market Data Manager - End>
-        
-        # <Market Data Manager Connection - Begin>
-        # CRITICAL: Connect MarketDataManager to IbkrClient to enable data flow
-        if ibkr_client:
-            ibkr_client.set_market_data_manager(self.market_data)
-            print("🔗 MarketDataManager connected to IbkrClient for data flow")
-        # <Market Data Manager Connection - End>
-
-        # <Historical Data Manager Integration - Begin>
-        # Create HistoricalDataManager for scanner historical data
         self.historical_data_manager = HistoricalDataManager(ibkr_client)
-        
-        # CRITICAL: Connect HistoricalDataManager to IbkrClient for historical data callbacks
-        if ibkr_client:
-            ibkr_client.set_historical_data_manager(self.historical_data_manager)
-            print("🔗 HistoricalDataManager connected to IbkrClient for historical data flow")
-        # <Historical Data Manager Integration - End>
 
         # Set initial connection state based on client
         self._connected = ibkr_client.connected if ibkr_client else False
         
-        # <Context-Aware Logging - Data Feed Initialization Complete - Begin>
-        self.context_logger.log_event(
-            TradingEventType.SYSTEM_HEALTH,
-            "IBKRDataFeed initialization completed",
-            context_provider={
-                "market_data_manager_initialized": self.market_data is not None,
-                "historical_data_manager_initialized": self.historical_data_manager is not None,
-                "initial_connection_state": self._connected,
-                "event_bus_integrated": event_bus is not None
-            }
-        )
-        # <Context-Aware Logging - Data Feed Initialization Complete - End>
+        # Manager connection verification
+        self._manager_connection_verified = False
+        self._verify_manager_connection()
+        
+        # Execution symbols coordination
+        self._execution_symbols: set = set()
+        
+        # Connection state tracking
+        self._last_logged_connection = None
+
+    def _verify_manager_connection(self) -> bool:
+        """
+        Verify and ensure MarketDataManager and HistoricalDataManager are properly connected to IbkrClient.
+        """
+        if not self.ibkr_client:
+            return False
+        
+        connection_results = {
+            'market_data_manager_connected': False,
+            'historical_data_manager_connected': False
+        }
+        
+        try:
+            # Connect MarketDataManager to IbkrClient for data flow
+            if hasattr(self.ibkr_client, 'set_market_data_manager'):
+                self.ibkr_client.set_market_data_manager(self.market_data)
+                connection_results['market_data_manager_connected'] = True
+            
+            # Connect HistoricalDataManager to IbkrClient for historical data callbacks
+            if hasattr(self.ibkr_client, 'set_historical_data_manager'):
+                self.ibkr_client.set_historical_data_manager(self.historical_data_manager)
+                connection_results['historical_data_manager_connected'] = True
+            
+            # Determine overall connection status
+            self._manager_connection_verified = (
+                connection_results['market_data_manager_connected'] and 
+                connection_results['historical_data_manager_connected']
+            )
+            
+            # Only log connection issues, not successes
+            if not self._manager_connection_verified:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Manager connection incomplete",
+                    context_provider=connection_results,
+                    decision_reason="Some managers not connected"
+                )
+            
+            return self._manager_connection_verified
+            
+        except Exception as e:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Manager connection failed",
+                context_provider={
+                    "error": str(e)
+                },
+                decision_reason="Manager connection exception"
+            )
+            return False
 
     def connect(self, host='127.0.0.1', port=None, client_id=0) -> bool:
         """Establish a connection to IB Gateway/TWS. Returns success status."""
-        # <Context-Aware Logging - Connection Attempt Start - Begin>
-        self.context_logger.log_event(
-            TradingEventType.SYSTEM_HEALTH,
-            "IBKRDataFeed connection attempt starting",
-            context_provider={
-                "host": host,
-                "port": port,
-                "client_id": client_id,
-                "current_connection_state": self._connected
-            }
-        )
-        # <Context-Aware Logging - Connection Attempt Start - End>
-        
         try:
             success = self.ibkr_client.connect(host, port, client_id)
             if success:
                 self._connected = True
-                # <Ensure Manager Connection After Connect - Begin>
-                # Re-affirm MarketDataManager connection after successful connection
-                if hasattr(self.ibkr_client, 'set_market_data_manager'):
-                    self.ibkr_client.set_market_data_manager(self.market_data)
-                    print("✅ IBKRDataFeed: Market data flow established")
                 
-                # Re-affirm HistoricalDataManager connection after successful connection
-                if hasattr(self.ibkr_client, 'set_historical_data_manager'):
-                    self.ibkr_client.set_historical_data_manager(self.historical_data_manager)
-                    print("✅ IBKRDataFeed: Historical data flow established")
-                # <Ensure Manager Connection After Connect - End>
+                # Re-verify manager connections after successful connection
+                manager_reconnect_success = self._verify_manager_connection()
                 
-                # <Context-Aware Logging - Connection Success - Begin>
+                # Only log connection issues
+                if not manager_reconnect_success:
+                    self.context_logger.log_event(
+                        TradingEventType.SYSTEM_HEALTH,
+                        "Manager reconnection failed after connect",
+                        context_provider={
+                            "host": host,
+                            "port": port
+                        },
+                        decision_reason="Manager callback routing may be broken"
+                    )
+                
+                # Log successful connection
                 self.context_logger.log_event(
                     TradingEventType.SYSTEM_HEALTH,
-                    "IBKRDataFeed connection established successfully",
+                    "Connection established",
                     context_provider={
                         "host": host,
                         "port": port,
-                        "client_id": client_id,
-                        "market_data_flow_established": True,
-                        "historical_data_flow_established": True
-                    },
-                    decision_reason="IBKR connection successful"
+                        "manager_ready": manager_reconnect_success
+                    }
                 )
-                # <Context-Aware Logging - Connection Success - End>
             else:
-                # <Context-Aware Logging - Connection Failed - Begin>
+                # Log connection failure
                 self.context_logger.log_event(
                     TradingEventType.SYSTEM_HEALTH,
-                    "IBKRDataFeed connection failed",
+                    "Connection failed",
                     context_provider={
                         "host": host,
-                        "port": port,
-                        "client_id": client_id
+                        "port": port
                     },
                     decision_reason="IBKR connection returned failure"
                 )
-                # <Context-Aware Logging - Connection Failed - End>
                 
             return success
         except Exception as e:
-            # <Context-Aware Logging - Connection Exception - Begin>
+            # Log connection exception
             self.context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
-                "IBKRDataFeed connection failed with exception",
+                "Connection exception",
                 context_provider={
                     "host": host,
                     "port": port,
-                    "client_id": client_id,
-                    "error_type": type(e).__name__,
-                    "error_message": str(e)
+                    "error": str(e)
                 },
-                decision_reason=f"Connection exception: {e}"
+                decision_reason="Connection exception"
             )
-            # <Context-Aware Logging - Connection Exception - End>
-            
-            print(f"Connection failed: {e}")
-            return False    
+            return False
+
+    def subscribe(self, symbol: str, contract: Contract) -> bool:
+        """Subscribe to market data for a specific symbol using the MarketDataManager."""
+        # Verify manager connection before subscription
+        if not self._manager_connection_verified:
+            connection_verified = self._verify_manager_connection()
+            if not connection_verified:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Subscription aborted - no manager connection",
+                    symbol=symbol,
+                    context_provider={
+                        "symbol": symbol
+                    },
+                    decision_reason="Unverified manager connection"
+                )
+                return False
         
+        try:
+            self.market_data.subscribe(symbol, contract)
+            
+            # Only log subscription for execution symbols or on errors
+            if symbol in self._execution_symbols:
+                self.context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "Execution symbol subscribed",
+                    symbol=symbol,
+                    context_provider={
+                        "subscription_count": len(self.market_data.subscriptions) if self.market_data else 0
+                    }
+                )
+            
+            return True
+        except Exception as e:
+            # Log subscription errors
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Subscription failed",
+                symbol=symbol,
+                context_provider={
+                    "error": str(e),
+                    "symbol": symbol
+                },
+                decision_reason=f"Failed to subscribe: {e}"
+            )
+            return False
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Get comprehensive health status of the data feed.
+        """
+        health = {
+            'data_feed_connected': self.is_connected(),
+            'ibkr_client_connected': self.ibkr_client.connected if self.ibkr_client else False,
+            'market_data_manager_active': self.market_data is not None,
+            'historical_data_manager_active': self.historical_data_manager is not None,
+            'subscription_count': len(self.market_data.subscriptions) if self.market_data else 0,
+            'manager_connection_verified': self._manager_connection_verified,
+            'execution_symbols_tracking': len(self._execution_symbols)
+        }
+        
+        # Add IbkrClient health metrics if available
+        if self.ibkr_client and hasattr(self.ibkr_client, 'get_market_data_health'):
+            client_health = self.ibkr_client.get_market_data_health()
+            health.update({
+                'market_data_flow': client_health,
+                'overall_health': 'HEALTHY' if (client_health.get('manager_connected') and self._manager_connection_verified) else 'DEGRADED'
+            })
+        else:
+            health.update({
+                'market_data_flow': 'UNKNOWN',
+                'overall_health': 'DEGRADED' if not self._manager_connection_verified else 'UNKNOWN'
+            })
+            
+        # Only log health status changes or issues
+        current_health = health['overall_health']
+        if not hasattr(self, '_last_health_status') or self._last_health_status != current_health:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Health status changed",
+                context_provider={
+                    "new_status": current_health,
+                    "subscriptions": health['subscription_count']
+                },
+                decision_reason=f"Health status: {current_health}"
+            )
+            self._last_health_status = current_health
+            
+        return health
+ 
     def is_connected(self) -> bool:
         """Check if the data feed is connected to IBKR and market data is available."""
         # Always check the actual client connection status
@@ -162,121 +257,44 @@ class IBKRDataFeed(AbstractDataFeed):
         # If client is connected but our flag isn't set, update it
         if client_connected and not self._connected:
             self._connected = True
-            # <Context-Aware Logging - Connection State Update - Begin>
+            # Log connection state recovery
             self.context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
-                "IBKRDataFeed detected active connection",
+                "Connection state recovered",
                 context_provider={
-                    "previous_connection_state": False,
-                    "new_connection_state": True,
-                    "ibkr_client_connected": client_connected
+                    "client_connected": client_connected
                 }
             )
-            # <Context-Aware Logging - Connection State Update - End>
-            print("✅ IBKRDataFeed detected active connection")
         
         # Log connection status changes for monitoring
-        if hasattr(self, '_last_logged_connection') and self._last_logged_connection != client_connected:
-            # <Context-Aware Logging - Connection Status Change - Begin>
+        if self._last_logged_connection != client_connected:
             self.context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
-                "IBKRDataFeed connection status changed",
+                "Connection status changed",
                 context_provider={
-                    "previous_status": self._last_logged_connection,
-                    "current_status": client_connected,
-                    "ibkr_client_available": self.ibkr_client is not None
+                    "new_status": client_connected
                 },
-                decision_reason=f"Connection status changed to {client_connected}"
+                decision_reason=f"Connection: {client_connected}"
             )
-            # <Context-Aware Logging - Connection Status Change - End>
         
         self._last_logged_connection = client_connected
         return client_connected
 
-    def subscribe(self, symbol: str, contract: Contract) -> bool:
-        """Subscribe to market data for a specific symbol using the MarketDataManager."""
-        # <Context-Aware Logging - Subscription Start - Begin>
-        self.context_logger.log_event(
-            TradingEventType.MARKET_CONDITION,
-            "Starting market data subscription",
-            symbol=symbol,
-            context_provider={
-                "contract_symbol": contract.symbol if contract else "UNKNOWN",
-                "security_type": contract.secType if contract else "UNKNOWN",
-                "exchange": contract.exchange if contract else "UNKNOWN",
-                "data_feed_connected": self.is_connected()
-            }
-        )
-        # <Context-Aware Logging - Subscription Start - End>
-        
-        try:
-            self.market_data.subscribe(symbol, contract)
-            
-            # <Context-Aware Logging - Subscription Success - Begin>
-            self.context_logger.log_event(
-                TradingEventType.MARKET_CONDITION,
-                "Market data subscription successful",
-                symbol=symbol,
-                context_provider={
-                    "subscription_count": len(self.market_data.subscriptions) if self.market_data else 0,
-                    "contract_details": {
-                        "symbol": contract.symbol if contract else "UNKNOWN",
-                        "security_type": contract.secType if contract else "UNKNOWN",
-                        "exchange": contract.exchange if contract else "UNKNOWN"
-                    }
-                },
-                decision_reason=f"Successfully subscribed to {symbol}"
-            )
-            # <Context-Aware Logging - Subscription Success - End>
-            
-            return True
-        except Exception as e:
-            # <Context-Aware Logging - Subscription Error - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Market data subscription failed",
-                symbol=symbol,
-                context_provider={
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "contract_symbol": contract.symbol if contract else "UNKNOWN"
-                },
-                decision_reason=f"Failed to subscribe to {symbol}: {e}"
-            )
-            # <Context-Aware Logging - Subscription Error - End>
-            
-            print(f"Failed to subscribe to {symbol}: {e}")
-            return False
-
     def get_current_price(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get current price data for a symbol, formatted for backward compatibility."""
-        # <Context-Aware Logging - Price Request Start - Begin>
-        self.context_logger.log_event(
-            TradingEventType.MARKET_CONDITION,
-            "Requesting current price data",
-            symbol=symbol,
-            context_provider={
-                "data_feed_connected": self.is_connected(),
-                "market_data_manager_available": self.market_data is not None
-            }
-        )
-        # <Context-Aware Logging - Price Request Start - End>
-        
         price_data = self.market_data.get_current_price(symbol)
         if not price_data:
-            # <Context-Aware Logging - No Price Data - Begin>
-            self.context_logger.log_event(
-                TradingEventType.MARKET_CONDITION,
-                "No price data available for symbol",
-                symbol=symbol,
-                context_provider={
-                    "price_data_available": False,
-                    "subscription_active": symbol in self.market_data.subscriptions if self.market_data else False
-                },
-                decision_reason=f"No price data returned for {symbol}"
-            )
-            # <Context-Aware Logging - No Price Data - End>
-            
+            # Only log missing price data for execution symbols
+            if symbol in self._execution_symbols:
+                self.context_logger.log_event(
+                    TradingEventType.MARKET_CONDITION,
+                    "No price data for execution symbol",
+                    symbol=symbol,
+                    context_provider={
+                        "symbol": symbol
+                    },
+                    decision_reason="Missing price data"
+                )
             return None
 
         result = {
@@ -286,98 +304,29 @@ class IBKRDataFeed(AbstractDataFeed):
             'updates': price_data.get('updates', 0)
         }
 
+        # Add any additional fields
         for key, value in price_data.items():
             if key not in result:
                 result[key] = value
 
-        # <Context-Aware Logging - Price Data Retrieved - Begin>
-        self.context_logger.log_event(
-            TradingEventType.MARKET_CONDITION,
-            "Price data retrieved successfully",
-            symbol=symbol,
-            context_provider={
-                "price": result['price'],
-                "data_type": result['data_type'],
-                "updates": result['updates'],
-                "timestamp": result['timestamp'].isoformat() if hasattr(result['timestamp'], 'isoformat') else str(result['timestamp'])
-            },
-            decision_reason=f"Retrieved price ${result['price']:.2f} for {symbol}"
-        )
-        # <Context-Aware Logging - Price Data Retrieved - End>
+        # Only log price retrieval for execution symbols or significant moves
+        if symbol in self._execution_symbols:
+            self.context_logger.log_event(
+                TradingEventType.MARKET_CONDITION,
+                "Price retrieved for execution",
+                symbol=symbol,
+                context_provider={
+                    "price": result['price'],
+                    "updates": result['updates']
+                }
+            )
         
         return result
-
-    # <Health Monitoring Methods - Begin>
-    def get_health_status(self) -> Dict[str, Any]:
-        """
-        Get comprehensive health status of the data feed.
-        
-        Returns:
-            Dictionary with health metrics for monitoring and troubleshooting
-        """
-        # <Context-Aware Logging - Health Status Request - Begin>
-        self.context_logger.log_event(
-            TradingEventType.SYSTEM_HEALTH,
-            "Generating data feed health status",
-            context_provider={
-                "health_check_type": "comprehensive"
-            }
-        )
-        # <Context-Aware Logging - Health Status Request - End>
-        
-        health = {
-            'data_feed_connected': self.is_connected(),
-            'ibkr_client_connected': self.ibkr_client.connected if self.ibkr_client else False,
-            'market_data_manager_active': self.market_data is not None,
-            'historical_data_manager_active': self.historical_data_manager is not None,
-            'subscription_count': len(self.market_data.subscriptions) if self.market_data else 0
-        }
-        
-        # Add IbkrClient health metrics if available
-        if self.ibkr_client and hasattr(self.ibkr_client, 'get_market_data_health'):
-            client_health = self.ibkr_client.get_market_data_health()
-            health.update({
-                'market_data_flow': client_health,
-                'overall_health': 'HEALTHY' if client_health.get('manager_connected') else 'DEGRADED'
-            })
-        else:
-            health.update({
-                'market_data_flow': 'UNKNOWN',
-                'overall_health': 'UNKNOWN'
-            })
-            
-        # <Context-Aware Logging - Health Status Complete - Begin>
-        self.context_logger.log_event(
-            TradingEventType.SYSTEM_HEALTH,
-            "Data feed health status generated",
-            context_provider=health,
-            decision_reason=f"Health status: {health['overall_health']}"
-        )
-        # <Context-Aware Logging - Health Status Complete - End>
-            
-        return health
 
     def validate_data_flow(self, symbol: str = None) -> Dict[str, Any]:
         """
         Validate that market data is flowing properly for a specific symbol or all symbols.
-        
-        Args:
-            symbol: Specific symbol to validate, or None for all subscribed symbols
-            
-        Returns:
-            Dictionary with validation results
         """
-        # <Context-Aware Logging - Data Flow Validation Start - Begin>
-        self.context_logger.log_event(
-            TradingEventType.SYSTEM_HEALTH,
-            "Starting data flow validation",
-            symbol=symbol,
-            context_provider={
-                "validation_scope": "specific_symbol" if symbol else "all_subscriptions"
-            }
-        )
-        # <Context-Aware Logging - Data Flow Validation Start - End>
-        
         validation = {
             'timestamp': datetime.datetime.now(),
             'symbol': symbol,
@@ -389,51 +338,18 @@ class IBKRDataFeed(AbstractDataFeed):
         if not self.is_connected():
             validation['data_flow_status'] = 'DISCONNECTED'
             validation['details']['error'] = 'Data feed not connected to IBKR'
-            
-            # <Context-Aware Logging - Data Flow Validation Failed - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Data flow validation failed - disconnected",
-                symbol=symbol,
-                context_provider=validation,
-                decision_reason="Data feed not connected to IBKR"
-            )
-            # <Context-Aware Logging - Data Flow Validation Failed - End>
-            
             return validation
             
         # Check MarketDataManager
         if not self.market_data:
             validation['data_flow_status'] = 'DEGRADED'
             validation['details']['error'] = 'MarketDataManager not initialized'
-            
-            # <Context-Aware Logging - Data Flow Validation Degraded - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Data flow validation degraded - no market data manager",
-                symbol=symbol,
-                context_provider=validation,
-                decision_reason="MarketDataManager not initialized"
-            )
-            # <Context-Aware Logging - Data Flow Validation Degraded - End>
-            
             return validation
             
         # Check HistoricalDataManager
         if not self.historical_data_manager:
             validation['data_flow_status'] = 'DEGRADED'
             validation['details']['error'] = 'HistoricalDataManager not initialized'
-            
-            # <Context-Aware Logging - Data Flow Validation Degraded - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Data flow validation degraded - no historical data manager",
-                symbol=symbol,
-                context_provider=validation,
-                decision_reason="HistoricalDataManager not initialized"
-            )
-            # <Context-Aware Logging - Data Flow Validation Degraded - End>
-            
             return validation
             
         # Check specific symbol or all symbols
@@ -469,46 +385,55 @@ class IBKRDataFeed(AbstractDataFeed):
         else:
             validation['data_flow_status'] = 'NO_DATA_FLOW'
             
-        # <Context-Aware Logging - Data Flow Validation Complete - Begin>
-        self.context_logger.log_event(
-            TradingEventType.SYSTEM_HEALTH,
-            "Data flow validation completed",
-            symbol=symbol,
-            context_provider=validation,
-            decision_reason=f"Data flow status: {validation['data_flow_status']}"
-        )
-        # <Context-Aware Logging - Data Flow Validation Complete - End>
+        # Only log validation failures or status changes
+        if validation['data_flow_status'] != 'HEALTHY':
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Data flow validation issue",
+                symbol=symbol,
+                context_provider={
+                    "status": validation['data_flow_status'],
+                    "active_symbols": len(active_symbols)
+                },
+                decision_reason=f"Data flow: {validation['data_flow_status']}"
+            )
             
         return validation
-    # <Health Monitoring Methods - End>
 
     def disconnect(self) -> None:
         """Disconnect from the IBKR API and clean up resources."""
-        # <Context-Aware Logging - Disconnection Start - Begin>
-        self.context_logger.log_event(
-            TradingEventType.SYSTEM_HEALTH,
-            "Starting IBKRDataFeed disconnection",
-            context_provider={
-                "current_connection_state": self._connected,
-                "ibkr_client_available": self.ibkr_client is not None
-            }
-        )
-        # <Context-Aware Logging - Disconnection Start - End>
-        
         if self.ibkr_client and hasattr(self.ibkr_client, 'disconnect'):
             self.ibkr_client.disconnect()
             self._connected = False
             
-            # <Context-Aware Logging - Disconnection Complete - Begin>
+            # Log disconnection
             self.context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
-                "IBKRDataFeed disconnected successfully",
+                "Disconnected from IBKR",
                 context_provider={
-                    "new_connection_state": False,
                     "subscriptions_cleared": len(self.market_data.subscriptions) if self.market_data else 0
-                },
-                decision_reason="Disconnected from IBKR API"
+                }
             )
-            # <Context-Aware Logging - Disconnection Complete - End>
-            
-            print("✅ Disconnected from IBKR")
+
+    def set_execution_symbols(self, execution_symbols: set) -> None:
+        """
+        Set symbols that require execution flow bypassing filtering.
+        """
+        previous_count = len(self._execution_symbols)
+        self._execution_symbols = execution_symbols.copy() if execution_symbols else set()
+        
+        # Only log execution symbols changes
+        if previous_count != len(self._execution_symbols):
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Execution symbols updated",
+                context_provider={
+                    'new_count': len(self._execution_symbols),
+                    'symbols': list(self._execution_symbols)[:5]  # Log first 5
+                },
+                decision_reason=f"Execution symbols: {len(self._execution_symbols)}"
+            )
+        
+        # Update MarketDataManager with execution symbols if available
+        if self.market_data and hasattr(self.market_data, 'set_execution_symbols'):
+            self.market_data.set_execution_symbols(self._execution_symbols)
