@@ -701,59 +701,6 @@ class PrioritizationService:
         # <Context-Aware Logging Integration - End>
         return result
 
-    def is_order_viable(self, order_data: Dict) -> Tuple[bool, str]:
-        """Check if order meets minimum viability criteria."""
-        order = order_data.get('order')
-        safe_symbol = getattr(order, 'symbol', 'Unknown') if order else 'Unknown'
-        fill_prob = order_data.get('fill_probability', 0)
-        
-        # <Context-Aware Logging Integration - Begin>
-        self.context_logger.log_event(
-            TradingEventType.ORDER_VALIDATION,
-            f"Checking viability for {safe_symbol}",
-            symbol=safe_symbol if safe_symbol != 'Unknown' else None,
-            context_provider={
-                "fill_probability": fill_prob,
-                "order_provided": order is not None
-            }
-        )
-        # <Context-Aware Logging Integration - End>
-            
-        two_layer_config = self.config.get('two_layer_prioritization', {})
-        min_fill_prob = two_layer_config.get('min_fill_probability', 0.4)
-        
-        if fill_prob < min_fill_prob:
-            reason = f"Fill probability below minimum ({fill_prob:.2f} < {min_fill_prob})"
-            # <Context-Aware Logging Integration - Begin>
-            self.context_logger.log_event(
-                TradingEventType.ORDER_VALIDATION,
-                f"Order {safe_symbol} not viable: {reason}",
-                symbol=safe_symbol,
-                context_provider={
-                    "fill_probability": fill_prob,
-                    "min_fill_probability": min_fill_prob
-                },
-                decision_reason="Fill probability below threshold"
-            )
-            # <Context-Aware Logging Integration - End>
-            return False, reason
-        
-        # Add additional viability checks here if needed
-        # Example: minimum volume, maximum spread, etc.
-        
-        # <Context-Aware Logging Integration - Begin>
-        self.context_logger.log_event(
-            TradingEventType.ORDER_VALIDATION,
-            f"Order {safe_symbol} is viable",
-            symbol=safe_symbol,
-            context_provider={
-                "fill_probability": fill_prob,
-                "min_fill_probability": min_fill_prob
-            },
-            decision_reason="Order meets viability criteria"
-        )
-        # <Context-Aware Logging Integration - End>
-        return True, "Viable"
     # <Two-Layer Prioritization - End>
 
     # Compute final score using Phase B formula - Begin
@@ -1200,19 +1147,63 @@ class PrioritizationService:
             return self._prioritize_orders_legacy(valid_executable_orders, total_capital, current_working_orders)
     # Fix prioritize_orders with comprehensive safety checks - End
 
-    # Add timeout-protected prioritization method - Begin
+    # is_order_viable - Begin (UPDATED - remove probability threshold)
+    def is_order_viable(self, order_data: Dict) -> Tuple[bool, str]:
+        """Check if order meets minimum viability criteria.
+        
+        UPDATED: Probability scores are used for prioritization only, not for blocking execution.
+        All orders that pass basic business rules are considered viable.
+        """
+        order = order_data.get('order')
+        safe_symbol = getattr(order, 'symbol', 'Unknown') if order else 'Unknown'
+        fill_prob = order_data.get('fill_probability', 0)
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            f"Checking viability for {safe_symbol}",
+            symbol=safe_symbol if safe_symbol != 'Unknown' else None,
+            context_provider={
+                "fill_probability": fill_prob,
+                "order_provided": order is not None
+            }
+        )
+        # <Context-Aware Logging Integration - End>
+            
+        # UPDATED: Remove probability threshold check - probability is for prioritization only
+        # All orders that reach this point are considered viable for execution
+        # Probability scores will be used to determine execution sequence, not block execution
+        
+        # <Context-Aware Logging Integration - Begin>
+        self.context_logger.log_event(
+            TradingEventType.ORDER_VALIDATION,
+            f"Order {safe_symbol} is viable - probability used for sequencing only",
+            symbol=safe_symbol,
+            context_provider={
+                "fill_probability": fill_prob,
+                "decision": "All orders viable - probability affects sequence only"
+            },
+            decision_reason="Order meets basic business rules - probability used for prioritization"
+        )
+        # <Context-Aware Logging Integration - End>
+        return True, "Viable - probability used for sequencing"
+    # is_order_viable - End
+
+    # _prioritize_orders_with_timeout - Begin (UPDATED - remove viability filtering)
     @timeout(seconds=30, error_message="Two-layer prioritization timed out after 30 seconds")
     def _prioritize_orders_with_timeout(self, executable_orders: List[Dict], total_capital: float, 
-                                      current_working_orders: Optional[List] = None) -> List[Dict]:
-        """Two-layer prioritization with timeout protection."""
-        # ... (rest of the method remains exactly as in the previous version)
-        # The entire method body from the previous implementation goes here unchanged
+                                    current_working_orders: Optional[List] = None) -> List[Dict]:
+        """Two-layer prioritization with timeout protection.
+        
+        UPDATED: All orders are considered viable - probability affects sequence only.
+        """
+        # ... (rest of method setup code remains unchanged)
         
         committed_capital = 0.0
         working_order_count = 0
         if current_working_orders:
             committed_capital = sum(order.get('capital_commitment', 0) 
-                                  for order in current_working_orders)
+                                for order in current_working_orders)
             working_order_count = len(current_working_orders)
         
         available_capital = total_capital * self.config['max_capital_utilization'] - committed_capital
@@ -1234,142 +1225,90 @@ class PrioritizationService:
             }
         )
 
-        # First pass: Check viability and calculate quality scores
+        # UPDATED: First pass - ALL orders are considered viable, calculate quality scores for all
         viable_orders = []
-        non_viable_orders = []
         
         for order_data in executable_orders:
             order = order_data['order']
             safe_symbol = getattr(order, 'symbol', 'Unknown')
             
-            # Check viability with enhanced error handling
+            # UPDATED: All orders are viable - probability affects sequence only
+            # Calculate quality score for ALL orders with error handling
             try:
-                is_viable, reason = self.is_order_viable(order_data)
-            except Exception as e:
-                self.context_logger.log_event(
-                    TradingEventType.SYSTEM_HEALTH,
-                    f"Viability check failed for {safe_symbol}",
-                    symbol=safe_symbol,
-                    context_provider={
-                        "error_type": type(e).__name__,
-                        "error_message": str(e)
-                    },
-                    decision_reason="Viability check error - marking as non-viable"
-                )
-                is_viable = False
-                reason = f"Viability check error: {str(e)}"
-            
-            if is_viable:
-                # Calculate quality score for viable orders with error handling
+                quality_result = self.calculate_quality_score(order, total_capital)
+                
+                # Safe quantity and capital commitment calculation
+                quantity = 0
+                capital_commitment = 0
                 try:
-                    quality_result = self.calculate_quality_score(order, total_capital)
-                    
-                    # CRITICAL FIX: Safe quantity and capital commitment calculation
-                    quantity = 0
-                    capital_commitment = 0
-                    try:
-                        quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
-                        if hasattr(order, 'entry_price') and order.entry_price is not None:
-                            capital_commitment = order.entry_price * quantity
-                    except Exception as e:
-                        self.context_logger.log_event(
-                            TradingEventType.SYSTEM_HEALTH,
-                            f"Capital commitment calculation failed for {safe_symbol}",
-                            symbol=safe_symbol,
-                            context_provider={
-                                "error_type": type(e).__name__,
-                                "error_message": str(e)
-                            },
-                            decision_reason="Capital calculation error"
-                        )
-                        # Mark as non-viable if capital calculation fails
-                        is_viable = False
-                        reason = f"Capital calculation failed: {str(e)}"
-                    
-                    if is_viable:
-                        viable_order = {
-                            **order_data,
-                            'quality_score': quality_result['quality_score'],
-                            'quality_components': quality_result['components'],
-                            'quantity': quantity,
-                            'capital_commitment': capital_commitment,
-                            'viable': True,
-                            'allocation_reason': 'Viable - awaiting allocation',
-                            'allocated': False
-                        }
-                        viable_orders.append(viable_order)
-                        
-                        self.context_logger.log_event(
-                            TradingEventType.ORDER_VALIDATION,
-                            f"Order {safe_symbol} marked as viable",
-                            symbol=safe_symbol,
-                            context_provider={
-                                "quality_score": quality_result['quality_score'],
-                                "capital_commitment": capital_commitment,
-                                "quantity": quantity
-                            },
-                            decision_reason="Order passed viability check"
-                        )
-                    else:
-                        # Fall through to non-viable handling
-                        non_viable_order = {
-                            **order_data,
-                            'viable': False,
-                            'allocation_reason': reason,
-                            'allocated': False
-                        }
-                        non_viable_orders.append(non_viable_order)
-                        
+                    quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
+                    if hasattr(order, 'entry_price') and order.entry_price is not None:
+                        capital_commitment = order.entry_price * quantity
                 except Exception as e:
                     self.context_logger.log_event(
                         TradingEventType.SYSTEM_HEALTH,
-                        f"Quality score calculation failed for {safe_symbol}",
+                        f"Capital commitment calculation failed for {safe_symbol}",
                         symbol=safe_symbol,
                         context_provider={
                             "error_type": type(e).__name__,
                             "error_message": str(e)
                         },
-                        decision_reason="Quality score calculation error - marking as non-viable"
+                        decision_reason="Capital calculation error"
                     )
-                    non_viable_order = {
-                        **order_data,
-                        'viable': False,
-                        'allocation_reason': f"Quality score error: {str(e)}",
-                        'allocated': False
-                    }
-                    non_viable_orders.append(non_viable_order)
-            else:
-                non_viable_order = {
+                    # Skip orders with capital calculation errors
+                    continue
+                
+                viable_order = {
                     **order_data,
-                    'viable': False,
-                    'allocation_reason': reason,
+                    'quality_score': quality_result['quality_score'],
+                    'quality_components': quality_result['components'],
+                    'quantity': quantity,
+                    'capital_commitment': capital_commitment,
+                    'viable': True,  # UPDATED: All orders are viable
+                    'allocation_reason': 'Viable - awaiting allocation',
                     'allocated': False
                 }
-                non_viable_orders.append(non_viable_order)
+                viable_orders.append(viable_order)
                 
                 self.context_logger.log_event(
                     TradingEventType.ORDER_VALIDATION,
-                    f"Order {safe_symbol} marked as non-viable",
+                    f"Order {safe_symbol} processed for prioritization",
                     symbol=safe_symbol,
                     context_provider={
-                        "reason": reason
+                        "quality_score": quality_result['quality_score'],
+                        "capital_commitment": capital_commitment,
+                        "quantity": quantity,
+                        "fill_probability": order_data.get('fill_probability', 0)
                     },
-                    decision_reason="Order failed viability check"
+                    decision_reason="Order processed for prioritization - probability affects sequence"
                 )
+                
+            except Exception as e:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"Quality score calculation failed for {safe_symbol}",
+                    symbol=safe_symbol,
+                    context_provider={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    },
+                    decision_reason="Quality score calculation error - order skipped"
+                )
+                # Skip orders with quality calculation errors
         
         self.context_logger.log_event(
             TradingEventType.POSITION_MANAGEMENT,
-            "Viability check completed",
+            "Viability processing completed - all orders considered viable",
             context_provider={
                 "viable_orders_count": len(viable_orders),
-                "non_viable_orders_count": len(non_viable_orders)
+                "original_orders_count": len(executable_orders)
             }
         )
 
-        # Sort viable orders by quality score (highest first)
+        # Sort viable orders by quality score (highest first) - probability affects sequence here
         viable_orders.sort(key=lambda x: x.get('quality_score', 0), reverse=True)
         
-        # Second pass: Allocate capital to top viable orders
+        # Second pass: Allocate capital to top orders based on quality score
         allocated_orders = []
         total_allocated_capital = 0
         allocated_count = 0
@@ -1423,7 +1362,7 @@ class PrioritizationService:
                     "total_allocated_capital": total_allocated_capital,
                     "allocated_count": allocated_count
                 },
-                decision_reason="Order allocated"
+                decision_reason="Order allocated based on quality score"
             )
         
         self.context_logger.log_event(
@@ -1435,11 +1374,11 @@ class PrioritizationService:
                 "available_capital_remaining": available_capital - total_allocated_capital,
                 "available_slots_remaining": available_slots - allocated_count
             },
-            decision_reason="Prioritization process completed"
+            decision_reason="Prioritization process completed - probability used for sequence only"
         )
 
-        # Combine all orders for return (viable allocated, viable not allocated, non-viable)
-        result = viable_orders + non_viable_orders
+        # Return all processed orders (both allocated and not allocated)
+        result = viable_orders
         
         self.context_logger.log_event(
             TradingEventType.POSITION_MANAGEMENT,
@@ -1447,9 +1386,8 @@ class PrioritizationService:
             context_provider={
                 "total_orders_processed": len(result),
                 "allocated_orders": len(allocated_orders),
-                "viable_but_not_allocated": len(viable_orders) - len(allocated_orders),
-                "non_viable_orders": len(non_viable_orders)
+                "viable_orders_not_allocated": len(viable_orders) - len(allocated_orders)
             }
         )
         return result
-    # Add timeout-protected prioritization method - End
+    # _prioritize_orders_with_timeout - End

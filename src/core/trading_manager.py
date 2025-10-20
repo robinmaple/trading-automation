@@ -84,6 +84,12 @@ class TradingManager:
         self._execution_symbols: Set[str] = set()  # Track symbols with executable orders
         # <Execution Symbols Tracking - End>
 
+        # <Duplicate Execution Prevention - Begin>
+        self._orders_in_progress: Set[str] = set()  # Track orders currently being executed
+        self._last_execution_time: Dict[str, float] = {}  # Track last execution time per symbol
+        self._execution_cooldown_seconds = 5  # Minimum time between executions for same symbol
+        # <Duplicate Execution Prevention - End>
+
         # Account Context Tracking - Begin
         self.current_account_number: Optional[str] = None
         # Account Context Tracking - End
@@ -690,8 +696,9 @@ class TradingManager:
         return [{'capital_commitment': ao.capital_commitment} 
                 for ao in self.active_orders.values() if ao.is_working()]
 
+    # replace_active_order - Begin (UPDATED - Fixed parameter call)
     def replace_active_order(self, old_order: ActiveOrder, new_planned_order: PlannedOrder,
-                           new_fill_probability: float) -> bool:
+                        new_fill_probability: float) -> bool:
         """Replace a stale active order with a new order."""
         # <Context-Aware Logging - Order Replacement Start - Begin>
         self.context_logger.log_event(
@@ -722,11 +729,41 @@ class TradingManager:
             # <Context-Aware Logging - Order Replacement Cancel Failed - End>
             return False
 
+        # ✅ FIXED: Calculate all required parameters for bracket order replacement
         effective_priority = new_planned_order.priority * new_fill_probability
-        # Pass account number to execution orchestrator
         account_number = self._get_current_account_number()
+        total_capital = self._get_total_capital()
+        is_live_trading = self._get_trading_mode()
+        
+        try:
+            quantity = self.sizing_service.calculate_order_quantity(new_planned_order, total_capital)
+            capital_commitment = new_planned_order.entry_price * quantity
+        except Exception as e:
+            # <Context-Aware Logging - Replacement Parameter Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Failed to calculate replacement order parameters",
+                symbol=new_planned_order.symbol,
+                context_provider={
+                    'error': str(e),
+                    'entry_price': new_planned_order.entry_price,
+                    'total_capital': total_capital
+                },
+                decision_reason=f"Replacement parameter calculation failed: {e}"
+            )
+            # <Context-Aware Logging - Replacement Parameter Error - End>
+            return False
+        
+        # ✅ FIXED: Pass ALL required parameters for bracket order replacement
         success = self.execution_orchestrator.execute_single_order(
-            new_planned_order, new_fill_probability, effective_priority, account_number
+            new_planned_order, 
+            fill_probability=new_fill_probability, 
+            effective_priority=effective_priority,
+            total_capital=total_capital,
+            quantity=quantity,
+            capital_commitment=capital_commitment,
+            is_live_trading=is_live_trading,
+            account_number=account_number
         )
         
         if success:
@@ -735,15 +772,17 @@ class TradingManager:
             # <Context-Aware Logging - Order Replacement Success - Begin>
             self.context_logger.log_event(
                 TradingEventType.ORDER_VALIDATION,
-                "Order successfully replaced",
+                "Order successfully replaced with complete parameters",
                 symbol=new_planned_order.symbol,
                 context_provider={
                     'old_order_symbol': old_order.symbol,
                     'new_order_symbol': new_planned_order.symbol,
                     'effective_priority': effective_priority,
+                    'quantity': quantity,
+                    'capital_commitment': capital_commitment,
                     'account_number': account_number
                 },
-                decision_reason="Order replacement completed successfully"
+                decision_reason="Order replacement completed with complete bracket parameters"
             )
             # <Context-Aware Logging - Order Replacement Success - End>
         else:
@@ -755,13 +794,15 @@ class TradingManager:
                 context_provider={
                     'old_order_symbol': old_order.symbol,
                     'new_order_symbol': new_planned_order.symbol,
-                    'effective_priority': effective_priority
+                    'effective_priority': effective_priority,
+                    'quantity': quantity
                 },
                 decision_reason="New order execution failed after old order cancellation"
             )
             # <Context-Aware Logging - Order Replacement Execution Failed - End>
         
         return success
+    # replace_active_order - End
 
     def generate_training_data(self, output_path: str = "training_data.csv") -> bool:
         """Generate and export training data from labeled orders."""
@@ -1310,12 +1351,12 @@ class TradingManager:
 
         self._execute_prioritized_orders(executable_orders)
 
-    # _execute_prioritized_orders - Begin (UPDATED)
+    # _execute_prioritized_orders - Begin (UPDATED - Fixed parameter calls)
     def _execute_prioritized_orders(self, executable_orders: List[Dict]) -> None:
-        """Execute orders using two-layer prioritization WITHOUT viability gating.
+        """Execute orders using two-layer prioritization WITH duplicate prevention.
         
-        Probability scores are used for prioritization only, not for blocking execution.
-        All orders that pass business rules are eligible for execution.
+        Enhanced with execution tracking to prevent duplicate order placement.
+        FIXED: Now passes all required parameters for bracket order calculation.
         """
         total_capital = self._get_total_capital()
         working_orders = self._get_working_orders()
@@ -1323,12 +1364,13 @@ class TradingManager:
         # <Context-Aware Logging - Prioritization Start - Begin>
         self.context_logger.log_event(
             TradingEventType.EXECUTION_DECISION,
-            "Starting order prioritization",
+            "Starting order prioritization with duplicate prevention",
             context_provider={
                 'executable_orders_count': len(executable_orders),
                 'total_capital': total_capital,
                 'working_orders_count': len(working_orders),
-                'max_open_orders': self.max_open_orders
+                'max_open_orders': self.max_open_orders,
+                'orders_in_progress_count': len(self._orders_in_progress)
             }
         )
         # <Context-Aware Logging - Prioritization Start - End>
@@ -1359,26 +1401,46 @@ class TradingManager:
                 skipped_reasons[symbol] = f"Not allocated due to capacity limits"
                 continue
 
-            if self.state_service.has_open_position(symbol):
-                skipped_reasons[symbol] = "Open position exists"
+            # ✅ NEW: Duplicate execution prevention
+            can_execute, reason = self._can_execute_order(order)
+            if not can_execute:
+                skipped_reasons[symbol] = reason
                 continue
 
-            db_order = self.order_lifecycle_manager.find_existing_order(order)
-            if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
-                same_action = db_order.action == order.action.value
-                same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
-                same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
-                if same_action and same_entry and same_stop:
-                    skipped_reasons[symbol] = f"Duplicate active order (status: {db_order.status})"
-                    continue
+            # Mark order as starting execution to prevent duplicates
+            self._mark_order_execution_start(order)
 
+            # ✅ FIXED: Calculate all required parameters for bracket order
             effective_priority = order.priority * fill_prob
             account_number = self._get_current_account_number()
+            
+            # Calculate position details for bracket order
+            try:
+                quantity = self.sizing_service.calculate_order_quantity(order, total_capital)
+                capital_commitment = order.entry_price * quantity
+                is_live_trading = self._get_trading_mode()
+            except Exception as e:
+                # <Context-Aware Logging - Parameter Calculation Error - Begin>
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    f"Failed to calculate bracket order parameters for {symbol}",
+                    symbol=symbol,
+                    context_provider={
+                        'error': str(e),
+                        'entry_price': order.entry_price,
+                        'total_capital': total_capital
+                    },
+                    decision_reason=f"Parameter calculation failed: {e}"
+                )
+                # <Context-Aware Logging - Parameter Calculation Error - End>
+                self._mark_order_execution_complete(order, False)
+                skipped_reasons[symbol] = f"Parameter calculation failed: {e}"
+                continue
             
             # <Context-Aware Logging - Order Execution Attempt - Begin>
             self.context_logger.log_event(
                 TradingEventType.EXECUTION_DECISION,
-                f"Attempting order execution for {symbol}",
+                f"Attempting order execution for {symbol} with complete parameters",
                 symbol=symbol,
                 context_provider={
                     'entry_price': order.entry_price,
@@ -1386,16 +1448,32 @@ class TradingManager:
                     'action': order.action.value,
                     'fill_probability': fill_prob,
                     'effective_priority': effective_priority,
+                    'quantity': quantity,
+                    'capital_commitment': capital_commitment,
+                    'total_capital': total_capital,
+                    'is_live_trading': is_live_trading,
                     'account_number': account_number,
-                    'symbol_in_execution_set': symbol in self._execution_symbols
+                    'symbol_in_execution_set': symbol in self._execution_symbols,
+                    'duplicate_prevention_active': True
                 },
-                decision_reason=f"Order meets execution criteria"
+                decision_reason=f"Order meets execution criteria with complete bracket parameters"
             )
             # <Context-Aware Logging - Order Execution Attempt - End>
             
+            # ✅ FIXED: Pass ALL required parameters for bracket order calculation
             success = self.execution_orchestrator.execute_single_order(
-                order, fill_prob, effective_priority, account_number
+                order, 
+                fill_probability=fill_prob,
+                effective_priority=effective_priority,
+                total_capital=total_capital,
+                quantity=quantity,
+                capital_commitment=capital_commitment,
+                is_live_trading=is_live_trading,
+                account_number=account_number
             )
+            
+            # Mark order execution as complete (regardless of success)
+            self._mark_order_execution_complete(order, success)
             
             if success:
                 executed_count += 1
@@ -1410,9 +1488,11 @@ class TradingManager:
                     context_provider={
                         'entry_price': order.entry_price,
                         'order_type': order.order_type.value,
-                        'execution_symbols_count': len(self._execution_symbols)
+                        'quantity': quantity,
+                        'execution_symbols_count': len(self._execution_symbols),
+                        'duplicate_prevention_active': True
                     },
-                    decision_reason="Execution orchestrator returned success"
+                    decision_reason="Execution orchestrator returned success with complete parameters"
                 )
                 # <Context-Aware Logging - Order Execution Success - End>
             else:
@@ -1422,9 +1502,11 @@ class TradingManager:
                     f"Order execution failed for {symbol}",
                     symbol=symbol,
                     context_provider={
-                        'entry_price': order.entry_price
+                        'entry_price': order.entry_price,
+                        'quantity': quantity,
+                        'duplicate_prevention_active': True
                     },
-                    decision_reason="Execution orchestrator returned failure"
+                    decision_reason="Execution orchestrator returned failure despite complete parameters"
                 )
                 # <Context-Aware Logging - Order Execution Failure - End>
 
@@ -1437,18 +1519,21 @@ class TradingManager:
                 'skipped_count': len(skipped_reasons),
                 'skipped_reasons': skipped_reasons,
                 'total_considered': len(prioritized_orders),
-                'execution_symbols_count': len(self._execution_symbols)
+                'execution_symbols_count': len(self._execution_symbols),
+                'orders_in_progress_count': len(self._orders_in_progress),
+                'duplicate_prevention_active': True,
+                'parameter_flow_fixed': True  # Track that parameter fix is applied
             },
-            decision_reason=f"Execution summary: {executed_count} executed, {len(self._execution_symbols)} symbols tracked for execution"
+            decision_reason=f"Execution summary with complete parameter flow: {executed_count} executed"
         )
         # <Context-Aware Logging - Execution Summary - End>
 
-        # DEBUG: Verify execution symbols propagation
+        # DEBUG: Verify execution symbols propagation and parameter flow
         print(f"🔧 DEBUG: Execution symbols: {self._execution_symbols}")
+        print(f"🔧 DEBUG: Orders in progress: {self._orders_in_progress}")
+        print(f"🔧 DEBUG: Parameter flow fixed - all bracket order parameters calculated")
         if hasattr(self.data_feed, 'market_data'):
             print(f"🔧 DEBUG: Monitored symbols: {self.data_feed.market_data.monitored_symbols}")
-            print(f"🔧 DEBUG: MarketData execution symbols: {self.data_feed.market_data._execution_symbols}")
-
     # _execute_prioritized_orders - End
 
     def _close_single_position(self, position) -> None:
@@ -1976,3 +2061,151 @@ class TradingManager:
         return all_issues
     # load_planned_orders method - End
 
+    # _find_planned_order_db_id - Begin (NEW)
+    def _find_planned_order_db_id(self, planned_order) -> Optional[int]:
+        """
+        Find the database ID for a planned order.
+        
+        This method is used by OrderExecutionService to link execution attempts
+        and active orders back to their database records.
+        
+        Args:
+            planned_order: The PlannedOrder object to find database ID for
+            
+        Returns:
+            int: Database ID if found, None if not found
+        """
+        try:
+            # Use OrderLifecycleManager to find existing order in database
+            db_order = self.order_lifecycle_manager.find_existing_order(planned_order)
+            if db_order and hasattr(db_order, 'id'):
+                return db_order.id
+                
+            # Fallback: Try to find by symbol and key attributes if not found by lifecycle manager
+            from src.core.models import PlannedOrderDB
+            from sqlalchemy import select
+            
+            # Build query to find matching order
+            query = select(PlannedOrderDB).where(
+                PlannedOrderDB.symbol == planned_order.symbol,
+                PlannedOrderDB.action == planned_order.action.value,
+                PlannedOrderDB.entry_price == planned_order.entry_price,
+                PlannedOrderDB.stop_loss == planned_order.stop_loss
+            )
+            
+            db_order = self.db_session.scalar(query)
+            if db_order:
+                return db_order.id
+                
+            # If still not found, log warning and return None
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Could not find database ID for planned order",
+                symbol=planned_order.symbol,
+                context_provider={
+                    'symbol': planned_order.symbol,
+                    'action': planned_order.action.value,
+                    'entry_price': planned_order.entry_price,
+                    'stop_loss': planned_order.stop_loss
+                },
+                decision_reason="Planned order not found in database"
+            )
+            return None
+            
+        except Exception as e:
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Error finding planned order database ID",
+                symbol=planned_order.symbol,
+                context_provider={
+                    'error': str(e),
+                    'symbol': planned_order.symbol
+                },
+                decision_reason=f"Database ID lookup failed: {e}"
+            )
+            return None
+    # _find_planned_order_db_id - End
+
+        # _can_execute_order - Begin (NEW)
+    def _can_execute_order(self, order) -> tuple[bool, str]:
+        """Check if an order can be executed without duplication."""
+        symbol = order.symbol
+        order_key = f"{symbol}_{order.action.value}_{order.entry_price}_{order.stop_loss}"
+        
+        # Check if order is already in progress
+        if order_key in self._orders_in_progress:
+            return False, f"Order execution already in progress for {symbol}"
+        
+        # Check execution cooldown
+        current_time = time.time()
+        last_execution = self._last_execution_time.get(order_key, 0)
+        time_since_last = current_time - last_execution
+        
+        if time_since_last < self._execution_cooldown_seconds:
+            return False, f"Execution cooldown active for {symbol} ({time_since_last:.1f}s < {self._execution_cooldown_seconds}s)"
+        
+        # Check if order already has active working orders
+        if self.state_service.has_open_position(symbol):
+            return False, f"Open position exists for {symbol}"
+            
+        # Check database for active duplicates
+        db_order = self.order_lifecycle_manager.find_existing_order(order)
+        if db_order and db_order.status in ['LIVE', 'LIVE_WORKING', 'FILLED']:
+            same_action = db_order.action == order.action.value
+            same_entry = abs(db_order.entry_price - order.entry_price) < 0.0001
+            same_stop = abs(db_order.stop_loss - order.stop_loss) < 0.0001
+            if same_action and same_entry and same_stop:
+                return False, f"Duplicate active order in database (status: {db_order.status})"
+        
+        return True, "Order can be executed"
+    # _can_execute_order - End
+
+    # _mark_order_execution_start - Begin (NEW)
+    def _mark_order_execution_start(self, order) -> None:
+        """Mark an order as starting execution to prevent duplicates."""
+        symbol = order.symbol
+        order_key = f"{symbol}_{order.action.value}_{order.entry_price}_{order.stop_loss}"
+        self._orders_in_progress.add(order_key)
+        
+        # <Context-Aware Logging - Order Execution Start Tracking - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Order execution tracking started",
+            symbol=symbol,
+            context_provider={
+                'order_key': order_key,
+                'orders_in_progress_count': len(self._orders_in_progress)
+            },
+            decision_reason="Order marked as in-progress to prevent duplicate execution"
+        )
+        # <Context-Aware Logging - Order Execution Start Tracking - End>
+    # _mark_order_execution_start - End
+
+    # _mark_order_execution_complete - Begin (NEW)
+    def _mark_order_execution_complete(self, order, success: bool) -> None:
+        """Mark an order as completed execution and update tracking."""
+        symbol = order.symbol
+        order_key = f"{symbol}_{order.action.value}_{order.entry_price}_{order.stop_loss}"
+        
+        # Remove from in-progress tracking
+        if order_key in self._orders_in_progress:
+            self._orders_in_progress.remove(order_key)
+        
+        # Update last execution time (regardless of success)
+        self._last_execution_time[order_key] = time.time()
+        
+        # <Context-Aware Logging - Order Execution Complete Tracking - Begin>
+        self.context_logger.log_event(
+            TradingEventType.EXECUTION_DECISION,
+            f"Order execution tracking completed",
+            symbol=symbol,
+            context_provider={
+                'order_key': order_key,
+                'success': success,
+                'orders_in_progress_count': len(self._orders_in_progress),
+                'total_tracked_executions': len(self._last_execution_time)
+            },
+            decision_reason="Order execution tracking updated"
+        )
+        # <Context-Aware Logging - Order Execution Complete Tracking - End>
+    # _mark_order_execution_complete - End

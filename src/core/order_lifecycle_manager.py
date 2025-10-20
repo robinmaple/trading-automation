@@ -221,9 +221,75 @@ class OrderLifecycleManager:
         
         return price_changed or priority_changed or risk_changed
         
+    # <Enhanced Persistence Logic - End>
+
+# OrderLifecycleManager expiration date persistence fix - Begin
+    def _persist_single_order(self, order: PlannedOrder) -> bool:
+        """Persist a single order to database with duplicate checking and expiration date handling."""
+        try:
+            existing_order = self.find_existing_order(order)
+            if existing_order and self._is_duplicate_order(order, existing_order):
+                self.context_logger.log_event(
+                    event_type=TradingEventType.ORDER_VALIDATION,
+                    message="Skipping duplicate order",
+                    symbol=order.symbol,
+                    context_provider={
+                        'entry_price': lambda: order.entry_price,
+                        'action': lambda: order.action.value
+                    },
+                    decision_reason="Duplicate order detection"
+                )
+                return False
+            
+            # Ensure import time is set for proper expiration date calculation
+            if not hasattr(order, '_import_time') or order._import_time is None:
+                order._import_time = datetime.datetime.now()
+                self.context_logger.log_event(
+                    event_type=TradingEventType.ORDER_VALIDATION,
+                    message="Set import time for expiration calculation",
+                    symbol=order.symbol,
+                    context_provider={
+                        'import_time': lambda: order._import_time.isoformat()
+                    },
+                    decision_reason="Import time initialized for new order"
+                )
+            
+            # Recalculate expiration date with proper import time
+            order._set_expiration_date()
+            
+            db_order = self.persistence_service.convert_to_db_model(order)
+            self.db_session.add(db_order)
+            
+            self.context_logger.log_event(
+                event_type=TradingEventType.ORDER_VALIDATION,
+                message="Order persisted to database with expiration date",
+                symbol=order.symbol,
+                context_provider={
+                    'entry_price': lambda: order.entry_price,
+                    'action': lambda: order.action.value,
+                    'order_type': lambda: order.order_type.value,
+                    'expiration_date': lambda: order.expiration_date.isoformat() if order.expiration_date else None
+                },
+                decision_reason="New order creation with expiration date"
+            )
+            return True
+            
+        except Exception as e:
+            self.context_logger.log_event(
+                event_type=TradingEventType.SYSTEM_HEALTH,
+                message="Order persistence failed",
+                symbol=order.symbol,
+                context_provider={
+                    'error_type': lambda: type(e).__name__,
+                    'error_message': lambda: str(e)
+                },
+                decision_reason="Order persistence exception"
+            )
+            return False
+
     def _update_existing_order(self, order: PlannedOrder) -> bool:
         """
-        Update an existing database order with Excel changes.
+        Update an existing database order with Excel changes including expiration date refresh.
         
         Args:
             order: PlannedOrder with updated values
@@ -241,7 +307,8 @@ class OrderLifecycleManager:
                     decision_reason="Order lookup failure during update"
                 )
                 return False
-                
+            
+            # Update core fields
             existing_order.entry_price = order.entry_price
             existing_order.stop_loss = order.stop_loss
             existing_order.risk_per_trade = order.risk_per_trade
@@ -249,16 +316,24 @@ class OrderLifecycleManager:
             existing_order.priority = order.priority
             existing_order.updated_at = datetime.datetime.now()
             
+            # Refresh expiration date for the updated order
+            if not hasattr(order, '_import_time') or order._import_time is None:
+                order._import_time = datetime.datetime.now()
+            
+            order._set_expiration_date()
+            existing_order.expiration_date = order.expiration_date
+            
             self.context_logger.log_event(
                 event_type=TradingEventType.ORDER_VALIDATION,
-                message="Order updated with Excel changes",
+                message="Order updated with Excel changes and refreshed expiration",
                 symbol=order.symbol,
                 context_provider={
                     'entry_price': lambda: order.entry_price,
                     'stop_loss': lambda: order.stop_loss,
-                    'priority': lambda: order.priority
+                    'priority': lambda: order.priority,
+                    'expiration_date': lambda: order.expiration_date.isoformat() if order.expiration_date else None
                 },
-                decision_reason="Excel update applied to database order"
+                decision_reason="Excel update applied to database order with expiration refresh"
             )
             return True
             
@@ -274,53 +349,7 @@ class OrderLifecycleManager:
                 decision_reason="Order update exception"
             )
             return False
-    # <Enhanced Persistence Logic - End>
-            
-    def _persist_single_order(self, order: PlannedOrder) -> bool:
-        """Persist a single order to database with duplicate checking."""
-        try:
-            existing_order = self.find_existing_order(order)
-            if existing_order and self._is_duplicate_order(order, existing_order):
-                self.context_logger.log_event(
-                    event_type=TradingEventType.ORDER_VALIDATION,
-                    message="Skipping duplicate order",
-                    symbol=order.symbol,
-                    context_provider={
-                        'entry_price': lambda: order.entry_price,
-                        'action': lambda: order.action.value
-                    },
-                    decision_reason="Duplicate order detection"
-                )
-                return False
-                
-            db_order = self.persistence_service.convert_to_db_model(order)
-            self.db_session.add(db_order)
-            
-            self.context_logger.log_event(
-                event_type=TradingEventType.ORDER_VALIDATION,
-                message="Order persisted to database",
-                symbol=order.symbol,
-                context_provider={
-                    'entry_price': lambda: order.entry_price,
-                    'action': lambda: order.action.value,
-                    'order_type': lambda: order.order_type.value
-                },
-                decision_reason="New order creation"
-            )
-            return True
-            
-        except Exception as e:
-            self.context_logger.log_event(
-                event_type=TradingEventType.SYSTEM_HEALTH,
-                message="Order persistence failed",
-                symbol=order.symbol,
-                context_provider={
-                    'error_type': lambda: type(e).__name__,
-                    'error_message': lambda: str(e)
-                },
-                decision_reason="Order persistence exception"
-            )
-            return False
+# OrderLifecycleManager expiration date persistence fix - End
 
     # <Enhanced Order Validation - Begin>
     def validate_order(self, order: PlannedOrder) -> Tuple[bool, Optional[str]]:

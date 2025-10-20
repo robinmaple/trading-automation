@@ -354,32 +354,132 @@ class OrderExecutionOrchestrator:
             }
 # OrderExecutionOrchestrator.get_execution_summary - End
 
-# OrderExecutionOrchestrator.execute_single_order - Begin (UPDATED - fixed method signature)
-    def execute_single_order(self, planned_order, fill_probability, effective_priority=None, account_number=None):
-        """Execute a single order with validation and viability checks."""
+# OrderExecutionOrchestrator.execute_single_order - Begin (UPDATED - Use provided parameters)
+    def execute_single_order(self, planned_order, fill_probability, effective_priority=None, 
+                            total_capital=None, quantity=None, capital_commitment=None, 
+                            is_live_trading=None, account_number=None):
+        """Execute a single order with validation and viability checks.
+        
+        FIXED: Now uses provided parameters from trading manager instead of recalculating them
+        to maintain parameter consistency throughout the execution chain.
+        """
         # Single start log with key insights
         self.context_logger.log_event(
             TradingEventType.EXECUTION_DECISION,
-            "Order execution starting",
+            "Order execution starting with provided parameters",
             symbol=planned_order.symbol,
             context_provider={
                 "probability": fill_probability,
                 "action": planned_order.action.value,
                 "order_type": planned_order.order_type.value,
                 "effective_priority": effective_priority,
+                "total_capital_provided": total_capital is not None,
+                "quantity_provided": quantity is not None,
+                "capital_commitment_provided": capital_commitment is not None,
+                "is_live_trading_provided": is_live_trading is not None,
                 "account_number_provided": account_number is not None
             }
         )
         
         try:
-            # Get trading capital and mode
-            total_capital = self._get_total_capital()
-            is_live_trading = self._get_trading_mode()
-            
-            # Calculate position details
-            quantity, capital_commitment = self._calculate_position_details(
-                planned_order, total_capital
-            )
+            # ✅ FIXED: Use provided parameters or calculate fallbacks only if needed
+            # Use provided total_capital or calculate if not provided
+            if total_capital is None:
+                total_capital = self._get_total_capital()
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using calculated total_capital (fallback)",
+                    symbol=planned_order.symbol,
+                    context_provider={
+                        "calculated_capital": total_capital,
+                        "parameter_source": "fallback_calculation"
+                    }
+                )
+            else:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using provided total_capital",
+                    symbol=planned_order.symbol,
+                    context_provider={
+                        "provided_capital": total_capital,
+                        "parameter_source": "trading_manager"
+                    }
+                )
+                
+            # Use provided quantity and capital_commitment or calculate if not provided
+            if quantity is None or capital_commitment is None:
+                calculated_quantity, calculated_capital_commitment = self._calculate_position_details(
+                    planned_order, total_capital
+                )
+                quantity = quantity or calculated_quantity
+                capital_commitment = capital_commitment or calculated_capital_commitment
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using calculated position details (fallback)",
+                    symbol=planned_order.symbol,
+                    context_provider={
+                        "calculated_quantity": calculated_quantity,
+                        "calculated_capital_commitment": calculated_capital_commitment,
+                        "parameter_source": "fallback_calculation"
+                    }
+                )
+            else:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using provided position details",
+                    symbol=planned_order.symbol,
+                    context_provider={
+                        "provided_quantity": quantity,
+                        "provided_capital_commitment": capital_commitment,
+                        "parameter_source": "trading_manager"
+                    }
+                )
+                
+            # Use provided is_live_trading or calculate if not provided
+            if is_live_trading is None:
+                is_live_trading = self._get_trading_mode()
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using calculated trading mode (fallback)",
+                    symbol=planned_order.symbol,
+                    context_provider={
+                        "calculated_live_trading": is_live_trading,
+                        "parameter_source": "fallback_calculation"
+                    }
+                )
+            else:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using provided trading mode",
+                    symbol=planned_order.symbol,
+                    context_provider={
+                        "provided_live_trading": is_live_trading,
+                        "parameter_source": "trading_manager"
+                    }
+                )
+                
+            # Calculate effective priority if not provided
+            if effective_priority is None:
+                effective_priority = planned_order.priority * fill_probability
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using calculated effective priority (fallback)",
+                    symbol=planned_order.symbol,
+                    context_provider={
+                        "calculated_effective_priority": effective_priority,
+                        "parameter_source": "fallback_calculation"
+                    }
+                )
+            else:
+                self.context_logger.log_event(
+                    TradingEventType.SYSTEM_HEALTH,
+                    "Using provided effective priority",
+                    symbol=planned_order.symbol,
+                    context_provider={
+                        "provided_effective_priority": effective_priority,
+                        "parameter_source": "trading_manager"
+                    }
+                )
             
             # Check order viability
             if not self._check_order_viability(planned_order, fill_probability):
@@ -407,7 +507,7 @@ class OrderExecutionOrchestrator:
                     )
                     return False
             
-            # Execute the order - pass all parameters including account_number
+            # ✅ FIXED: Pass ALL parameters (both provided and calculated) to execution service
             result = self._execute_via_service(
                 planned_order, fill_probability, effective_priority, total_capital,
                 quantity, capital_commitment, is_live_trading, account_number
@@ -417,25 +517,28 @@ class OrderExecutionOrchestrator:
             if result:
                 self.context_logger.log_event(
                     TradingEventType.EXECUTION_DECISION,
-                    "Order execution completed",
+                    "Order execution completed with consistent parameters",
                     symbol=planned_order.symbol,
                     context_provider={
                         "quantity": quantity,
-                        "capital": capital_commitment,
-                        "account_number_used": account_number
+                        "capital_commitment": capital_commitment,
+                        "total_capital": total_capital,
+                        "is_live_trading": is_live_trading,
+                        "account_number_used": account_number,
+                        "parameter_consistency": "maintained"
                     },
-                    decision_reason="Execution successful"
+                    decision_reason="Execution successful with consistent parameter flow"
                 )
             else:
                 self.context_logger.log_event(
                     TradingEventType.EXECUTION_DECISION,
-                    "Order execution failed",
+                    "Order execution failed despite consistent parameters",
                     symbol=planned_order.symbol,
                     context_provider={
                         "service_result": result,
-                        "account_number_provided": account_number is not None
+                        "parameter_consistency": "maintained"
                     },
-                    decision_reason="Execution service failure"
+                    decision_reason="Execution service failure with consistent parameters"
                 )
             
             return result
@@ -445,14 +548,17 @@ class OrderExecutionOrchestrator:
             error_msg = f"Execution failed: {str(e)}"
             self.context_logger.log_event(
                 TradingEventType.SYSTEM_HEALTH,
-                "Order execution error",
+                "Order execution error with parameter flow",
                 symbol=planned_order.symbol,
                 context_provider={
                     "error": str(e),
                     "error_type": type(e).__name__,
-                    "account_number_provided": account_number is not None
+                    "total_capital_provided": total_capital is not None,
+                    "quantity_provided": quantity is not None,
+                    "capital_commitment_provided": capital_commitment is not None,
+                    "parameter_flow_issue": True
                 },
-                decision_reason="Execution exception"
+                decision_reason="Execution exception in parameter flow"
             )
             self.persistence_service.update_order_status(
                 planned_order, 'FAILED', error_msg
@@ -460,12 +566,47 @@ class OrderExecutionOrchestrator:
             return False
 # OrderExecutionOrchestrator.execute_single_order - End
 
-# OrderExecutionOrchestrator._execute_via_service - Begin (UPDATED - added account_number parameter)
+# OrderExecutionOrchestrator._execute_via_service - Begin (UPDATED - Enhanced parameter validation)
     def _execute_via_service(self, order: PlannedOrder, fill_probability: float, 
                         effective_priority: Optional[float], total_capital: float,
                         quantity: float, capital_commitment: float, is_live_trading: bool,
                         account_number: Optional[str] = None) -> bool:
-        """Execute order through the execution service with proper status tracking."""
+        """Execute order through the execution service with proper status tracking.
+        
+        FIXED: Enhanced parameter validation to ensure all bracket order parameters are valid.
+        """
+        # ✅ FIXED: Validate all parameters before calling execution service
+        parameter_issues = []
+        
+        if total_capital is None or total_capital <= 0:
+            parameter_issues.append(f"Invalid total_capital: {total_capital}")
+        
+        if quantity is None or quantity <= 0:
+            parameter_issues.append(f"Invalid quantity: {quantity}")
+        
+        if capital_commitment is None or capital_commitment <= 0:
+            parameter_issues.append(f"Invalid capital_commitment: {capital_commitment}")
+        
+        if parameter_issues:
+            error_msg = f"Parameter validation failed: {', '.join(parameter_issues)}"
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Execution service call blocked - invalid parameters",
+                symbol=order.symbol,
+                context_provider={
+                    "parameter_issues": parameter_issues,
+                    "total_capital": total_capital,
+                    "quantity": quantity,
+                    "capital_commitment": capital_commitment,
+                    "is_live_trading": is_live_trading
+                },
+                decision_reason=f"Parameter validation failed: {error_msg}"
+            )
+            self.persistence_service.update_order_status(
+                order, 'FAILED', error_msg
+            )
+            return False
+        
         # Calculate effective priority if not provided
         if effective_priority is None:
             effective_priority = order.priority * fill_probability
@@ -473,18 +614,20 @@ class OrderExecutionOrchestrator:
         # Single execution log with key insights
         self.context_logger.log_event(
             TradingEventType.EXECUTION_DECISION,
-            "Calling execution service",
+            "Calling execution service with validated parameters",
             symbol=order.symbol,
             context_provider={
                 "quantity": quantity,
-                "capital": capital_commitment,
+                "capital_commitment": capital_commitment,
+                "total_capital": total_capital,
                 "live_trading": is_live_trading,
                 "priority": effective_priority,
-                "account_number_provided": account_number is not None
+                "account_number_provided": account_number is not None,
+                "parameter_validation": "passed"
             }
         )
         
-        # Execute through execution service - pass account_number
+        # Execute through execution service - pass all validated parameters
         success = self.execution_service.place_order(
             order, fill_probability, effective_priority,
             total_capital, quantity, capital_commitment, is_live_trading,
@@ -500,7 +643,7 @@ class OrderExecutionOrchestrator:
         else:
             self.persistence_service.update_order_status(
                 order, 'FAILED', 
-                "Execution service returned failure"
+                "Execution service returned failure despite valid parameters"
             )
             
         return success

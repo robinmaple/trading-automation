@@ -444,69 +444,6 @@ class OrderPersistenceService:
             )
             return None
 
-    def convert_to_db_model(self, planned_order) -> PlannedOrderDB:
-        """Convert a domain PlannedOrder object to a PlannedOrderDB entity."""
-        context_logger.log_event(
-            TradingEventType.STATE_TRANSITION,
-            f"Converting PlannedOrder to DB model",
-            symbol=planned_order.symbol,
-            context_provider={
-                "symbol": planned_order.symbol,
-                "action": planned_order.action.value,
-                "order_type": planned_order.order_type.value,
-                "security_type": planned_order.security_type.value,
-                "position_strategy": getattr(planned_order.position_strategy, 'value', str(planned_order.position_strategy))
-            }
-        )
-
-        # Resolve DB row; create if missing
-        strategy_name = getattr(planned_order.position_strategy, 'value', str(planned_order.position_strategy))
-        position_strategy = self.db_session.query(PositionStrategy).filter_by(name=strategy_name).first()
-
-        if not position_strategy:
-            context_logger.log_event(
-                TradingEventType.STATE_TRANSITION,
-                f"Creating new position strategy in database",
-                symbol=planned_order.symbol,
-                context_provider={
-                    "strategy_name": strategy_name,
-                    "action_taken": "auto_creation"
-                },
-                decision_reason="POSITION_STRATEGY_CREATED"
-            )
-            position_strategy = PositionStrategy(name=strategy_name)
-            self.db_session.add(position_strategy)
-            self.db_session.commit()
-
-        db_model = PlannedOrderDB(
-            symbol=planned_order.symbol,
-            security_type=planned_order.security_type.value,
-            action=planned_order.action.value,
-            order_type=planned_order.order_type.value,
-            entry_price=planned_order.entry_price,
-            stop_loss=planned_order.stop_loss,
-            risk_per_trade=planned_order.risk_per_trade,
-            risk_reward_ratio=planned_order.risk_reward_ratio,
-            priority=planned_order.priority,
-            position_strategy_id=position_strategy.id,
-            status='PENDING',
-            overall_trend=planned_order.overall_trend,       # store human-entered value
-            brief_analysis=planned_order.brief_analysis
-        )
-        
-        context_logger.log_event(
-            TradingEventType.STATE_TRANSITION,
-            f"PlannedOrder converted to DB model successfully",
-            symbol=planned_order.symbol,
-            context_provider={
-                "db_model_created": True,
-                "position_strategy_id": position_strategy.id,
-                "assigned_status": "PENDING"
-            },
-            decision_reason="DB_MODEL_CONVERSION_COMPLETED"
-        )
-        return db_model
-
     def handle_order_rejection(self, planned_order_id: int, rejection_reason: str) -> bool:
         """Mark a planned order as CANCELLED with a rejection reason in the database."""
         context_logger.log_event(
@@ -666,9 +603,76 @@ class OrderPersistenceService:
             )
             return 50000.0
 
+# OrderPersistenceService expiration date persistence fix - Begin
+    def convert_to_db_model(self, planned_order) -> PlannedOrderDB:
+        """Convert a domain PlannedOrder object to a PlannedOrderDB entity with expiration date."""
+        context_logger.log_event(
+            TradingEventType.STATE_TRANSITION,
+            f"Converting PlannedOrder to DB model",
+            symbol=planned_order.symbol,
+            context_provider={
+                "symbol": planned_order.symbol,
+                "action": planned_order.action.value,
+                "order_type": planned_order.order_type.value,
+                "security_type": planned_order.security_type.value,
+                "position_strategy": getattr(planned_order.position_strategy, 'value', str(planned_order.position_strategy)),
+                "expiration_date": planned_order.expiration_date.isoformat() if planned_order.expiration_date else None
+            }
+        )
+
+        # Resolve DB row; create if missing
+        strategy_name = getattr(planned_order.position_strategy, 'value', str(planned_order.position_strategy))
+        position_strategy = self.db_session.query(PositionStrategy).filter_by(name=strategy_name).first()
+
+        if not position_strategy:
+            context_logger.log_event(
+                TradingEventType.STATE_TRANSITION,
+                f"Creating new position strategy in database",
+                symbol=planned_order.symbol,
+                context_provider={
+                    "strategy_name": strategy_name,
+                    "action_taken": "auto_creation"
+                },
+                decision_reason="POSITION_STRATEGY_CREATED"
+            )
+            position_strategy = PositionStrategy(name=strategy_name)
+            self.db_session.add(position_strategy)
+            self.db_session.commit()
+
+        db_model = PlannedOrderDB(
+            symbol=planned_order.symbol,
+            security_type=planned_order.security_type.value,
+            action=planned_order.action.value,
+            order_type=planned_order.order_type.value,
+            entry_price=planned_order.entry_price,
+            stop_loss=planned_order.stop_loss,
+            risk_per_trade=planned_order.risk_per_trade,
+            risk_reward_ratio=planned_order.risk_reward_ratio,
+            priority=planned_order.priority,
+            position_strategy_id=position_strategy.id,
+            status='PENDING',
+            overall_trend=planned_order.overall_trend,       # store human-entered value
+            brief_analysis=planned_order.brief_analysis,
+            expiration_date=planned_order.expiration_date    # CRITICAL: Add expiration date
+        )
+        
+        context_logger.log_event(
+            TradingEventType.STATE_TRANSITION,
+            f"PlannedOrder converted to DB model successfully with expiration date",
+            symbol=planned_order.symbol,
+            context_provider={
+                "db_model_created": True,
+                "position_strategy_id": position_strategy.id,
+                "assigned_status": "PENDING",
+                "expiration_date": db_model.expiration_date.isoformat() if db_model.expiration_date else None
+            },
+            decision_reason="DB_MODEL_CONVERSION_COMPLETED_WITH_EXPIRATION"
+        )
+        return db_model
+
     def update_order_status(self, order, status: str, reason: str = "", order_ids=None) -> bool:
         """
-        Update the status of a PlannedOrder in the database and synchronize all relevant fields.
+        Update the status of a PlannedOrder in the database and synchronize all relevant fields including expiration date.
         Always overwrites with current PlannedOrder values (blind update).
         
         Args:
@@ -682,14 +686,15 @@ class OrderPersistenceService:
         """
         context_logger.log_event(
             TradingEventType.STATE_TRANSITION,
-            f"Updating order status",
+            f"Updating order status with expiration date",
             symbol=order.symbol,
             context_provider={
                 "symbol": order.symbol,
                 "new_status": status,
                 "reason": reason,
                 "has_order_ids": order_ids is not None,
-                "order_ids_count": len(order_ids) if order_ids else 0
+                "order_ids_count": len(order_ids) if order_ids else 0,
+                "expiration_date": order.expiration_date.isoformat() if order.expiration_date else None
             }
         )
             
@@ -714,7 +719,7 @@ class OrderPersistenceService:
             db_order = self._find_planned_order_db_record(order)
 
             if db_order:
-                # Blindly update all relevant fields
+                # Blindly update all relevant fields including expiration date
                 db_order.status = status
                 db_order.overall_trend = getattr(order, 'overall_trend', db_order.overall_trend)
                 db_order.brief_analysis = getattr(order, 'brief_analysis', db_order.brief_analysis)
@@ -726,6 +731,7 @@ class OrderPersistenceService:
                 db_order.action = getattr(order.action, 'value', db_order.action)
                 db_order.order_type = getattr(order.order_type, 'value', db_order.order_type)
                 db_order.security_type = getattr(order.security_type, 'value', db_order.security_type)
+                db_order.expiration_date = getattr(order, 'expiration_date', db_order.expiration_date)  # CRITICAL: Update expiration date
                 db_order.position_strategy_id = self.db_session.query(PositionStrategy).filter_by(
                     name=order.position_strategy.value).first().id
                 if order_ids:
@@ -737,25 +743,27 @@ class OrderPersistenceService:
                 self.db_session.commit()
                 context_logger.log_event(
                     TradingEventType.STATE_TRANSITION,
-                    f"Order status updated successfully",
+                    f"Order status updated successfully with expiration date",
                     symbol=order.symbol,
                     context_provider={
                         "order_id": db_order.id,
                         "old_status": db_order.status,
                         "new_status": status,
-                        "update_type": "existing_record"
+                        "update_type": "existing_record",
+                        "expiration_date": db_order.expiration_date.isoformat() if db_order.expiration_date else None
                     },
-                    decision_reason="ORDER_STATUS_UPDATED"
+                    decision_reason="ORDER_STATUS_UPDATED_WITH_EXPIRATION"
                 )
                 return True
 
             else:
-                # Record does not exist, create new
+                # Record does not exist, create new with expiration date
                 try:
                     db_model = self.convert_to_db_model(order)
                     db_model.status = status
                     db_model.overall_trend = getattr(order, 'overall_trend', None)
                     db_model.brief_analysis = getattr(order, 'brief_analysis', None)
+                    db_model.expiration_date = getattr(order, 'expiration_date', None)  # Ensure expiration date is set
                     if reason:
                         db_model.status_reason = reason[:255]
                     if order_ids:
@@ -765,14 +773,15 @@ class OrderPersistenceService:
                     self.db_session.commit()
                     context_logger.log_event(
                         TradingEventType.STATE_TRANSITION,
-                        f"New order record created with status",
+                        f"New order record created with status and expiration date",
                         symbol=order.symbol,
                         context_provider={
                             "new_order_id": db_model.id,
                             "status": status,
-                            "creation_type": "new_record"
+                            "creation_type": "new_record",
+                            "expiration_date": db_model.expiration_date.isoformat() if db_model.expiration_date else None
                         },
-                        decision_reason="ORDER_RECORD_CREATED"
+                        decision_reason="ORDER_RECORD_CREATED_WITH_EXPIRATION"
                     )
                     return True
                 except Exception as create_error:
@@ -803,6 +812,7 @@ class OrderPersistenceService:
                 decision_reason="ORDER_STATUS_UPDATE_FAILED"
             )
             return False
+# OrderPersistenceService expiration date persistence fix - End
 
     def _find_planned_order_db_record(self, order) -> Optional[PlannedOrderDB]:
         """Find a PlannedOrderDB record in the database based on its parameters."""

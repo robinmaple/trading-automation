@@ -259,131 +259,6 @@ class IbkrClient(EClient, EWrapper):
                         logger.warning(f"Error in historical data end processing: {e}")
     # <Historical Data Manager Integration Methods - End>
 
-    # <AON Order Methods - Begin>
-    def submit_aon_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
-                               risk_per_trade, risk_reward_ratio, total_capital) -> Optional[List[int]]:
-        """
-        Place a complete bracket order with All-or-Nothing (AON) execution.
-        
-        Args:
-            contract: IBKR Contract object
-            action: BUY or SELL
-            order_type: Order type (LMT, MKT, etc.)
-            security_type: Security type (STK, OPT, etc.)
-            entry_price: Entry price for the order
-            stop_loss: Stop loss price
-            risk_per_trade: Risk percentage per trade
-            risk_reward_ratio: Risk/reward ratio for profit target
-            total_capital: Total account capital for position sizing
-            
-        Returns:
-            List of order IDs for the bracket order, or None if failed
-        """
-        if not self.connected or self.next_valid_id is None:
-            # <Context-Aware Logging - AON Order Failed - Begin>
-            self.context_logger.log_event(
-                TradingEventType.ORDER_VALIDATION,
-                "AON bracket order failed - not connected or no valid order ID",
-                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
-                context_provider={
-                    'connected': self.connected,
-                    'next_valid_id': self.next_valid_id,
-                    'action': action,
-                    'order_type': order_type,
-                    'entry_price': entry_price
-                },
-                decision_reason="IBKR connection not ready for order placement"
-            )
-            # <Context-Aware Logging - AON Order Failed - End>
-            if logger:
-                logger.error("Not connected to IBKR or no valid order ID for AON order")
-            return None
-
-        try:
-            orders = self._create_aon_bracket_order(
-                action, order_type, security_type, entry_price, stop_loss,
-                risk_per_trade, risk_reward_ratio, total_capital, self.next_valid_id
-            )
-
-            if logger:
-                logger.info(f"Placing AON bracket order for {contract.symbol}")
-
-            # <Context-Aware Logging - AON Order Placement Start - Begin>
-            self.context_logger.log_event(
-                TradingEventType.ORDER_VALIDATION,
-                "Placing AON bracket order",
-                symbol=contract.symbol,
-                context_provider={
-                    'action': action,
-                    'order_type': order_type,
-                    'entry_price': entry_price,
-                    'stop_loss': stop_loss,
-                    'risk_per_trade': risk_per_trade,
-                    'risk_reward_ratio': risk_reward_ratio,
-                    'total_capital': total_capital,
-                    'starting_order_id': self.next_valid_id,
-                    'order_count': len(orders)
-                },
-                decision_reason="AON bracket order meets placement criteria"
-            )
-            # <Context-Aware Logging - AON Order Placement Start - End>
-
-            order_ids = []
-            for order in orders:
-                self.placeOrder(order.orderId, contract, order)
-                order_ids.append(order.orderId)
-                self.order_history.append({
-                    'order_id': order.orderId,
-                    'type': order.orderType,
-                    'action': order.action,
-                    'price': getattr(order, 'lmtPrice', getattr(order, 'auxPrice', None)),
-                    'quantity': order.totalQuantity,
-                    'status': 'PendingSubmit',
-                    'parent_id': getattr(order, 'parentId', None),
-                    'aon': getattr(order, 'allOrNone', False),
-                    'timestamp': datetime.datetime.now()
-                })
-
-            self.next_valid_id += 3
-            
-            if logger:
-                logger.info(f"AON bracket order placed successfully: {contract.symbol}")
-                
-            # <Context-Aware Logging - AON Order Placement Success - Begin>
-            self.context_logger.log_event(
-                TradingEventType.ORDER_VALIDATION,
-                "AON bracket order placed successfully",
-                symbol=contract.symbol,
-                context_provider={
-                    'order_ids': order_ids,
-                    'final_order_id': self.next_valid_id,
-                    'order_count': len(orders)
-                },
-                decision_reason="AON bracket order submitted to IBKR API"
-            )
-            # <Context-Aware Logging - AON Order Placement Success - End>
-            
-            return order_ids
-
-        except Exception as e:
-            # <Context-Aware Logging - AON Order Placement Error - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "AON bracket order placement failed",
-                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
-                context_provider={
-                    'error': str(e),
-                    'action': action,
-                    'entry_price': entry_price,
-                    'starting_order_id': self.next_valid_id
-                },
-                decision_reason=f"AON order placement exception: {e}"
-            )
-            # <Context-Aware Logging - AON Order Placement Error - End>
-            if logger:
-                logger.error(f"Failed to place AON bracket order: {e}")
-            return None
-
     def _create_aon_bracket_order(self, action, order_type, security_type, entry_price, stop_loss,
                                 risk_per_trade, risk_reward_ratio, total_capital, starting_order_id) -> List[Any]:
         """
@@ -665,160 +540,6 @@ class IbkrClient(EClient, EWrapper):
     def get_account_name(self) -> Optional[str]:
         """Get the connected account name."""
         return self.account_name
-
-    def place_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
-                          risk_per_trade, risk_reward_ratio, total_capital) -> Optional[List[int]]:
-        """Place a complete bracket order (entry, take-profit, stop-loss). Returns list of order IDs or None."""
-        if not self.connected or self.next_valid_id is None:
-            # <Context-Aware Logging - Bracket Order Failed - Begin>
-            self.context_logger.log_event(
-                TradingEventType.ORDER_VALIDATION,
-                "Bracket order failed - not connected or no valid order ID",
-                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
-                context_provider={
-                    'connected': self.connected,
-                    'next_valid_id': self.next_valid_id,
-                    'action': action,
-                    'order_type': order_type
-                },
-                decision_reason="IBKR connection not ready for bracket order"
-            )
-            # <Context-Aware Logging - Bracket Order Failed - End>
-            if logger:
-                logger.error("Not connected to IBKR or no valid order ID")
-            return None
-
-        try:
-            orders = self._create_bracket_order(
-                action, order_type, security_type, entry_price, stop_loss,
-                risk_per_trade, risk_reward_ratio, total_capital, self.next_valid_id
-            )
-
-            if logger:
-                logger.info(f"Placing bracket order for {contract.symbol}")
-
-            # <Context-Aware Logging - Bracket Order Placement Start - Begin>
-            self.context_logger.log_event(
-                TradingEventType.ORDER_VALIDATION,
-                "Placing bracket order",
-                symbol=contract.symbol,
-                context_provider={
-                    'action': action,
-                    'order_type': order_type,
-                    'entry_price': entry_price,
-                    'stop_loss': stop_loss,
-                    'risk_per_trade': risk_per_trade,
-                    'risk_reward_ratio': risk_reward_ratio,
-                    'total_capital': total_capital,
-                    'starting_order_id': self.next_valid_id,
-                    'order_count': len(orders)
-                },
-                decision_reason="Bracket order meets placement criteria"
-            )
-            # <Context-Aware Logging - Bracket Order Placement Start - End>
-
-            order_ids = []
-            for order in orders:
-                self.placeOrder(order.orderId, contract, order)
-                order_ids.append(order.orderId)
-                self.order_history.append({
-                    'order_id': order.orderId,
-                    'type': order.orderType,
-                    'action': order.action,
-                    'price': getattr(order, 'lmtPrice', getattr(order, 'auxPrice', None)),
-                    'quantity': order.totalQuantity,
-                    'status': 'PendingSubmit',
-                    'parent_id': getattr(order, 'parentId', None),
-                    'timestamp': datetime.datetime.now()
-                })
-
-            self.next_valid_id += 3
-            
-            if logger:
-                logger.info(f"Bracket order placed successfully: {contract.symbol}")
-                
-            # <Context-Aware Logging - Bracket Order Placement Success - Begin>
-            self.context_logger.log_event(
-                TradingEventType.ORDER_VALIDATION,
-                "Bracket order placed successfully",
-                symbol=contract.symbol,
-                context_provider={
-                    'order_ids': order_ids,
-                    'final_order_id': self.next_valid_id,
-                    'order_count': len(orders)
-                },
-                decision_reason="Bracket order submitted to IBKR API"
-            )
-            # <Context-Aware Logging - Bracket Order Placement Success - End>
-            
-            return order_ids
-
-        except Exception as e:
-            # <Context-Aware Logging - Bracket Order Placement Error - Begin>
-            self.context_logger.log_event(
-                TradingEventType.SYSTEM_HEALTH,
-                "Bracket order placement failed",
-                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
-                context_provider={
-                    'error': str(e),
-                    'action': action,
-                    'entry_price': entry_price,
-                    'starting_order_id': self.next_valid_id
-                },
-                decision_reason=f"Bracket order placement exception: {e}"
-            )
-            # <Context-Aware Logging - Bracket Order Placement Error - End>
-            if logger:
-                logger.error(f"Failed to place bracket order: {e}")
-            return None
-
-    def _create_bracket_order(self, action, order_type, security_type, entry_price, stop_loss,
-                            risk_per_trade, risk_reward_ratio, total_capital, starting_order_id) -> List[Any]:
-        """Create the IBKR Order objects for a bracket order. Returns [parent, take_profit, stop_loss]."""
-        from ibapi.order import Order
-
-        parent_id = starting_order_id
-        quantity = self._calculate_quantity(security_type, entry_price, stop_loss,
-                                          total_capital, risk_per_trade)
-        profit_target = self._calculate_profit_target(action, entry_price, stop_loss, risk_reward_ratio)
-
-        # 1. PARENT ORDER (Entry)
-        parent = Order()
-        parent.orderId = parent_id
-        parent.action = action
-        parent.orderType = order_type
-        parent.totalQuantity = quantity
-        parent.lmtPrice = round(entry_price, 5)
-        parent.transmit = False
-
-        # Determine opposite action for closing orders
-        closing_action = "SELL" if action == "BUY" else "BUY"
-
-        # 2. TAKE-PROFIT ORDER
-        take_profit = Order()
-        take_profit.orderId = parent_id + 1
-        take_profit.action = closing_action
-        take_profit.orderType = "LMT"
-        take_profit.totalQuantity = quantity
-        take_profit.lmtPrice = round(profit_target, 5)
-        take_profit.parentId = parent_id
-        take_profit.transmit = False
-        take_profit.openClose = "C"
-        take_profit.origin = 0
-
-        # 3. STOP-LOSS ORDER
-        stop_loss_order = Order()
-        stop_loss_order.orderId = parent_id + 2
-        stop_loss_order.action = closing_action
-        stop_loss_order.orderType = "STP"
-        stop_loss_order.totalQuantity = quantity
-        stop_loss_order.auxPrice = round(stop_loss, 5)
-        stop_loss_order.parentId = parent_id
-        stop_loss_order.transmit = True
-        stop_loss_order.openClose = "C"
-        stop_loss_order.origin = 0
-
-        return [parent, take_profit, stop_loss_order]
 
     def _calculate_quantity(self, security_type, entry_price, stop_loss, total_capital, risk_per_trade) -> float:
         """Calculate position size based on security type and risk management."""
@@ -1198,39 +919,6 @@ class IbkrClient(EClient, EWrapper):
             if logger:
                 logger.info(f"Auto-detected environment: {env} (Account: {self.account_name})")
             self.account_ready_event.set()
-
-    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice) -> None:
-        """Callback: Order status updates."""
-        for order in self.order_history:
-            if order['order_id'] == orderId:
-                order['status'] = status
-                order['filled'] = float(filled)
-                order['remaining'] = float(remaining)
-                order['last_update'] = datetime.datetime.now()
-
-                if status == 'Filled' and avgFillPrice > 0:
-                    order['avg_fill_price'] = avgFillPrice
-
-        # <Context-Aware Logging - Order Status Update - Begin>
-        if status in ['Filled', 'Cancelled', 'Submitted']:
-            self.context_logger.log_event(
-                TradingEventType.ORDER_VALIDATION,
-                f"Order status update: {status}",
-                context_provider={
-                    'order_id': orderId,
-                    'status': status,
-                    'filled_quantity': float(filled),
-                    'remaining_quantity': float(remaining),
-                    'avg_fill_price': avgFillPrice,
-                    'perm_id': permId,
-                    'parent_id': parentId
-                },
-                decision_reason=f"Order {orderId} status changed to {status}"
-            )
-        # <Context-Aware Logging - Order Status Update - End>
-
-        if logger:
-            logger.debug(f"Order status: {orderId} - {status}, Filled: {filled}, Remaining: {remaining}")
 
     def openOrder(self, orderId, contract, order, orderState) -> None:
         """Callback: Received open order data."""
@@ -2438,3 +2126,400 @@ class IbkrClient(EClient, EWrapper):
         
         print("🧪 ========== ACCOUNT RETRIEVAL TEST COMPLETED ==========")
     # test_account_retrieval - End
+
+    # orderStatus - Begin (UPDATED - Enhanced bracket order tracking)
+    def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice) -> None:
+        """Callback: Order status updates with enhanced bracket order tracking."""
+        # Find the order in history
+        order_found = False
+        for order in self.order_history:
+            if order['order_id'] == orderId:
+                order['status'] = status
+                order['filled'] = float(filled)
+                order['remaining'] = float(remaining)
+                order['last_update'] = datetime.datetime.now()
+
+                if status == 'Filled' and avgFillPrice > 0:
+                    order['avg_fill_price'] = avgFillPrice
+                    
+                order_found = True
+                
+                # DIAGNOSTIC: Log bracket order component status changes
+                if order.get('is_bracket_component', False):
+                    component_type = order.get('component_type', 'UNKNOWN')
+                    bracket_parent_id = order.get('bracket_parent_id')
+                    print(f"🔔 BRACKET ORDER STATUS: {component_type} Order {orderId} -> {status} "
+                        f"(Parent: {bracket_parent_id}, Filled: {filled}/{remaining})")
+
+        # <Context-Aware Logging - Order Status Update - Begin>
+        if status in ['Filled', 'Cancelled', 'Submitted', 'ApiCancelled']:
+            # Find bracket context for this order
+            bracket_context = None
+            for order in self.order_history:
+                if order['order_id'] == orderId and order.get('is_bracket_component', False):
+                    bracket_context = {
+                        'component_type': order.get('component_type', 'UNKNOWN'),
+                        'bracket_parent_id': order.get('bracket_parent_id'),
+                        'parent_id': parentId
+                    }
+                    break
+
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                f"Order status update: {status}",
+                context_provider={
+                    'order_id': orderId,
+                    'status': status,
+                    'filled_quantity': float(filled),
+                    'remaining_quantity': float(remaining),
+                    'avg_fill_price': avgFillPrice,
+                    'perm_id': permId,
+                    'parent_id': parentId,
+                    'why_held': whyHeld,
+                    'is_bracket_component': bracket_context is not None,
+                    'bracket_context': bracket_context,
+                    'order_found_in_history': order_found
+                },
+                decision_reason=f"Order {orderId} status changed to {status}" + 
+                            (f" (Bracket: {bracket_context['component_type']})" if bracket_context else "")
+            )
+        # <Context-Aware Logging - Order Status Update - End>
+
+        if logger:
+            logger.debug(f"Order status: {orderId} - {status}, Filled: {filled}, Remaining: {remaining}")
+    # orderStatus - End
+
+    # _create_bracket_order - Begin (UPDATED - Added transmission validation)
+    def _create_bracket_order(self, action, order_type, security_type, entry_price, stop_loss,
+                            risk_per_trade, risk_reward_ratio, total_capital, starting_order_id) -> List[Any]:
+        """Create the IBKR Order objects for a bracket order. Returns [parent, take_profit, stop_loss]."""
+        from ibapi.order import Order
+
+        parent_id = starting_order_id
+        quantity = self._calculate_quantity(security_type, entry_price, stop_loss,
+                                        total_capital, risk_per_trade)
+        profit_target = self._calculate_profit_target(action, entry_price, stop_loss, risk_reward_ratio)
+
+        # DIAGNOSTIC: Log bracket calculation details
+        print(f"🔧 BRACKET CALCULATION: Qty={quantity}, Entry=${entry_price:.2f}, "
+            f"Stop=${stop_loss:.2f}, Target=${profit_target:.2f}")
+
+        # 1. PARENT ORDER (Entry)
+        parent = Order()
+        parent.orderId = parent_id
+        parent.action = action
+        parent.orderType = order_type
+        parent.totalQuantity = quantity
+        parent.lmtPrice = round(entry_price, 5)
+        parent.transmit = False  # Will be transmitted by last child
+
+        # Determine opposite action for closing orders
+        closing_action = "SELL" if action == "BUY" else "BUY"
+
+        # 2. TAKE-PROFIT ORDER
+        take_profit = Order()
+        take_profit.orderId = parent_id + 1
+        take_profit.action = closing_action
+        take_profit.orderType = "LMT"
+        take_profit.totalQuantity = quantity
+        take_profit.lmtPrice = round(profit_target, 5)
+        take_profit.parentId = parent_id
+        take_profit.transmit = False  # Will be transmitted by last child
+        take_profit.openClose = "C"
+        take_profit.origin = 0
+
+        # 3. STOP-LOSS ORDER
+        stop_loss_order = Order()
+        stop_loss_order.orderId = parent_id + 2
+        stop_loss_order.action = closing_action
+        stop_loss_order.orderType = "STP"
+        stop_loss_order.totalQuantity = quantity
+        stop_loss_order.auxPrice = round(stop_loss, 5)
+        stop_loss_order.parentId = parent_id
+        stop_loss_order.transmit = True  # This transmits the entire bracket
+        stop_loss_order.openClose = "C"
+        stop_loss_order.origin = 0
+
+        # VALIDATION: Verify transmission chain
+        transmission_chain = [parent.transmit, take_profit.transmit, stop_loss_order.transmit]
+        if transmission_chain != [False, False, True]:
+            print(f"⚠️ WARNING: Unexpected transmission chain: {transmission_chain}")
+
+        return [parent, take_profit, stop_loss_order]
+    # _create_bracket_order - End
+
+    # place_bracket_order - Begin (UPDATED - Added account_number parameter)
+    def place_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
+                        risk_per_trade, risk_reward_ratio, total_capital, account_number: Optional[str] = None) -> Optional[List[int]]:
+        """Place a complete bracket order (entry, take-profit, stop-loss). Returns list of order IDs or None."""
+        if not self.connected or self.next_valid_id is None:
+            # <Context-Aware Logging - Bracket Order Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Bracket order failed - not connected or no valid order ID",
+                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
+                context_provider={
+                    'connected': self.connected,
+                    'next_valid_id': self.next_valid_id,
+                    'action': action,
+                    'order_type': order_type,
+                    'account_number': account_number
+                },
+                decision_reason="IBKR connection not ready for bracket order"
+            )
+            # <Context-Aware Logging - Bracket Order Failed - End>
+            if logger:
+                logger.error("Not connected to IBKR or no valid order ID")
+            return None
+
+        try:
+            orders = self._create_bracket_order(
+                action, order_type, security_type, entry_price, stop_loss,
+                risk_per_trade, risk_reward_ratio, total_capital, self.next_valid_id
+            )
+
+            if logger:
+                logger.info(f"Placing bracket order for {contract.symbol}")
+
+            # <Context-Aware Logging - Bracket Order Diagnostics - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "BRACKET ORDER DIAGNOSTICS - Order creation",
+                symbol=contract.symbol,
+                context_provider={
+                    'action': action,
+                    'order_type': order_type,
+                    'entry_price': entry_price,
+                    'stop_loss': stop_loss,
+                    'profit_target': self._calculate_profit_target(action, entry_price, stop_loss, risk_reward_ratio),
+                    'risk_per_trade': risk_per_trade,
+                    'risk_reward_ratio': risk_reward_ratio,
+                    'total_capital': total_capital,
+                    'starting_order_id': self.next_valid_id,
+                    'order_count': len(orders),
+                    'order_types': [order.orderType for order in orders],
+                    'order_actions': [order.action for order in orders],
+                    'transmit_flags': [getattr(order, 'transmit', None) for order in orders],
+                    'parent_ids': [getattr(order, 'parentId', None) for order in orders],
+                    'account_number': account_number or self.account_number
+                },
+                decision_reason="Bracket order diagnostic data captured"
+            )
+            # <Context-Aware Logging - Bracket Order Diagnostics - End>
+
+            # DIAGNOSTIC: Log each order details before placement
+            print(f"🎯 BRACKET ORDER DIAGNOSTIC for {contract.symbol}:")
+            for i, order in enumerate(orders):
+                print(f"   Order {i+1}: ID={order.orderId}, Type={order.orderType}, Action={order.action}, "
+                    f"Transmit={getattr(order, 'transmit', 'N/A')}, Parent={getattr(order, 'parentId', 'None')}")
+
+            order_ids = []
+            for order in orders:
+                # DIAGNOSTIC: Log individual order placement
+                print(f"📤 Placing order: ID={order.orderId}, Type={order.orderType}, Action={order.action}, Account={account_number or self.account_number}")
+                
+                # Use provided account_number or fall back to connected account
+                target_account = account_number or self.account_number
+                self.placeOrder(order.orderId, contract, order)
+                order_ids.append(order.orderId)
+                
+                # Enhanced order tracking with bracket context
+                self.order_history.append({
+                    'order_id': order.orderId,
+                    'type': order.orderType,
+                    'action': order.action,
+                    'price': getattr(order, 'lmtPrice', getattr(order, 'auxPrice', None)),
+                    'quantity': order.totalQuantity,
+                    'status': 'PendingSubmit',
+                    'parent_id': getattr(order, 'parentId', None),
+                    'transmit': getattr(order, 'transmit', None),
+                    'is_bracket_component': True,
+                    'bracket_parent_id': order.orderId if getattr(order, 'parentId', None) is None else getattr(order, 'parentId', None),
+                    'component_type': 'ENTRY' if getattr(order, 'parentId', None) is None else 
+                                    'TAKE_PROFIT' if order.orderType == 'LMT' else 'STOP_LOSS',
+                    'account_number': target_account,
+                    'timestamp': datetime.datetime.now()
+                })
+
+            self.next_valid_id += 3
+            
+            # DIAGNOSTIC: Log successful bracket placement
+            print(f"✅ BRACKET ORDER PLACED: {contract.symbol} - Order IDs: {order_ids}, Account: {account_number or self.account_number}")
+            
+            if logger:
+                logger.info(f"Bracket order placed successfully: {contract.symbol}")
+                
+            # <Context-Aware Logging - Bracket Order Placement Success - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Bracket order placed successfully - DIAGNOSTIC",
+                symbol=contract.symbol,
+                context_provider={
+                    'order_ids': order_ids,
+                    'final_order_id': self.next_valid_id,
+                    'order_count': len(orders),
+                    'bracket_components_placed': len([o for o in orders if getattr(o, 'parentId', None) is None]) + len([o for o in orders if getattr(o, 'parentId', None) is not None]),
+                    'transmission_chain_complete': any(getattr(o, 'transmit', False) for o in orders),
+                    'account_number': account_number or self.account_number
+                },
+                decision_reason="Bracket order submitted to IBKR API - diagnostic complete"
+            )
+            # <Context-Aware Logging - Bracket Order Placement Success - End>
+            
+            return order_ids
+
+        except Exception as e:
+            # <Context-Aware Logging - Bracket Order Placement Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "Bracket order placement failed - DIAGNOSTIC",
+                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
+                context_provider={
+                    'error': str(e),
+                    'action': action,
+                    'entry_price': entry_price,
+                    'starting_order_id': self.next_valid_id,
+                    'error_type': type(e).__name__,
+                    'account_number': account_number or self.account_number
+                },
+                decision_reason=f"Bracket order placement exception: {e}"
+            )
+            # <Context-Aware Logging - Bracket Order Placement Error - End>
+            if logger:
+                logger.error(f"Failed to place bracket order: {e}")
+            return None
+    # place_bracket_order - End
+
+    # submit_aon_bracket_order - Begin (UPDATED - Added account_number parameter)
+    def submit_aon_bracket_order(self, contract, action, order_type, security_type, entry_price, stop_loss,
+                            risk_per_trade, risk_reward_ratio, total_capital, account_number: Optional[str] = None) -> Optional[List[int]]:
+        """
+        Place a complete bracket order with All-or-Nothing (AON) execution.
+        
+        Args:
+            contract: IBKR Contract object
+            action: BUY or SELL
+            order_type: Order type (LMT, MKT, etc.)
+            security_type: Security type (STK, OPT, etc.)
+            entry_price: Entry price for the order
+            stop_loss: Stop loss price
+            risk_per_trade: Risk percentage per trade
+            risk_reward_ratio: Risk/reward ratio for profit target
+            total_capital: Total account capital for position sizing
+            account_number: Specific account to place order against (optional)
+            
+        Returns:
+            List of order IDs for the bracket order, or None if failed
+        """
+        if not self.connected or self.next_valid_id is None:
+            # <Context-Aware Logging - AON Order Failed - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "AON bracket order failed - not connected or no valid order ID",
+                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
+                context_provider={
+                    'connected': self.connected,
+                    'next_valid_id': self.next_valid_id,
+                    'action': action,
+                    'order_type': order_type,
+                    'entry_price': entry_price,
+                    'account_number': account_number
+                },
+                decision_reason="IBKR connection not ready for order placement"
+            )
+            # <Context-Aware Logging - AON Order Failed - End>
+            if logger:
+                logger.error("Not connected to IBKR or no valid order ID for AON order")
+            return None
+
+        try:
+            orders = self._create_aon_bracket_order(
+                action, order_type, security_type, entry_price, stop_loss,
+                risk_per_trade, risk_reward_ratio, total_capital, self.next_valid_id
+            )
+
+            if logger:
+                logger.info(f"Placing AON bracket order for {contract.symbol}")
+
+            # <Context-Aware Logging - AON Order Placement Start - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "Placing AON bracket order",
+                symbol=contract.symbol,
+                context_provider={
+                    'action': action,
+                    'order_type': order_type,
+                    'entry_price': entry_price,
+                    'stop_loss': stop_loss,
+                    'risk_per_trade': risk_per_trade,
+                    'risk_reward_ratio': risk_reward_ratio,
+                    'total_capital': total_capital,
+                    'starting_order_id': self.next_valid_id,
+                    'order_count': len(orders),
+                    'account_number': account_number or self.account_number
+                },
+                decision_reason="AON bracket order meets placement criteria"
+            )
+            # <Context-Aware Logging - AON Order Placement Start - End>
+
+            order_ids = []
+            for order in orders:
+                # Use provided account_number or fall back to connected account
+                target_account = account_number or self.account_number
+                self.placeOrder(order.orderId, contract, order)
+                order_ids.append(order.orderId)
+                self.order_history.append({
+                    'order_id': order.orderId,
+                    'type': order.orderType,
+                    'action': order.action,
+                    'price': getattr(order, 'lmtPrice', getattr(order, 'auxPrice', None)),
+                    'quantity': order.totalQuantity,
+                    'status': 'PendingSubmit',
+                    'parent_id': getattr(order, 'parentId', None),
+                    'aon': getattr(order, 'allOrNone', False),
+                    'account_number': target_account,
+                    'timestamp': datetime.datetime.now()
+                })
+
+            self.next_valid_id += 3
+            
+            if logger:
+                logger.info(f"AON bracket order placed successfully: {contract.symbol}")
+                
+            # <Context-Aware Logging - AON Order Placement Success - Begin>
+            self.context_logger.log_event(
+                TradingEventType.ORDER_VALIDATION,
+                "AON bracket order placed successfully",
+                symbol=contract.symbol,
+                context_provider={
+                    'order_ids': order_ids,
+                    'final_order_id': self.next_valid_id,
+                    'order_count': len(orders),
+                    'account_number': account_number or self.account_number
+                },
+                decision_reason="AON bracket order submitted to IBKR API"
+            )
+            # <Context-Aware Logging - AON Order Placement Success - End>
+            
+            return order_ids
+
+        except Exception as e:
+            # <Context-Aware Logging - AON Order Placement Error - Begin>
+            self.context_logger.log_event(
+                TradingEventType.SYSTEM_HEALTH,
+                "AON bracket order placement failed",
+                symbol=getattr(contract, 'symbol', 'UNKNOWN'),
+                context_provider={
+                    'error': str(e),
+                    'action': action,
+                    'entry_price': entry_price,
+                    'starting_order_id': self.next_valid_id,
+                    'account_number': account_number or self.account_number
+                },
+                decision_reason=f"AON order placement exception: {e}"
+            )
+            # <Context-Aware Logging - AON Order Placement Error - End>
+            if logger:
+                logger.error(f"Failed to place AON bracket order: {e}")
+            return None
+    # submit_aon_bracket_order - End
