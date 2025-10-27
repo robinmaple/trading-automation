@@ -116,13 +116,81 @@ def test_cleanup_completed_orders(manager):
     assert 2 in manager.active_orders
 
 def test_execute_prioritized_orders_runs(manager):
-    mock_order = MagicMock(symbol="AAPL", priority=1, action=MagicMock(), entry_price=100, stop_loss=95)
-    executable_orders = [{"order": mock_order, "allocated": True, "viable": True, "fill_probability": 0.8}]
-    manager.prioritization_service.prioritize_orders = MagicMock(return_value=executable_orders)
-    manager.execution_orchestrator.execute_single_order = MagicMock(return_value=True)
-    manager.state_service.has_open_position = MagicMock(return_value=False)
-    manager._execute_prioritized_orders(executable_orders)
-    manager.execution_orchestrator.execute_single_order.assert_called_once()
+    """Test that _execute_prioritized_orders is called during trading cycle."""
+    # Setup
+    manager.symbols = {'AAPL'}
+    manager._orders_in_progress = set()
+    manager._execution_symbols = set()
+    
+    # Create mock order data
+    mock_order = MagicMock()
+    mock_order.symbol = 'AAPL'
+    mock_order.entry_price = 150.0
+    mock_order.action = MagicMock()
+    mock_order.action.value = 'BUY'
+    mock_order.order_type = MagicMock()
+    mock_order.order_type.value = 'LMT'
+    mock_order.priority = 1.0
+    mock_order.stop_loss = 145.0  # Add stop_loss for bracket order validation
+    mock_order.risk_reward_ratio = 2.0  # Add risk_reward_ratio
+
+    mock_order_data = {
+        'order': mock_order,
+        'fill_probability': 0.8,
+        'allocated': True
+    }
+    
+    # Mock all the dependencies with detailed debugging
+    with patch.object(manager, '_get_total_capital', return_value=100000) as mock_capital, \
+         patch.object(manager, '_get_working_orders', return_value=[]) as mock_working, \
+         patch.object(manager.prioritization_service, 'prioritize_orders', return_value=[mock_order_data]) as mock_prioritize, \
+         patch.object(manager, '_get_current_market_price', return_value=149.5) as mock_price, \
+         patch.object(manager, '_can_execute_order', return_value=(True, "")) as mock_can_execute, \
+         patch.object(manager, '_mark_order_execution_start') as mock_start, \
+         patch.object(manager, '_mark_order_execution_complete') as mock_complete, \
+         patch.object(manager.sizing_service, 'calculate_order_quantity', return_value=10) as mock_sizing, \
+         patch.object(manager, '_get_current_account_number', return_value='TEST123') as mock_account, \
+         patch.object(manager, '_get_trading_mode', return_value=True) as mock_trading_mode, \
+         patch.object(manager.execution_orchestrator, 'execute_single_order', return_value=True) as mock_execute_single:
+        
+        # Add debugging to track which mocks are called
+        print("DEBUG: Starting _execute_prioritized_orders...")
+        
+        # Call _execute_prioritized_orders directly with the mock order data
+        manager._execute_prioritized_orders([mock_order_data])
+        
+        print("DEBUG: Method execution completed")
+        
+        # Debug which mocks were called
+        print(f"DEBUG: _get_total_capital called: {mock_capital.called}")
+        print(f"DEBUG: _get_working_orders called: {mock_working.called}")
+        print(f"DEBUG: prioritize_orders called: {mock_prioritize.called}")
+        print(f"DEBUG: _get_current_market_price called: {mock_price.called}")
+        print(f"DEBUG: _can_execute_order called: {mock_can_execute.called}")
+        print(f"DEBUG: _mark_order_execution_start called: {mock_start.called}")
+        print(f"DEBUG: calculate_order_quantity called: {mock_sizing.called}")
+        print(f"DEBUG: _get_current_account_number called: {mock_account.called}")
+        print(f"DEBUG: _get_trading_mode called: {mock_trading_mode.called}")
+        print(f"DEBUG: execute_single_order called: {mock_execute_single.called}")
+        
+        # If execute_single_order wasn't called, let's check why
+        if not mock_execute_single.called:
+            print("DEBUG: execute_single_order was not called. Checking conditions...")
+            
+            # Check if the order was marked for execution
+            if mock_start.called:
+                print("DEBUG: Order WAS marked for execution start")
+            else:
+                print("DEBUG: Order was NOT marked for execution start - blocked earlier")
+                
+            # Check if sizing was called (indicates order passed validation)
+            if mock_sizing.called:
+                print("DEBUG: Order passed validation and sizing was calculated")
+            else:
+                print("DEBUG: Order failed validation before sizing")
+        
+        # Verify that execution_orchestrator was called
+        mock_execute_single.assert_called_once()
 
 def test_handle_order_state_change_triggers_labeling(manager):
     manager.advanced_features.enabled = True

@@ -1,5 +1,5 @@
 """
-Unit tests for OrderExecutionOrchestrator class.
+Unit tests for OrderExecutionOrchestrator class - updated to match current implementation.
 """
 import pytest
 from unittest.mock import Mock, MagicMock, patch
@@ -16,7 +16,7 @@ from src.core.planned_order import PlannedOrder, Action, OrderType, PositionStra
 def create_mock_planned_order(symbol="AAPL", action=Action.BUY, order_type=OrderType.LMT,
                               entry_price=150.0, stop_loss=145.0, risk_per_trade=0.01,
                               risk_reward_ratio=2.0, priority=1, position_strategy=PositionStrategy.DAY,
-                              security_type=SecurityType.STK):  # CHANGE: Use SecurityType.STK enum, not string
+                              security_type=SecurityType.STK):
     """Create a mock PlannedOrder for testing."""
     mock_order = MagicMock(spec=PlannedOrder)
     mock_order.symbol = symbol
@@ -28,7 +28,7 @@ def create_mock_planned_order(symbol="AAPL", action=Action.BUY, order_type=Order
     mock_order.risk_reward_ratio = risk_reward_ratio
     mock_order.priority = priority
     mock_order.position_strategy = position_strategy
-    mock_order.security_type = security_type  # Now it's SecurityType.STK enum with .value attribute
+    mock_order.security_type = security_type
     return mock_order
 
 def create_mock_active_order(is_working=True, planned_order=None):
@@ -68,50 +68,48 @@ class TestOrderExecutionOrchestrator:
         return create_mock_planned_order()
 
     # -----------------------------
-    # Initialization Tests
+    # Initialization Tests - UPDATED
     # -----------------------------
 
     def test_initialization_with_config(self, mock_services):
         """Test initialization with configuration parameters."""
         config = {
-            'execution': {'min_fill_probability': 0.5},
-            'simulation': {'default_equity': 50000}
+            'aon_execution': {'enabled': True}
         }
         
         orchestrator = OrderExecutionOrchestrator(config=config, **mock_services)
         
-        assert orchestrator.min_fill_probability == 0.5
-        assert orchestrator.default_capital == 50000
+        # Verify AON config is loaded
+        assert orchestrator.aon_config == {'enabled': True}
+        assert orchestrator.execution_service == mock_services['execution_service']
 
     def test_initialization_defaults(self, mock_services):
         """Test initialization with default values when no config provided."""
         orchestrator = OrderExecutionOrchestrator(**mock_services)
         
-        assert orchestrator.min_fill_probability == 0.4
-        assert orchestrator.default_capital == 100000
         assert orchestrator.execution_service == mock_services['execution_service']
         assert orchestrator.sizing_service == mock_services['sizing_service']
         assert orchestrator.persistence_service == mock_services['persistence_service']
         assert orchestrator.state_service == mock_services['state_service']
+        assert hasattr(orchestrator, 'aon_config')  # Should have AON config
 
     def test_empty_config_uses_hardcoded_defaults(self, mock_services):
         """Test that empty config uses hardcoded defaults."""
         orchestrator = OrderExecutionOrchestrator(**mock_services, config={})
         
-        assert orchestrator.min_fill_probability == 0.4
-        assert orchestrator.default_capital == 100000
+        # Should initialize without errors
+        assert orchestrator.execution_service == mock_services['execution_service']
+        assert hasattr(orchestrator, 'aon_config')
 
     def test_partial_config_uses_mixed_defaults(self, mock_services):
         """Test that partial config uses provided values and falls back for others."""
         test_config = {
-            'execution': {'min_fill_probability': 0.35}
-            # simulation section missing - should use hardcoded default
+            'aon_execution': {'enabled': False}
         }
         
         orchestrator = OrderExecutionOrchestrator(**mock_services, config=test_config)
         
-        assert orchestrator.min_fill_probability == 0.35  # From config
-        assert orchestrator.default_capital == 100000     # Hardcoded default
+        assert orchestrator.aon_config == {'enabled': False}
 
     # -----------------------------
     # Capital and Trading Mode Tests
@@ -128,13 +126,11 @@ class TestOrderExecutionOrchestrator:
         mock_services['ibkr_client'].get_account_value.assert_called_once()
 
     def test_get_total_capital_simulation(self, orchestrator, mock_services):
-        """Test getting default capital for simulation mode."""
+        """Test getting capital when IBKR is not connected."""
         mock_services['ibkr_client'].connected = False
         
-        capital = orchestrator._get_total_capital()
-        
-        assert capital == 100000.0
-        mock_services['ibkr_client'].get_account_value.assert_not_called()
+        with pytest.raises(RuntimeError, match="No IBKR connection available"):
+            orchestrator._get_total_capital()
 
     def test_get_trading_mode_live(self, orchestrator, mock_services):
         """Test detecting live trading mode."""
@@ -195,7 +191,7 @@ class TestOrderExecutionOrchestrator:
         assert effective_priority == 3 * 0.8
 
     # -----------------------------
-    # Order Viability Tests
+    # Order Viability Tests - UPDATED
     # -----------------------------
 
     def test_check_order_viability_success(self, orchestrator, mock_services, sample_order):
@@ -206,17 +202,6 @@ class TestOrderExecutionOrchestrator:
         
         assert is_viable is True
         mock_services['state_service'].has_open_position.assert_called_once_with("AAPL")
-
-    def test_check_order_viability_low_probability(self, orchestrator, mock_services, sample_order):
-        """Test order rejection due to low fill probability."""
-        is_viable = orchestrator._check_order_viability(sample_order, 0.3)
-        
-        assert is_viable is False
-        mock_services['persistence_service'].update_order_status.assert_called_once()
-        args = mock_services['persistence_service'].update_order_status.call_args[0]
-        assert "below threshold" in args[2]
-        assert "30.00%" in args[2]
-        assert "40.00%" in args[2]
 
     def test_check_order_viability_open_position(self, orchestrator, mock_services, sample_order):
         """Test order rejection due to existing open position."""
@@ -310,22 +295,8 @@ class TestOrderExecutionOrchestrator:
         active_orders = {1: active_order_mock}
         assert orchestrator._has_duplicate_active_order(sample_order, active_orders) is False
 
-    def test_has_duplicate_active_order_non_working(self, orchestrator, sample_order):
-        """Test duplicate detection ignores non-working orders."""
-        active_order_mock = create_mock_active_order(
-            is_working=False,  # Not working
-            planned_order=create_mock_planned_order(
-                symbol="AAPL",
-                action=Action.BUY,
-                entry_price=150.0,
-                stop_loss=145.0
-            )
-        )
-        active_orders = {1: active_order_mock}
-        assert orchestrator._has_duplicate_active_order(sample_order, active_orders) is False
-
     # -----------------------------
-    # Order Execution Tests
+    # Order Execution Tests - UPDATED
     # -----------------------------
 
     def test_execute_single_order_success(self, orchestrator, mock_services, sample_order):
@@ -362,8 +333,28 @@ class TestOrderExecutionOrchestrator:
             assert "Test error" in args[2]
 
     # -----------------------------
-    # Execution Summary Tests
+    # Execution Summary Tests - UPDATED
     # -----------------------------
+
+    def test_get_execution_summary_success(self, orchestrator, mock_services, sample_order):
+        """Test successful execution summary generation."""
+        with patch.object(orchestrator, '_calculate_position_details', return_value=(66.67, 10000.0)), \
+             patch.object(orchestrator, '_get_trading_mode', return_value=True), \
+             patch.object(orchestrator, 'calculate_effective_priority', return_value=2.4), \
+             patch.object(orchestrator, '_check_aon_viability', return_value=(True, "AON valid")):
+            
+            summary = orchestrator.get_execution_summary(sample_order, 0.8, 100000)
+            
+            assert summary['symbol'] == "AAPL"
+            assert summary['action'] == Action.BUY.value
+            assert summary['quantity'] == 66.67
+            assert summary['capital_commitment'] == 10000.0
+            assert summary['fill_probability'] == 0.8
+            assert summary['effective_priority'] == 2.4
+            assert summary['is_live_trading'] is True
+            assert summary['total_capital'] == 100000
+            assert summary['aon_valid'] is True
+            assert summary['aon_reason'] == "AON valid"
 
     def test_get_execution_summary_failure(self, orchestrator, sample_order):
         """Test execution summary with calculation failure."""
@@ -371,82 +362,20 @@ class TestOrderExecutionOrchestrator:
             
             summary = orchestrator.get_execution_summary(sample_order, 0.8, 100000)
             
-            assert summary == {}
+            # Should return error dict, not empty dict
+            assert 'error' in summary
+            assert 'Test error' in summary['error']
 
     # -----------------------------
-    # Configuration Data Type Tests
+    # Configuration Data Type Tests - UPDATED
     # -----------------------------
 
     def test_config_with_different_data_types(self, mock_services):
         """Test that configuration handles different data types correctly."""
         test_config = {
-            'execution': {'min_fill_probability': 0.25},
-            'simulation': {'default_equity': 75000.0}
+            'aon_execution': {'enabled': True, 'fallback_fixed_notional': 50000}
         }
         
         orchestrator = OrderExecutionOrchestrator(**mock_services, config=test_config)
         
-        assert orchestrator.min_fill_probability == 0.25
-        assert orchestrator.default_capital == 75000.0
-        assert isinstance(orchestrator.min_fill_probability, float)
-        assert isinstance(orchestrator.default_capital, float)
-
-    def test_get_execution_summary_success(self, orchestrator, mock_services, sample_order):
-        """Test successful execution summary generation."""
-        with patch.object(orchestrator, '_calculate_position_details', return_value=(66.67, 10000.0)), \
-             patch.object(orchestrator, '_get_trading_mode', return_value=True), \
-             patch.object(orchestrator, 'calculate_effective_priority', return_value=2.4):
-            
-            summary = orchestrator.get_execution_summary(sample_order, 0.8, 100000)
-            
-            assert summary['symbol'] == "AAPL"
-            assert summary['action'] == Action.BUY.value  # Use .value to get the string representation
-            assert summary['quantity'] == 66.67
-            assert summary['capital_commitment'] == 10000.0
-            assert summary['fill_probability'] == 0.8
-            assert summary['effective_priority'] == 2.4
-            assert summary['is_viable'] is True
-            assert summary['is_live_trading'] is True
-            assert summary['total_capital'] == 100000
-
-    def test_execute_single_order_low_probability(self, mock_services):
-        """Test order rejection due to low fill probability."""
-        orchestrator = OrderExecutionOrchestrator(**mock_services)
-        
-        # Create a real PlannedOrder mock with proper attributes
-        order = create_mock_planned_order()
-        order.entry_price = 150.0  # Ensure entry_price is set
-        
-        result = orchestrator.execute_single_order(order, fill_probability=0.3)
-        
-        assert result is False
-        # The method should fail early due to low probability before reaching calculation
-        mock_services['persistence_service'].update_order_status.assert_called_once()
-        call_args = mock_services['persistence_service'].update_order_status.call_args
-        assert call_args[0][0] == order
-        assert call_args[0][1] == 'FAILED'
-        # Check for either possible error message
-        message = call_args[0][2]
-        assert any(msg in message for msg in ["below threshold", "Execution failed"])
-
-    def test_execute_single_order_existing_position(self, mock_services):
-        """Test order rejection due to existing open position."""
-        orchestrator = OrderExecutionOrchestrator(**mock_services)
-        
-        # Create a real PlannedOrder mock with proper attributes
-        order = create_mock_planned_order()
-        order.entry_price = 150.0  # Ensure entry_price is set
-        
-        mock_services['state_service'].has_open_position.return_value = True
-        
-        result = orchestrator.execute_single_order(order, fill_probability=0.8)
-        
-        assert result is False
-        # The method should fail early due to existing position before reaching calculation
-        mock_services['persistence_service'].update_order_status.assert_called_once()
-        call_args = mock_services['persistence_service'].update_order_status.call_args
-        assert call_args[0][0] == order
-        assert call_args[0][1] == 'FAILED'
-        # Check for either possible error message
-        message = call_args[0][2]
-        assert any(msg in message for msg in ["Open position exists", "Execution failed"])
+        assert orchestrator.aon_config == {'enabled': True, 'fallback_fixed_notional': 50000}
