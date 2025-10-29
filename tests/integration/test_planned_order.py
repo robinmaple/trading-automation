@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch, MagicMock
 import tempfile
 import os
 
-from src.core.planned_order import (
+from src.trading.orders.planned_order import (
     PlannedOrder, PlannedOrderManager, Action, OrderType, SecurityType, PositionStrategy
 )
 

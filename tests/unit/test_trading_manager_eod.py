@@ -13,7 +13,7 @@ class TestTradingManagerEOD:
     @pytest.fixture
     def trading_manager(self):
         """Create TradingManager instance with mocked dependencies."""
-        from src.core.trading_manager import TradingManager
+        from src.trading.execution.trading_manager import TradingManager
         
         # Discover where DataFeed is actually located
         data_feed_path = self._discover_data_feed_path()
@@ -79,7 +79,7 @@ class TestTradingManagerEOD:
         
         # If not found, try to discover by importing TradingManager and checking its imports
         try:
-            import src.core.trading_manager as tm_module
+            import src.trading.execution.trading_manager as tm_module
             # Check what's imported in the trading_manager module
             for attr_name in dir(tm_module):
                 if 'DataFeed' in attr_name:

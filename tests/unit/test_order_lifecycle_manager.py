@@ -2,13 +2,13 @@ import pytest
 from unittest.mock import Mock, MagicMock
 import datetime
 
-from src.core.order_lifecycle_manager import OrderLifecycleManager
+from src.trading.orders.order_lifecycle_manager import OrderLifecycleManager
 from src.core.models import PlannedOrderDB
 from src.core.events import OrderState
-from src.core.planned_order import PlannedOrder
+from src.trading.orders.planned_order import PlannedOrder
 
-from src.services.order_loading_service import OrderLoadingService
-from src.services.order_persistence_service import OrderPersistenceService
+from src.trading.orders.order_loading_service import OrderLoadingService
+from src.trading.orders.order_persistence_service import OrderPersistenceService
 from src.services.state_service import StateService
 
 

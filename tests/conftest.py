@@ -2,7 +2,7 @@ import sys
 import os
 from pathlib import Path
 
-from src.services.order_persistence_service import OrderPersistenceService
+from src.trading.orders.order_persistence_service import OrderPersistenceService
 from src.services.state_service import StateService
 
 # Add the src directory to Python path for imports
@@ -74,7 +74,7 @@ def mock_ibkr_client():
 @pytest.fixture
 def sample_planned_order():
     """Fixture for creating a sample planned order"""
-    from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
+    from src.trading.orders.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
     
     return PlannedOrder(
         security_type=SecurityType.CASH,
@@ -226,7 +226,7 @@ def phase_b_test_data():
 @pytest.fixture
 def sample_planned_order_with_phase_b():
     """Fixture for creating a sample planned order with Phase B fields"""
-    from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
+    from src.trading.orders.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
     
     return PlannedOrder(
         security_type=SecurityType.STK,

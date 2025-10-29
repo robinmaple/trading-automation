@@ -8,10 +8,10 @@ from unittest.mock import ANY, MagicMock, patch
 from decimal import Decimal
 import datetime
 
-from src.services.risk_management_service import RiskManagementService
+from src.trading.risk.risk_management_service import RiskManagementService
 from src.services.state_service import StateService
-from src.services.order_persistence_service import OrderPersistenceService
-from src.core.planned_order import PlannedOrder, PositionStrategy, ActiveOrder
+from src.trading.orders.order_persistence_service import OrderPersistenceService
+from src.trading.orders.planned_order import PlannedOrder, PositionStrategy, ActiveOrder
 
 
 class TestRiskManagementService(unittest.TestCase):
@@ -350,7 +350,7 @@ class TestRiskCappingFunctionality(unittest.TestCase):
         # Should remain unchanged
         self.assertEqual(mock_order.risk_per_trade, original_risk)
 
-    @patch('src.services.risk_management_service.context_logger')
+    @patch('src.trading.risk.risk_management_service.context_logger')
     def test_cap_risk_logs_warning_when_capped(self, mock_context_logger):
         """Test that risk capping logs a warning when values are capped."""
         # Create a mock order with risk exceeding max
@@ -370,7 +370,7 @@ class TestRiskCappingFunctionality(unittest.TestCase):
         self.assertEqual(call_args[0][0].value, 'risk_evaluation')  # TradingEventType.RISK_EVALUATION
         self.assertIn('capped', call_args[0][1].lower())  # message contains 'capped'
 
-    @patch('src.services.risk_management_service.context_logger')
+    @patch('src.trading.risk.risk_management_service.context_logger')
     def test_cap_risk_no_warning_when_within_limits(self, mock_context_logger):
         """Test that no warning is logged when risk is within limits."""
         # Create a mock order with risk within limits

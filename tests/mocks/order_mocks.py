@@ -2,7 +2,7 @@
 Mock order objects for testing.
 """
 from unittest.mock import Mock
-from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
 from tests.mocks.ibkr_mocks import mock_order
 
 

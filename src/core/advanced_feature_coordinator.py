@@ -13,9 +13,9 @@ from src.services.market_context_service import MarketContextService
 from src.services.historical_performance_service import HistoricalPerformanceService
 from src.services.prioritization_service import PrioritizationService
 from src.services.outcome_labeling_service import OutcomeLabelingService
-from src.services.position_sizing_service import PositionSizingService
-from src.core.abstract_data_feed import AbstractDataFeed
-from src.core.planned_order import PlannedOrder
+from src.trading.risk.position_sizing_service import PositionSizingService
+from src.market_data.feeds.abstract_data_feed import AbstractDataFeed
+from src.trading.orders.planned_order import PlannedOrder
 from sqlalchemy.orm import Session
 
 

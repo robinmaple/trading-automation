@@ -1,8 +1,8 @@
 from unittest import TestCase
 import unittest
 from unittest.mock import Mock, patch, MagicMock
-from src.services.order_execution_service import OrderExecutionService
-from src.core.planned_order import Action, OrderType, SecurityType
+from src.trading.execution.order_execution_service import OrderExecutionService
+from src.trading.orders.planned_order import Action, OrderType, SecurityType
 
 class TestOrderExecutionService(TestCase):
 
@@ -24,7 +24,7 @@ class TestOrderExecutionService(TestCase):
         # Mock margin validation
         self.service._validate_order_margin = Mock(return_value=(True, "Margin validation passed"))
 
-    @patch('src.services.order_execution_service.ActiveOrder')
+    @patch('src.trading.execution.order_execution_service.ActiveOrder')
     def test_place_order_live_mode_success(self, mock_active_order):
         # Mock everything to ensure the test passes
         mock_active_order_instance = MagicMock()
@@ -99,7 +99,7 @@ class TestOrderExecutionService(TestCase):
         result = self.service.place_order(Mock())
         assert result is True
 
-    @patch('src.services.order_execution_service.ActiveOrder')
+    @patch('src.trading.execution.order_execution_service.ActiveOrder')
     def test_place_order_live_mode_failure(self, mock_active_order):
         """Test order placement failure in live mode."""
         # Mock ActiveOrder to avoid constructor issues

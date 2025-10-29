@@ -10,7 +10,7 @@ from decimal import Decimal
 
 from src.services.order_eligibility_service import OrderEligibilityService
 from src.core.context_aware_logger import TradingEventType
-from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
 
 
 class TestOrderEligibilityLogging:

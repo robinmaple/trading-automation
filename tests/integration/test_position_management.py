@@ -3,15 +3,15 @@ import datetime
 from unittest.mock import Mock, patch, MagicMock
 import pytest
 
-from core.models import PositionStrategy
-from core.planned_order import is_market_hours
+from src.core.models import PositionStrategy
+from src.trading.orders.planned_order import is_market_hours
 
 class TestPositionManagementIntegration:
     
     @pytest.fixture
     def trading_manager(self):
         """Create a trading manager with proper mocking"""
-        from src.core.trading_manager import TradingManager
+        from src.trading.execution.trading_manager import TradingManager
         
         manager = Mock(spec=TradingManager)
         manager.market_hours = Mock()
@@ -27,7 +27,7 @@ class TestPositionManagementIntegration:
         return manager
 
     def test_position_strategy_expiration(self):
-        from src.core.planned_order import PlannedOrder, PositionStrategy, SecurityType, Action
+        from src.trading.orders.planned_order import PlannedOrder, PositionStrategy, SecurityType, Action
 
         now = datetime.datetime.now()
 

@@ -5,9 +5,9 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch, call
 import datetime
 
-from src.core.trading_manager import TradingManager
+from src.trading.execution.trading_manager import TradingManager
 from src.core.events import PriceUpdateEvent, EventType, OrderEvent
-from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
+from src.trading.orders.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy
 
 
 class TestTradingManagerEventHandling:
@@ -227,10 +227,10 @@ class TestTradingManagerMonitoredSymbolsWorking:
         )
         
         # Create a real MarketDataManager mock
-        from src.core.market_data_manager import MarketDataManager
+        from src.market_data.managers.market_data_manager import MarketDataManager
         
         # Mock the actual MarketDataManager class
-        with patch('src.core.market_data_manager.MarketDataManager') as MockMDM:
+        with patch('src.market_data.managers.market_data_manager.MarketDataManager') as MockMDM:
             mock_market_data_manager = Mock()
             MockMDM.return_value = mock_market_data_manager
             mock_market_data_manager.set_monitored_symbols = Mock()
@@ -666,7 +666,7 @@ class TestTradingManagerStartupIntegration:
 def test_see_actual_implementation():
     """See what the actual _update_monitored_symbols method does."""
     import inspect
-    from src.core.trading_manager import TradingManager
+    from src.trading.execution.trading_manager import TradingManager
     
     # Print the source code of the method
     print("=== _update_monitored_symbols SOURCE CODE ===")

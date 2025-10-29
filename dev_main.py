@@ -8,14 +8,14 @@ import threading
 import sqlite3
 import os
 
-from src.core.planned_order import (
+from src.trading.orders.planned_order import (
     Action,
     OrderType,
     PositionStrategy,
     SecurityType,
     PlannedOrderManager,
 )
-from src.core.trading_manager import TradingManager
+from src.trading.execution.trading_manager import TradingManager
 from src.data_feeds.mock_feed import MockFeed
 from src.core.database import init_database
 from src.core.event_bus import EventBus

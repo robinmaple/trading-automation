@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 
-from src.core.order_loading_orchestrator import OrderLoadingOrchestrator
-from src.core.planned_order import PlannedOrder, Action, OrderType, PositionStrategy, SecurityType
+from src.trading.orders.order_loading_orchestrator import OrderLoadingOrchestrator
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, PositionStrategy, SecurityType
 from src.core.models import PlannedOrderDB
 from src.core.events import OrderState
 

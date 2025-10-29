@@ -5,7 +5,7 @@ Phase 2: Supports first-trigger-first-serve, inactive/reactivation, and capital/
 
 import datetime
 from typing import Dict, List
-from src.core.planned_order import ActiveOrder, PlannedOrder
+from src.trading.orders.planned_order import ActiveOrder, PlannedOrder
 
 class BracketOrderManager:
     """

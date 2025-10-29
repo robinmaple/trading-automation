@@ -2,13 +2,13 @@
 import pytest
 import datetime
 from decimal import Decimal
-from src.services.order_persistence_service import OrderPersistenceService
+from src.trading.orders.order_persistence_service import OrderPersistenceService
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 # tests/test_phase1_5_excel.py
 import pandas as pd
 from io import BytesIO
-from src.core.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy, PlannedOrderManager
+from src.trading.orders.planned_order import PlannedOrder, SecurityType, Action, OrderType, PositionStrategy, PlannedOrderManager
 
 
 

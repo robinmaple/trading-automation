@@ -8,7 +8,7 @@ class TestIntegration:
     
     def test_end_to_end_scan(self, mock_ibkr_adapter, scanner_config):
         """Test complete scan from universe to candidates using tiered architecture"""
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         
         manager = ScanManager(mock_ibkr_adapter, scanner_config)
         
@@ -36,7 +36,7 @@ class TestIntegration:
     # Updated Integration Test - Begin
     def test_strategy_evaluation_integration(self, mock_ibkr_adapter, scan_result_factory):
         """Test strategy evaluation integration through public interfaces"""
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         
         manager = ScanManager(mock_ibkr_adapter)
         
@@ -66,8 +66,8 @@ class TestIntegration:
     
     def test_tiered_architecture_integration(self, mock_ibkr_adapter):
         """Test that the tiered architecture components work together"""
-        from src.scanner.scan_manager import ScanManager
-        from src.scanner.tiered_scanner import TieredScanner
+        from src.scanning.scan_manager import ScanManager
+        from src.scanning.tiered_scanner import TieredScanner
         
         # Test that ScanManager properly uses TieredScanner
         manager = ScanManager(mock_ibkr_adapter)
@@ -83,7 +83,7 @@ class TestIntegration:
     
     def test_or_logic_integration(self, mock_ibkr_adapter):
         """Test that OR logic works across multiple strategies"""
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         
         manager = ScanManager(mock_ibkr_adapter)
         

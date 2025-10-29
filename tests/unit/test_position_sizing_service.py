@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import Mock, patch
-from src.services.position_sizing_service import PositionSizingService
+from src.trading.risk.position_sizing_service import PositionSizingService
 
 class TestPositionSizingService:
     """Test suite for PositionSizingService"""

@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, patch, call
 from decimal import Decimal
 import datetime
 
-from src.services.risk_management_service import RiskManagementService
-from src.services.order_persistence_service import OrderPersistenceService
-from src.core.trading_manager import TradingManager
-from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy, ActiveOrder
-from src.core.ibkr_client import IbkrClient
-from src.core.abstract_data_feed import AbstractDataFeed
+from src.trading.risk.risk_management_service import RiskManagementService
+from src.trading.orders.order_persistence_service import OrderPersistenceService
+from src.trading.execution.trading_manager import TradingManager
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy, ActiveOrder
+from src.brokers.ibkr.ibkr_client import IbkrClient
+from src.market_data.feeds.abstract_data_feed import AbstractDataFeed
 from src.core.models import OrderAttemptDB
 
 

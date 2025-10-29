@@ -3,16 +3,16 @@ import sys
 import argparse
 import datetime
 
-from src.core.planned_order import (
+from src.trading.orders.planned_order import (
     Action,
     OrderType,
     PositionStrategy,
     SecurityType,
     PlannedOrderManager,
 )
-from src.core.ibkr_client import IbkrClient
-from src.core.trading_manager import TradingManager
-from src.data_feeds.ibkr_data_feed import IBKRDataFeed
+from src.brokers.ibkr.ibkr_client import IbkrClient
+from src.trading.execution.trading_manager import TradingManager
+from src.market_data.feeds.ibkr_data_feed import IBKRDataFeed
 from src.core.database import init_database
 # <Event Bus Integration - Begin>
 from src.core.event_bus import EventBus

@@ -1,6 +1,6 @@
 # Imports - Begin (unchanged)
 import datetime
-from src.core.abstract_data_feed import AbstractDataFeed
+from src.market_data.feeds.abstract_data_feed import AbstractDataFeed
 from typing import Dict, Any, Optional
 
 # Context-aware logging import - replacing simple_logger

@@ -8,9 +8,9 @@ import datetime
 from unittest.mock import Mock, patch, MagicMock, call, create_autospec
 from decimal import Decimal
 
-from src.core.order_lifecycle_manager import OrderLifecycleManager
+from src.trading.orders.order_lifecycle_manager import OrderLifecycleManager
 from src.core.context_aware_logger import TradingEventType
-from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
 from src.core.events import OrderState
 from src.core.models import PlannedOrderDB
 
@@ -43,7 +43,7 @@ class TestOrderLifecycleLogging:
     def lifecycle_manager(self, mock_db_session, mock_services):
         """Create OrderLifecycleManager instance for testing."""
         # Create real instance but mock the context logger
-        with patch('src.core.order_lifecycle_manager.get_context_logger') as mock_get_logger:
+        with patch('src.trading.orders.order_lifecycle_manager.get_context_logger') as mock_get_logger:
             mock_logger = Mock()
             mock_get_logger.return_value = mock_logger
             
@@ -381,12 +381,12 @@ class TestOrderLifecycleLogging:
 
     def test_service_initialization_logging(self, mock_db_session, mock_services):
         """Test logging during service initialization."""
-        with patch('src.core.order_lifecycle_manager.get_context_logger') as mock_get_logger:
+        with patch('src.trading.orders.order_lifecycle_manager.get_context_logger') as mock_get_logger:
             mock_logger = Mock()
             mock_get_logger.return_value = mock_logger
             
             # Mock the config to avoid dependency issues
-            with patch('src.core.order_lifecycle_manager.get_config') as mock_get_config:
+            with patch('src.trading.orders.order_lifecycle_manager.get_config') as mock_get_config:
                 mock_get_config.return_value = {'aon_execution': {'enabled': True}}
                 
                 # Create manager - this should trigger initialization logging

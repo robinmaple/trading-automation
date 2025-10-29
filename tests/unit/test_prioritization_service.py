@@ -5,7 +5,7 @@ Unit tests for the PrioritizationService Phase B deterministic scoring and capit
 import pytest
 from unittest.mock import Mock, MagicMock
 from src.services.prioritization_service import PrioritizationService
-from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
 
 
 class MockSizingService:
@@ -179,7 +179,7 @@ class TestPrioritizationService:
         
     def test_calculate_efficiency_invalid_order(self):
         """Test efficiency calculation handles invalid orders gracefully"""
-        from src.core.planned_order import PlannedOrder, Action, PositionStrategy, SecurityType
+        from src.trading.orders.planned_order import PlannedOrder, Action, PositionStrategy, SecurityType
         
         # Test with None input
         result = self.service.calculate_efficiency(None, 100000)

@@ -3,8 +3,8 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch
 from decimal import Decimal
 
-from src.core.trading_manager import TradingManager
-from src.core.planned_order import PlannedOrder, ActiveOrder, PositionStrategy
+from src.trading.execution.trading_manager import TradingManager
+from src.trading.orders.planned_order import PlannedOrder, ActiveOrder, PositionStrategy
 from src.core.events import OrderEvent
 
 # Helper function to create TradingManager with mocks - Begin
@@ -219,7 +219,7 @@ def test_get_active_orders_summary(manager):
 # Risk Management P&L Tests - Begin
 def test_calculate_position_pnl_success():
     """Test successful P&L calculation for both long and short positions."""
-    from src.services.risk_management_service import RiskManagementService
+    from src.trading.risk.risk_management_service import RiskManagementService
     
     # Mock dependencies
     mock_state = MagicMock()
@@ -244,7 +244,7 @@ def test_calculate_position_pnl_success():
 
 def test_calculate_position_pnl_validation_errors():
     """Test P&L calculation raises proper exceptions for invalid parameters."""
-    from src.services.risk_management_service import RiskManagementService
+    from src.trading.risk.risk_management_service import RiskManagementService
     
     mock_state = MagicMock()
     mock_persistence = MagicMock()

@@ -12,7 +12,7 @@ from src.services.state_service import StateService
 from src.core.context_aware_logger import TradingEventType
 from src.core.events import OrderState, OrderEvent
 from src.core.models import PlannedOrderDB, ExecutedOrderDB, PositionStrategy
-from src.core.planned_order import Action, OrderType, SecurityType
+from src.trading.orders.planned_order import Action, OrderType, SecurityType
 
 
 class TestStateServiceLogging:

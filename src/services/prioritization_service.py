@@ -5,8 +5,8 @@ Combines fill probability, manual priority, capital efficiency, and other factor
 
 from typing import List, Dict, Optional, Tuple
 import datetime
-from src.core.planned_order import PlannedOrder
-from src.services.position_sizing_service import PositionSizingService
+from src.trading.orders.planned_order import PlannedOrder
+from src.trading.risk.position_sizing_service import PositionSizingService
 import signal
 import time
 from functools import wraps

@@ -13,8 +13,8 @@ from typing import Dict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core.ibkr_client import IbkrClient
-from src.data_feeds.ibkr_data_feed import IBKRDataFeed
+from src.brokers.ibkr.ibkr_client import IbkrClient
+from src.market_data.feeds.ibkr_data_feed import IBKRDataFeed
 
 
 class SafeLiveMonitor:

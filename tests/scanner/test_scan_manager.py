@@ -6,7 +6,7 @@ class TestScanManager:
     """Test the high-level scan manager - Updated for TieredScanner architecture"""
     
     def test_manager_initialization(self, mock_ibkr_adapter):
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         
         manager = ScanManager(mock_ibkr_adapter)
         
@@ -20,9 +20,8 @@ class TestScanManager:
         assert not hasattr(manager, 'candidate_generator')  # No longer direct access
         assert not hasattr(manager, 'strategy_registry')  # No longer direct access
     
-    # Updated Test Methods - Begin
     def test_candidate_generation_workflow(self, mock_ibkr_adapter):
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         
         manager = ScanManager(mock_ibkr_adapter)
         
@@ -52,7 +51,7 @@ class TestScanManager:
     
     def test_all_candidates_generation(self, mock_ibkr_adapter):
         """Test generating candidates from all strategies with OR logic"""
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         
         manager = ScanManager(mock_ibkr_adapter)
         
@@ -83,7 +82,7 @@ class TestScanManager:
             assert 'momentum_breakout' in strategies
     
     def test_configuration_management(self, mock_ibkr_adapter):
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         from config.scanner_config import ScannerConfig
         
         manager = ScanManager(mock_ibkr_adapter)
@@ -104,7 +103,7 @@ class TestScanManager:
     
     def test_empty_results_handling(self, mock_ibkr_adapter):
         """Test graceful handling when no candidates are found"""
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         
         manager = ScanManager(mock_ibkr_adapter)
         
@@ -118,7 +117,7 @@ class TestScanManager:
     
     def test_strategy_identification_in_candidates(self, mock_ibkr_adapter):
         """Test that candidates include strategy identification"""
-        from src.scanner.scan_manager import ScanManager
+        from src.scanning.scan_manager import ScanManager
         
         manager = ScanManager(mock_ibkr_adapter)
         
@@ -143,4 +142,36 @@ class TestScanManager:
                 assert 'matching_strategies' in candidate
                 assert 'strategy_type' in candidate
                 assert candidate['identified_by'] == 'bull_trend_pullback'
-    # Updated Test Methods - End
+
+
+# Test fixtures
+@pytest.fixture
+def mock_ibkr_adapter():
+    """Fixture providing a mocked IBKR adapter"""
+    mock_adapter = Mock()
+    mock_adapter.get_market_data.return_value = {
+        'price': 150.0,
+        'volume': 1000000,
+        'change': 1.5
+    }
+    return mock_adapter
+
+
+@pytest.fixture
+def mock_scan_manager():
+    """Fixture providing a mocked ScanManager for tests"""
+    with patch('src.scanning.scan_manager.ScanManager') as mock_manager:
+        instance = mock_manager.return_value
+        instance.generate_all_candidates.return_value = [
+            {
+                'symbol': 'TEST',
+                'identified_by': 'test_strategy',
+                'confidence': 80.0,
+                'current_price': 100.0
+            }
+        ]
+        yield instance
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

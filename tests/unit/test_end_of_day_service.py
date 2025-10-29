@@ -11,7 +11,7 @@ from src.services.end_of_day_service import EndOfDayService, EODConfig
 from src.services.state_service import StateService
 from src.services.market_hours_service import MarketHoursService
 from src.core.models import ExecutedOrderDB, PlannedOrderDB
-from src.core.planned_order import PositionStrategy
+from src.trading.orders.planned_order import PositionStrategy
 from src.core.events import OrderState
 
 

@@ -2,7 +2,7 @@ from decimal import Decimal
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 import datetime
-from src.core.planned_order import Action, OrderType, PlannedOrder, SecurityType, PositionStrategy
+from src.trading.orders.planned_order import Action, OrderType, PlannedOrder, SecurityType, PositionStrategy
 from src.services.order_eligibility_service import OrderEligibilityService
 from src.core.models import ProbabilityScoreDB
 

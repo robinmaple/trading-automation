@@ -4,7 +4,7 @@ from decimal import Decimal
 import datetime
 
 from src.core.bracket_order_manager import BracketOrderManager
-from src.core.planned_order import PlannedOrder, Action
+from src.trading.orders.planned_order import PlannedOrder, Action
 
 
 def create_mock_planned_order():

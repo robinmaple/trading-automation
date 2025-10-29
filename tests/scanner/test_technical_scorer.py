@@ -10,7 +10,7 @@ class TestTechnicalScorer:
         try:
             from src.scanner.technical_scorer import TechnicalScorer
         except ImportError:
-            from scanner.technical_scorer import TechnicalScorer
+            from src.scanning.technical_scorer import TechnicalScorer
             
         scorer = TechnicalScorer()
         prices = mock_historical_data['close']
@@ -26,7 +26,7 @@ class TestTechnicalScorer:
         try:
             from src.scanner.technical_scorer import TechnicalScorer
         except ImportError:
-            from scanner.technical_scorer import TechnicalScorer
+            from src.scanning.technical_scorer import TechnicalScorer
             
         scorer = TechnicalScorer()
         
@@ -41,7 +41,7 @@ class TestTechnicalScorer:
         try:
             from src.scanner.technical_scorer import TechnicalScorer
         except ImportError:
-            from scanner.technical_scorer import TechnicalScorer
+            from src.scanning.technical_scorer import TechnicalScorer
             
         scorer = TechnicalScorer()
         
@@ -56,7 +56,7 @@ class TestTechnicalScorer:
         try:
             from src.scanner.technical_scorer import TechnicalScorer
         except ImportError:
-            from scanner.technical_scorer import TechnicalScorer
+            from src.scanning.technical_scorer import TechnicalScorer
             
         scorer = TechnicalScorer()
         
@@ -73,7 +73,7 @@ class TestTechnicalScorer:
         try:
             from src.scanner.technical_scorer import TechnicalScorer
         except ImportError:
-            from scanner.technical_scorer import TechnicalScorer
+            from src.scanning.technical_scorer import TechnicalScorer
             
         scorer = TechnicalScorer()
         

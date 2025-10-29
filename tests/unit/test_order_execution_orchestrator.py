@@ -6,8 +6,8 @@ from unittest.mock import Mock, MagicMock, patch
 from decimal import Decimal
 import datetime
 
-from src.core.order_execution_orchestrator import OrderExecutionOrchestrator
-from src.core.planned_order import PlannedOrder, Action, OrderType, PositionStrategy, SecurityType
+from src.trading.execution.order_execution_orchestrator import OrderExecutionOrchestrator
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, PositionStrategy, SecurityType
 
 # -----------------------------
 # Mock helpers

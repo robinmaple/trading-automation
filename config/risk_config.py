@@ -4,7 +4,7 @@ All values can be overridden by passing a custom config to RiskManagementService
 """
 from decimal import Decimal
 from typing import Dict, Any
-from src.core.planned_order import PositionStrategy
+from src.trading.orders.planned_order import PositionStrategy
 
 
 # Default risk configuration - can be overridden

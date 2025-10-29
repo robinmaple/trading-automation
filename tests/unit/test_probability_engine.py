@@ -7,7 +7,7 @@ from pytest import approx
 from unittest.mock import Mock, MagicMock, patch
 import datetime
 from src.core.probability_engine import FillProbabilityEngine
-from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, SecurityType
 
 
 class MockDataFeed:

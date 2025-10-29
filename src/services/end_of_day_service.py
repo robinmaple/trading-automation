@@ -12,7 +12,7 @@ from src.core.context_aware_logger import get_context_logger, TradingEventType
 from src.core.models import PlannedOrderDB, ExecutedOrderDB
 from src.core.events import OrderState
 # Fix PositionStrategy import - Begin
-from src.core.planned_order import PositionStrategy
+from src.trading.orders.planned_order import PositionStrategy
 # Fix PositionStrategy import - End
 from src.services.market_hours_service import MarketHoursService
 from src.services.state_service import StateService

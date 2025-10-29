@@ -2,7 +2,7 @@ import pytest
 from decimal import Decimal
 from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
-from src.core.planned_order import PlannedOrderManager, SecurityType, Action, OrderType, PositionStrategy
+from src.trading.orders.planned_order import PlannedOrderManager, SecurityType, Action, OrderType, PositionStrategy
 
 class TestPlannedOrderManagerConfig:
     """Test PlannedOrderManager configuration handling."""

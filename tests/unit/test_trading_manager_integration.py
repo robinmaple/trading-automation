@@ -2,9 +2,9 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 import datetime
 
-from src.core.trading_manager import TradingManager
-from src.core.order_loading_orchestrator import OrderLoadingOrchestrator
-from src.core.order_lifecycle_manager import OrderLifecycleManager
+from src.trading.execution.trading_manager import TradingManager
+from src.trading.orders.order_loading_orchestrator import OrderLoadingOrchestrator
+from src.trading.orders.order_lifecycle_manager import OrderLifecycleManager
 
 
 class TestTradingManagerIntegration:

@@ -6,7 +6,7 @@ class TestScannerCore:
     """Test the main scanner engine - Updated for Tier 1 architecture"""
     
     def test_scanner_initialization(self, mock_ibkr_adapter, scanner_config):
-        from src.scanner.scanner_core import StockScanner
+        from src.scanning.scanner_core import StockScanner
         
         scanner = StockScanner(mock_ibkr_adapter, scanner_config)
         assert scanner.config == scanner_config
@@ -14,7 +14,7 @@ class TestScannerCore:
     
     # Updated Test Methods - Begin
     def test_complete_scan_workflow(self, mock_ibkr_adapter, scanner_config):
-        from src.scanner.scanner_core import StockScanner
+        from src.scanning.scanner_core import StockScanner
         
         scanner = StockScanner(mock_ibkr_adapter, scanner_config)
         scan_results = scanner.run_scan()
@@ -43,7 +43,7 @@ class TestScannerCore:
             # Note: Strategy scores are now handled by StrategyOrchestrator in Tier 2
     
     def test_single_stock_analysis(self, mock_ibkr_adapter, scanner_config):
-        from src.scanner.scanner_core import StockScanner
+        from src.scanning.scanner_core import StockScanner
         
         scanner = StockScanner(mock_ibkr_adapter, scanner_config)
         
@@ -73,7 +73,7 @@ class TestScannerCore:
     
     def test_scan_dataframe_compatibility(self, mock_ibkr_adapter, scanner_config):
         """Test legacy DataFrame output for backward compatibility"""
-        from src.scanner.scanner_core import StockScanner
+        from src.scanning.scanner_core import StockScanner
         
         scanner = StockScanner(mock_ibkr_adapter, scanner_config)
         results_df = scanner.run_scan_dataframe()
@@ -93,7 +93,7 @@ class TestScannerCore:
     
     def test_tier_1_data_quality(self, mock_ibkr_adapter, scanner_config):
         """Test that Tier 1 scanner provides quality data for strategy processing"""
-        from src.scanner.scanner_core import StockScanner
+        from src.scanning.scanner_core import StockScanner
         
         scanner = StockScanner(mock_ibkr_adapter, scanner_config)
         scan_results = scanner.run_scan()

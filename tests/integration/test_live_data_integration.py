@@ -1,7 +1,7 @@
 import unittest
-from src.core.trading_manager import TradingManager
-from src.data_feeds.ibkr_data_feed import IBKRDataFeed
-from src.core.ibkr_client import IbkrClient
+from src.trading.execution.trading_manager import TradingManager
+from src.market_data.feeds.ibkr_data_feed import IBKRDataFeed
+from src.brokers.ibkr.ibkr_client import IbkrClient
 
 class TestLiveDataIntegration(unittest.TestCase):
     """Integration test with actual IBKR connection"""

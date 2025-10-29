@@ -6,7 +6,7 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.core.planned_order import PlannedOrderManager
+from src.trading.orders.planned_order import PlannedOrderManager
 
 def test_excel_parsing():
     """Test the excel parsing directly without test mocks"""

@@ -9,7 +9,7 @@ from config.risk_config import (
     get_risk_config,
     merge_risk_config
 )
-from src.core.planned_order import PositionStrategy
+from src.trading.orders.planned_order import PositionStrategy
 
 
 class TestRiskConfig:

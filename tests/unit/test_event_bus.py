@@ -295,8 +295,8 @@ class TestEventBusIntegration:
     
     def test_event_flow_market_data_to_trading(self):
         """Test complete event flow from market data to trading manager."""
-        from src.core.market_data_manager import MarketDataManager
-        from src.core.trading_manager import TradingManager
+        from src.market_data.managers.market_data_manager import MarketDataManager
+        from src.trading.execution.trading_manager import TradingManager
         from src.core.events import EventType  # Import EventType
         
         # Create event bus with logging disabled

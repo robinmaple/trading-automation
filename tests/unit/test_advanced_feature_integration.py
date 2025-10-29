@@ -12,8 +12,8 @@ import logging
 from src.services.prioritization_service import PrioritizationService
 from src.services.market_context_service import MarketContextService
 from src.services.historical_performance_service import HistoricalPerformanceService
-from src.core.planned_order import PlannedOrder, Action, OrderType, SecurityType
-from src.services.position_sizing_service import PositionSizingService
+from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, SecurityType
+from src.trading.risk.position_sizing_service import PositionSizingService
 
 
 class TestAdvancedFeaturesIntegration(unittest.TestCase):

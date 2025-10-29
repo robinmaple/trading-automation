@@ -14,7 +14,7 @@ from src.services.end_of_day_service import EndOfDayService, EODConfig
 from src.services.state_service import StateService
 from src.services.market_hours_service import MarketHoursService
 from src.core.context_aware_logger import get_context_logger, TradingEventType
-from src.core.planned_order import PositionStrategy
+from src.trading.orders.planned_order import PositionStrategy
 from src.core.models import PlannedOrderDB, ExecutedOrderDB
 from src.core.events import OrderState
 from src.core.database import get_db_session, Base

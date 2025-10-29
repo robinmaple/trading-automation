@@ -6,10 +6,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 from decimal import Decimal
 
-from src.services.risk_management_service import RiskManagementService
+from src.trading.risk.risk_management_service import RiskManagementService
 from src.services.state_service import StateService
-from src.services.order_persistence_service import OrderPersistenceService
-from src.core.planned_order import PlannedOrder, Action, PositionStrategy
+from src.trading.orders.order_persistence_service import OrderPersistenceService
+from src.trading.orders.planned_order import PlannedOrder, Action, PositionStrategy
 
 
 class TestRiskCapping(unittest.TestCase):

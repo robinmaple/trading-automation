@@ -12,7 +12,7 @@ import threading
 from src.core.events import OrderState, OrderEvent
 from src.core.database import get_db_session
 from src.core.models import PlannedOrderDB, ExecutedOrderDB
-from src.services.order_persistence_service import OrderPersistenceService
+from src.trading.orders.order_persistence_service import OrderPersistenceService
 
 # Context-aware logging import - Begin
 from src.core.context_aware_logger import get_context_logger, TradingEventType

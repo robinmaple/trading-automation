@@ -1,7 +1,7 @@
 # tests/unit/test_order_loading_service.py
 import pytest
 from decimal import Decimal
-from src.services.order_loading_service import OrderLoadingService
+from src.trading.orders.order_loading_service import OrderLoadingService
 from unittest.mock import Mock, patch, MagicMock
 
 class TestOrderLoadingServiceConfig:
@@ -41,7 +41,7 @@ class TestOrderLoadingServiceConfig:
         # Assert
         assert service.config == {}
     
-    @patch('src.core.planned_order.PlannedOrderManager.from_excel')
+    @patch('src.trading.orders.planned_order.PlannedOrderManager.from_excel')
     def test_load_orders_passes_config_to_manager(self, mock_from_excel):
         """Test that load_and_validate_orders passes config to PlannedOrderManager."""
         # Arrange

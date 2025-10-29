@@ -1,5 +1,5 @@
 import pytest
-from src.core.planned_order import PositionStrategy, SecurityType, Action
+from src.trading.orders.planned_order import PositionStrategy, SecurityType, Action
 
 class TestPositionStrategy:
     
@@ -22,7 +22,7 @@ class TestPositionStrategy:
         from unittest.mock import patch
         
         # Mock market hours to be consistent
-        with patch('src.core.planned_order.is_market_hours') as mock_market_hours:
+        with patch('src.trading.orders.planned_order.is_market_hours') as mock_market_hours:
             mock_market_hours.return_value = True  # Market is open
             
             # DAY should expire same day (0 days) during market hours
@@ -36,7 +36,7 @@ class TestPositionStrategy:
 
     def test_planned_order_expiration_date(self):
         """Test expiration date setting in PlannedOrder"""
-        from src.core.planned_order import PlannedOrder
+        from src.trading.orders.planned_order import PlannedOrder
         
         # Test HYBRID strategy sets expiration date - WITH REQUIRED FIELDS
         order = PlannedOrder(

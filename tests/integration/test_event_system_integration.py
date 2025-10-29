@@ -10,10 +10,10 @@ import threading
 import time
 
 from src.core.event_bus import EventBus
-from src.core.market_data_manager import MarketDataManager
-from src.core.trading_manager import TradingManager
+from src.market_data.managers.market_data_manager import MarketDataManager
+from src.trading.execution.trading_manager import TradingManager
 from src.core.events import PriceUpdateEvent, EventType
-from src.data_feeds.ibkr_data_feed import IBKRDataFeed
+from src.market_data.feeds.ibkr_data_feed import IBKRDataFeed
 
 
 class TestCompleteEventSystem:

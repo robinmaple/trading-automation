@@ -4,9 +4,9 @@ from unittest.mock import Mock, create_autospec
 import datetime
 
 from src.core.advanced_feature_coordinator import AdvancedFeatureCoordinator
-from src.core.planned_order import PlannedOrder, Action
-from src.core.abstract_data_feed import AbstractDataFeed
-from src.services.position_sizing_service import PositionSizingService
+from src.trading.orders.planned_order import PlannedOrder, Action
+from src.market_data.feeds.abstract_data_feed import AbstractDataFeed
+from src.trading.risk.position_sizing_service import PositionSizingService
 
 
 # ------------------------
@@ -16,7 +16,7 @@ from src.services.position_sizing_service import PositionSizingService
 
 @pytest.fixture
 def valid_order():
-    from src.core.planned_order import PlannedOrder, SecurityType, Action, PositionStrategy
+    from src.trading.orders.planned_order import PlannedOrder, SecurityType, Action, PositionStrategy
     
     return PlannedOrder(
         security_type=SecurityType.STK,
