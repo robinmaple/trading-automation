@@ -1,6 +1,6 @@
 import unittest 
 from unittest.mock import Mock, patch 
-from src.core.probability_engine import FillProbabilityEngine 
+from src.trading.execution.probability_engine import FillProbabilityEngine 
 from src.services.order_eligibility_service import OrderEligibilityService 
 from src.trading.execution.trading_manager import TradingManager 
 from src.trading.orders.planned_order import PlannedOrder 

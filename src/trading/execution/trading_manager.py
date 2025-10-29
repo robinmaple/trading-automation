@@ -13,13 +13,13 @@ import pandas as pd
 
 from src.trading.risk.account_utils import detect_trading_environment
 from src.trading.execution.order_execution_orchestrator import OrderExecutionOrchestrator
-from src.core.monitoring_service import MonitoringService
+from src.trading.monitoring.monitoring_service import MonitoringService
 from src.trading.orders.order_lifecycle_manager import OrderLifecycleManager
-from src.core.advanced_feature_coordinator import AdvancedFeatureCoordinator
+from src.trading.coordination.advanced_feature_coordinator import AdvancedFeatureCoordinator
 from src.services.prioritization_service import PrioritizationService
 from src.brokers.ibkr.ibkr_client import IbkrClient
 from src.trading.orders.planned_order import PlannedOrder, ActiveOrder, PositionStrategy, SecurityType
-from src.core.probability_engine import FillProbabilityEngine
+from src.trading.execution.probability_engine import FillProbabilityEngine
 from src.market_data.feeds.abstract_data_feed import AbstractDataFeed
 from src.core.database import get_db_session
 from src.core.models import PlannedOrderDB

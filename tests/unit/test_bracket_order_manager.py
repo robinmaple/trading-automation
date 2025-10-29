@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from decimal import Decimal
 import datetime
 
-from src.core.bracket_order_manager import BracketOrderManager
+from src.trading.execution.bracket_order_manager import BracketOrderManager
 from src.trading.orders.planned_order import PlannedOrder, Action
 
 

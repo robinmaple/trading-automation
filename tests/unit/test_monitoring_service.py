@@ -4,8 +4,7 @@ import pytest
 import datetime
 import time
 from unittest.mock import MagicMock, patch
-from src.core.monitoring_service import MonitoringService
-
+from src.trading.monitoring.monitoring_service import MonitoringService
 
 class FakeDataFeed:
     """Simple fake data feed for testing monitoring service."""

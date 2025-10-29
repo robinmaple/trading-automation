@@ -12,7 +12,7 @@ import datetime
 from decimal import Decimal
 from typing import Dict, Any, List, Optional, Tuple
 from src.trading.orders.planned_order import PlannedOrder, ActiveOrder
-from src.core.probability_engine import FillProbabilityEngine
+from src.trading.execution.probability_engine import FillProbabilityEngine
 from src.trading.execution.order_execution_service import OrderExecutionService
 from src.trading.risk.position_sizing_service import PositionSizingService
 from src.trading.orders.order_persistence_service import OrderPersistenceService

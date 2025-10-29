@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import Mock, create_autospec
 import datetime
 
-from src.core.advanced_feature_coordinator import AdvancedFeatureCoordinator
+from src.trading.coordination.advanced_feature_coordinator import AdvancedFeatureCoordinator
 from src.trading.orders.planned_order import PlannedOrder, Action
 from src.market_data.feeds.abstract_data_feed import AbstractDataFeed
 from src.trading.risk.position_sizing_service import PositionSizingService
