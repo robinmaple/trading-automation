@@ -79,7 +79,8 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         # Mock market context to return same timeframe
         self.mock_market_context.get_dominant_timeframe.return_value = "15min"
         
-        score = self.service.calculate_timeframe_match_score(self.sample_order)
+        # Use the component calculator directly
+        score = self.service._component_calculator.calculate_timeframe_match_score(self.sample_order)
         
         self.assertEqual(score, 1.0)  # Perfect match
         self.mock_market_context.get_dominant_timeframe.assert_called_once_with("AAPL")
@@ -95,7 +96,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
                 '1H': ['15min', '1H', '4H']
             }
         }):
-            score = self.service.calculate_timeframe_match_score(self.sample_order)
+            score = self.service._component_calculator.calculate_timeframe_match_score(self.sample_order)
         
         self.assertEqual(score, 0.7)  # Compatible
 
@@ -109,7 +110,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
                 '1D': ['4H', '1D']  # 15min not in list
             }
         }):
-            score = self.service.calculate_timeframe_match_score(self.sample_order)
+            score = self.service._component_calculator.calculate_timeframe_match_score(self.sample_order)
         
         self.assertEqual(score, 0.3)  # Mismatched
 
@@ -117,7 +118,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         """Test timeframe matching fallback when advanced features disabled."""
         # Disable advanced features
         with patch.dict(self.service.config, {'enable_advanced_features': False}):
-            score = self.service.calculate_timeframe_match_score(self.sample_order)
+            score = self.service._component_calculator.calculate_timeframe_match_score(self.sample_order)
         
         self.assertEqual(score, 0.5)  # Fallback value
 
@@ -130,11 +131,10 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
             'total_trades': 25
         }
         
-        score = self.service.calculate_setup_bias_score(self.sample_order)
+        score = self.service._component_calculator.calculate_setup_bias_score(self.sample_order)
         
         # Should be high score (0.75*0.6 + 3.2*0.4/5 = 0.45 + 0.256 = ~0.706)
         self.assertGreater(score, 0.7)
-        # Fix: Use correct method name
         self.mock_performance.get_setup_performance.assert_called_once()
 
     def test_setup_bias_score_low_performance(self):
@@ -145,7 +145,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
             'total_trades': 8  # Below threshold
         }
         
-        score = self.service.calculate_setup_bias_score(self.sample_order)
+        score = self.service._component_calculator.calculate_setup_bias_score(self.sample_order)
         
         self.assertEqual(score, 0.3)  # Below thresholds
 
@@ -153,7 +153,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         """Test setup bias scoring with no historical data."""
         self.mock_performance.get_setup_performance.return_value = None
         
-        score = self.service.calculate_setup_bias_score(self.sample_order)
+        score = self.service._component_calculator.calculate_setup_bias_score(self.sample_order)
         
         self.assertEqual(score, 0.5)  # Neutral fallback
 
@@ -161,7 +161,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         """Test setup bias scoring fallback when advanced features disabled."""
         # Disable advanced features
         with patch.dict(self.service.config, {'enable_advanced_features': False}):
-            score = self.service.calculate_setup_bias_score(self.sample_order)
+            score = self.service._component_calculator.calculate_setup_bias_score(self.sample_order)
         
         self.assertEqual(score, 0.5)  # Fallback value
 
@@ -179,7 +179,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         fill_prob = 0.85
         total_capital = 100000.0  # Float
         
-        score_result = self.service.calculate_deterministic_score(
+        score_result = self.service._scoring_service.calculate_deterministic_score(
             self.sample_order, fill_prob, total_capital
         )
         
@@ -200,7 +200,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         with patch.dict(self.service.config, {'enable_advanced_features': False}):
             self.mock_sizing_service.calculate_order_quantity.return_value = 10.0  # Float
             
-            score_result = self.service.calculate_deterministic_score(
+            score_result = self.service._scoring_service.calculate_deterministic_score(
                 self.sample_order, 0.85, 100000.0  # Float
             )
         
@@ -217,7 +217,7 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         )
         
         # Should still work without errors
-        score = basic_service.calculate_timeframe_match_score(self.sample_order)
+        score = basic_service._component_calculator.calculate_timeframe_match_score(self.sample_order)
         self.assertEqual(score, 0.5)  # Fallback value
 
     def test_error_handling_in_advanced_features(self):
@@ -227,8 +227,8 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         self.mock_performance.get_setup_performance.side_effect = Exception("DB error")
         
         # Should handle errors gracefully
-        timeframe_score = self.service.calculate_timeframe_match_score(self.sample_order)
-        setup_score = self.service.calculate_setup_bias_score(self.sample_order)
+        timeframe_score = self.service._component_calculator.calculate_timeframe_match_score(self.sample_order)
+        setup_score = self.service._component_calculator.calculate_setup_bias_score(self.sample_order)
         
         self.assertEqual(timeframe_score, 0.5)  # Fallback on error
         self.assertEqual(setup_score, 0.5)  # Fallback on error
@@ -368,6 +368,23 @@ class TestAdvancedFeaturesIntegration(unittest.TestCase):
         else:
             # If no logging happens, that's also acceptable behavior
             print("No logging occurred - this might be expected behavior")
+
+    def test_component_calculator_integration(self):
+        """Test that component calculator properly integrates with advanced services."""
+        # Test that the component calculator has access to advanced services
+        self.assertIsNotNone(self.service._component_calculator.market_context_service)
+        self.assertIsNotNone(self.service._component_calculator.historical_performance_service)
+        
+        # Test that the component calculator uses the config
+        self.assertEqual(self.service._component_calculator.config, self.config)
+
+    def test_scoring_service_integration(self):
+        """Test that scoring service properly integrates with component calculator."""
+        # Test that the scoring service has access to component calculator
+        self.assertIsNotNone(self.service._scoring_service.component_calculator)
+        
+        # Test that the scoring service uses the config
+        self.assertEqual(self.service._scoring_service.config, self.config)
 
 if __name__ == "__main__":
     unittest.main()

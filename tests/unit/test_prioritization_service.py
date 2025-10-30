@@ -3,7 +3,7 @@ Unit tests for the PrioritizationService Phase B deterministic scoring and capit
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock, MagicMock, patch
 from src.services.prioritization_service import PrioritizationService
 from src.trading.orders.planned_order import PlannedOrder, Action, OrderType, SecurityType, PositionStrategy
 
@@ -49,8 +49,7 @@ class TestPrioritizationService:
                 'two_layer_prioritization': {'enabled': False}
             }
         )
-# Add proper test setup at the class level - End    
-
+    
     @pytest.fixture
     def mock_sizing_service(self):
         """Provide a mock sizing service for testing."""
@@ -162,7 +161,11 @@ class TestPrioritizationService:
     def test_calculate_efficiency_buy_order(self, prioritization_service, sample_buy_order):
         """Test capital efficiency calculation for BUY orders."""
         total_capital = 100000
-        efficiency = prioritization_service.calculate_efficiency(sample_buy_order, total_capital)
+        
+        # Use the component calculator directly for efficiency calculation
+        efficiency = prioritization_service._component_calculator.calculate_efficiency(
+            sample_buy_order, total_capital
+        )
         
         # Should be positive efficiency for profitable order
         assert efficiency > 0
@@ -171,22 +174,26 @@ class TestPrioritizationService:
     def test_calculate_efficiency_sell_order(self, prioritization_service, sample_sell_order):
         """Test capital efficiency calculation for SELL orders."""
         total_capital = 100000
-        efficiency = prioritization_service.calculate_efficiency(sample_sell_order, total_capital)
+        
+        # Use the component calculator directly for efficiency calculation
+        efficiency = prioritization_service._component_calculator.calculate_efficiency(
+            sample_sell_order, total_capital
+        )
         
         # Should be positive efficiency for profitable order
         assert efficiency > 0
         assert isinstance(efficiency, float)
         
-    def test_calculate_efficiency_invalid_order(self):
+    def test_calculate_efficiency_invalid_order(self, prioritization_service):
         """Test efficiency calculation handles invalid orders gracefully"""
         from src.trading.orders.planned_order import PlannedOrder, Action, PositionStrategy, SecurityType
         
         # Test with None input
-        result = self.service.calculate_efficiency(None, 100000)
+        result = prioritization_service._component_calculator.calculate_efficiency(None, 100000)
         assert result == 0.0
         
         # Test with completely invalid object
-        result = self.service.calculate_efficiency("not_an_order", 100000)
+        result = prioritization_service._component_calculator.calculate_efficiency("not_an_order", 100000)
         assert result == 0.0
         
         # Test with object missing required attributes
@@ -194,39 +201,34 @@ class TestPrioritizationService:
             pass
         
         fake_order = FakeOrder()
-        result = self.service.calculate_efficiency(fake_order, 100000)
+        result = prioritization_service._component_calculator.calculate_efficiency(fake_order, 100000)
         assert result == 0.0
         
-        # <FIXED: Test with real PlannedOrder but invalid prices - USE MOCK>
-        # We can't create an invalid PlannedOrder anymore due to validation
-        # Instead, test with a mock that simulates calculation failure
-        from unittest.mock import Mock
+        # Test with a mock that simulates calculation failure
         invalid_order = Mock(spec=PlannedOrder)
         invalid_order.entry_price = None
         invalid_order.stop_loss = None
-        invalid_order.calculate_quantity.side_effect = ValueError("Missing required prices")
         
-        result = self.service.calculate_efficiency(invalid_order, 100000)
+        result = prioritization_service._component_calculator.calculate_efficiency(invalid_order, 100000)
         assert result == 0.0
         
-        # <ADDITIONAL TEST: Valid order should work>
-        # Also test that valid orders calculate correctly
+        # Test that valid orders calculate correctly
         valid_order = PlannedOrder(
-            security_type=SecurityType.STK,  # USE ENUM
+            security_type=SecurityType.STK,
             exchange="SMART", 
             currency="USD",
             action=Action.BUY,
             symbol="TEST",
-            entry_price=100.0,  # REQUIRED
-            stop_loss=95.0,     # REQUIRED
+            entry_price=100.0,
+            stop_loss=95.0,
             risk_per_trade=0.01,
             risk_reward_ratio=2.0,
-            position_strategy=PositionStrategy.DAY,  # USE ENUM
+            position_strategy=PositionStrategy.DAY,
             priority=3,
-            overall_trend="Bull"  # REQUIRED
+            overall_trend="Bull"
         )
         
-        result = self.service.calculate_efficiency(valid_order, 100000)
+        result = prioritization_service._component_calculator.calculate_efficiency(valid_order, 100000)
         assert result > 0.0  # Should calculate a positive efficiency
 
     def test_deterministic_score_calculation(self, prioritization_service, sample_buy_order):
@@ -234,7 +236,8 @@ class TestPrioritizationService:
         fill_prob = 0.85
         total_capital = 100000
         
-        score_result = prioritization_service.calculate_deterministic_score(
+        # Use the scoring service directly for deterministic score calculation
+        score_result = prioritization_service._scoring_service.calculate_deterministic_score(
             sample_buy_order, fill_prob, total_capital
         )
         
@@ -356,7 +359,7 @@ class TestPrioritizationService:
         
         # Test priority 1 (highest manual priority)
         sample_buy_order.priority = 1
-        score_result = prioritization_service.calculate_deterministic_score(
+        score_result = prioritization_service._scoring_service.calculate_deterministic_score(
             sample_buy_order, fill_prob, total_capital
         )
         # priority=1 should normalize to (6-1)/5 = 1.0
@@ -364,7 +367,7 @@ class TestPrioritizationService:
         
         # Test priority 5 (lowest manual priority)
         sample_buy_order.priority = 5
-        score_result = prioritization_service.calculate_deterministic_score(
+        score_result = prioritization_service._scoring_service.calculate_deterministic_score(
             sample_buy_order, fill_prob, total_capital
         )
         # priority=5 should normalize to (6-5)/5 = 0.2
@@ -413,3 +416,16 @@ class TestPrioritizationService:
         assert len(prioritized_orders) == 1
         assert prioritized_orders[0]['allocated'] == True
         assert prioritized_orders[0]['allocation_reason'] == 'Allocated'
+
+    def test_viability_checker_integration(self, prioritization_service, sample_buy_order):
+        """Test that viability checker is properly integrated."""
+        order_data = {
+            'order': sample_buy_order,
+            'fill_probability': 0.5
+        }
+        
+        is_viable, reason = prioritization_service.is_order_viable(order_data)
+        
+        # With refactored logic, all orders should be viable
+        assert is_viable == True
+        assert "viable" in reason.lower()
