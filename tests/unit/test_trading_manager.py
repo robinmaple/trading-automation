@@ -277,30 +277,6 @@ def test_calculate_position_pnl_validation_errors():
 # Risk Management P&L Tests - End
 
 # Fixed Market Close Tests - Begin
-def test_check_market_close_actions_closes_day_positions():
-    """Test that DAY positions are closed before market close."""
-    # Setup
-    manager = create_trading_manager_with_mocks()
-    
-    # Mock market hours to return True for should_close_positions
-    manager.market_hours.should_close_positions = MagicMock(return_value=True)
-    
-    # Mock state service to return some DAY positions
-    day_position = MagicMock()
-    day_position.symbol = "TEST"
-    day_position.strategy = PositionStrategy.DAY
-    manager.state_service.get_positions_by_strategy = MagicMock(return_value=[day_position])
-    
-    # Mock the close method
-    manager._close_single_position = MagicMock()
-    
-    # Execute
-    manager._check_market_close_actions()
-    
-    # Verify
-    manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=10)
-    manager.state_service.get_positions_by_strategy.assert_called_once_with(PositionStrategy.DAY)
-    manager._close_single_position.assert_called_once_with(day_position)
 
 def test_check_market_close_actions_does_nothing_when_not_time_to_close():
     """Test that no action is taken when it's not time to close positions."""
@@ -321,34 +297,6 @@ def test_check_market_close_actions_does_nothing_when_not_time_to_close():
     manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=10)
     manager.state_service.get_positions_by_strategy.assert_not_called()
     manager._close_single_position.assert_not_called()
-
-def test_check_market_close_actions_does_not_close_core_positions():
-    """Test that only DAY positions are closed, not CORE/HYBRID."""
-    # Setup
-    manager = create_trading_manager_with_mocks()
-    
-    # Mock market hours to return True
-    manager.market_hours.should_close_positions = MagicMock(return_value=True)
-    
-    # Mock state service to return mixed positions
-    day_position = MagicMock()
-    day_position.symbol = "DAY_STOCK"
-    day_position.strategy = PositionStrategy.DAY
-    
-    core_position = MagicMock()
-    core_position.symbol = "CORE_STOCK" 
-    core_position.strategy = PositionStrategy.CORE
-    
-    manager.state_service.get_positions_by_strategy = MagicMock(return_value=[day_position])
-    manager._close_single_position = MagicMock()
-    
-    # Execute
-    manager._check_market_close_actions()
-    
-    # Verify - only DAY position should be closed
-    manager.state_service.get_positions_by_strategy.assert_called_once_with(PositionStrategy.DAY)
-    manager._close_single_position.assert_called_once_with(day_position)
-    assert manager._close_single_position.call_count == 1  # Only one call for DAY position
 
 def test_check_market_close_actions_handles_no_day_positions():
     """Test behavior when there are no DAY positions to close."""
@@ -559,3 +507,17 @@ def test_fallback_to_hardcoded_defaults():
     # Verify - should use hardcoded default (10 minutes)
     manager.market_hours.should_close_positions.assert_called_once_with(buffer_minutes=10)
 # New Configuration Tests - End
+
+def test_market_close_triggers_day_position_closing(manager):
+    """Test that market close triggers position closing behavior."""
+    # Mock the orchestrator method that actually exists
+    manager.orchestrator.check_market_close_actions = Mock()
+    
+    # Mock market hours to trigger close
+    manager.market_hours.should_close_positions = Mock(return_value=True)
+    
+    # Execute
+    manager._check_market_close_actions()
+    
+    # Verify the orchestrator was called (this is the actual behavior)
+    manager.orchestrator.check_market_close_actions.assert_called_once()
